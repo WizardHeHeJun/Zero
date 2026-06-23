@@ -20,6 +20,10 @@ class PhysiologyModel(Protocol):
     def predict_physiology(self, valence: float, arousal: float) -> dict[str, float]: ...
 
 
+class FacsModel(Protocol):
+    def predict_facs(self, valence: float, arousal: float) -> dict[str, float]: ...
+
+
 class CompositeChannelDecoder:
     """注入若干真通道模型；predict_channels 用真模型覆盖对应通道，其余回退解析占位。"""
 
@@ -28,9 +32,11 @@ class CompositeChannelDecoder:
         *,
         prosody_model: ProsodyModel | None = None,
         physiology_model: PhysiologyModel | None = None,
+        facs_model: FacsModel | None = None,
     ) -> None:
         self.prosody_model = prosody_model
         self.physiology_model = physiology_model
+        self.facs_model = facs_model
 
     def predict_channels(self, valence: float, arousal: float) -> dict[str, Any]:
         channels = decode_channels((valence, arousal))  # 解析占位提供全部 4 通道
@@ -38,5 +44,7 @@ class CompositeChannelDecoder:
             channels["prosody"] = self.prosody_model.predict_prosody(valence, arousal)
         if self.physiology_model is not None:
             channels["physiology"] = self.physiology_model.predict_physiology(valence, arousal)
+        if self.facs_model is not None:
+            channels["facs_au"] = self.facs_model.predict_facs(valence, arousal)
         channels["text_label"] = text_label(valence, arousal)
         return channels
