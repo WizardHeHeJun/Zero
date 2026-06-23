@@ -26,5 +26,8 @@ def build_checkpointer(
     """
     if allowed_types is None:
         return InMemorySaver()
+    # allowed_msgpack_modules 接收 (module, qualname) 元组——这正是 langgraph 反序列化
+    # 告警自身建议的格式；已用 `python -W error` 三步同线程实测：消除告警且能正确跨
+    # invoke 反序列化运行态。勿改成纯模块名字符串列表。
     serde = JsonPlusSerializer(allowed_msgpack_modules=list(allowed_types))
     return InMemorySaver(serde=serde)

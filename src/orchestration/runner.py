@@ -46,6 +46,8 @@ async def run(
             },
             config={"configurable": {"thread_id": thread_id}},
         )
+        # 本 langgraph 版本对 pydantic schema 的 ainvoke 返回 dict；AffectState(**result)
+        # 会触发 pydantic 校验（字段缺失/类型不符即报错），不会静默掩盖问题。
         state = result if isinstance(result, AffectState) else AffectState(**result)
         trajectory.append(
             {

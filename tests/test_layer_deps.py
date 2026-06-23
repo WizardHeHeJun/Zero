@@ -19,6 +19,8 @@ def imports(text: str, module: str) -> bool:
 def test_agents_do_not_import_storage_or_graph_drivers() -> None:
     for name, text in read_module_sources("agents").items():
         assert not imports(text, "src.storage"), name
+        # Worker Agent 不直接碰记忆层：记忆写入只由 Supervisor 节流（memory-rules #1）。
+        assert not imports(text, "src.memory"), name
         assert "neo4j" not in text.lower(), name
 
 

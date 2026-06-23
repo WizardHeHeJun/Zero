@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.agents.value import ValueAgent
 from src.memory.client import MemoryClient
+from src.memory.types import Scope
 from src.orchestration.runner import run
 from src.orchestration.state import AffectState, Stimulus
 
@@ -29,9 +30,12 @@ async def test_runtime_state_not_leaked_into_graph_store() -> None:
         memory=mem,
         rng_seed=1,
     )
-    contents = [f.content for f in mem.store.facts]
-    # 图谱只存事件/倾向摘要；运行态结构（value_table/后验）不得出现
+    # 经公开 query API 读取（不白盒访问后端内部），验证图谱只存事件/倾向摘要。
+    session_facts = await mem.query("", scope=Scope.SESSION, key="default-session")
+    user_facts = await mem.query("", scope=Scope.USER, key="default-user")
+    contents = [f.content for f in [*session_facts, *user_facts]]
     assert contents, "任务完成应写入至少一条记忆"
+    # 运行态结构（value_table/后验）不得出现在长期记忆中
     assert all("value_table" not in c for c in contents)
     assert all("post_mu" not in c for c in contents)
     assert all("post_sigma" not in c for c in contents)

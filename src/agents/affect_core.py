@@ -23,6 +23,8 @@ class AffectCoreAgent:
         pi = state.precision if state.precision is not None else 1.0
         evidence = evidence_from_value(state.reward, delta)
         post_mu, post_sigma = gaussian_fuse(state.prior_mu, state.prior_sigma, evidence, pi)
+        # rng_seed 为空时每次调用都重新随机（有意：生产情绪表达的随机性），
+        # 非漏传 seed；测试需可复现时显式传 rng_seed。
         rng = random.Random(state.rng_seed) if state.rng_seed is not None else None
         e_star = sample_affect(post_mu, post_sigma, rng=rng)
         entry = {
