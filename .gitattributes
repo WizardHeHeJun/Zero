@@ -1,0 +1,5 @@
+# Shell 脚本必须用 LF，否则带 \r 的行尾会让 sh 执行失败
+*.sh text eol=lf
+
+# 其余文本文件交给 git 自动处理换行
+* text=auto

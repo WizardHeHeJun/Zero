@@ -1,0 +1,76 @@
+# ── Secrets / 本地配置 ─────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+secrets/
+
+# ── Harness / 知识框架（按用户决定: 不纳入版本控制）─────
+# 这些是自用的 Claude Code harness 与知识路由/文档, 属脚手架而非项目产物;
+# 只让未来的 src/ 、tests/ 进版本库。
+# 注意: gitignore 仅表示"不进 git、不随仓库共享", 本地仍直接从磁盘读取, 功能不受影响。
+# (本段覆盖了早先"`.claude/` harness 资产必须提交"的约定)
+.claude/
+ai-docs/
+ai-shared/
+evals/
+PRP/
+/CLAUDE.md
+# 注: diagrams/ 是目标系统的架构设计产物(非知识路由), 随项目纳入版本控制。
+
+# ── Python ────────────────────────────────────────
+# 注意: uv.lock 应当提交(锁定依赖), 不要在此忽略。
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ipynb_checkpoints/
+
+# ── Node / TypeScript ─────────────────────────────
+node_modules/
+*.tsbuildinfo
+.npm/
+.pnpm-store/
+coverage/
+
+# ── 数据 / 本地服务 ────────────────────────────────
+*.sqlite
+*.db
+pgdata/
+neo4j_data/
+redis_data/
+*.dump
+
+# ── 日志 / 临时 ────────────────────────────────────
+logs/
+*.log
+*.tmp
+
+# ── 编辑器 / 系统 ──────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~
