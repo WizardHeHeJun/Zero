@@ -13,7 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from src.agents.affect_core import AffectCoreAgent
 from src.agents.appraisal import AppraisalAgent
-from src.agents.expression import ExpressionAgent
+from src.agents.expression import ChannelDecoder, ExpressionAgent
 from src.agents.perception import PerceptionAgent
 from src.agents.regulation import RegulationAgent
 from src.agents.value import ValueAgent
@@ -27,15 +27,24 @@ def route_after_affect_core(state: AffectState) -> str:
     return "regulation" if state.regulation_enabled else "expression"
 
 
-def build_graph(checkpointer: BaseCheckpointSaver, memory: MemoryClient) -> CompiledStateGraph:
-    """装配并编译情感表达 StateGraph。"""
+def build_graph(
+    checkpointer: BaseCheckpointSaver,
+    memory: MemoryClient,
+    *,
+    expression_decoder: ChannelDecoder | None = None,
+) -> CompiledStateGraph:
+    """装配并编译情感表达 StateGraph。
+
+    expression_decoder：可选注入的真通道解码器（训练好的 ExpressionDecoder /
+    CompositeChannelDecoder）；为空则 ExpressionAgent 走解析占位。鸭子类型，编排层不依赖 torch。
+    """
     graph: StateGraph = StateGraph(AffectState)
     graph.add_node("perception", PerceptionAgent())
     graph.add_node("appraisal", AppraisalAgent())
     graph.add_node("value", ValueAgent())
     graph.add_node("affect_core", AffectCoreAgent())
     graph.add_node("regulation", RegulationAgent())
-    graph.add_node("expression", ExpressionAgent())
+    graph.add_node("expression", ExpressionAgent(decoder=expression_decoder))
     graph.add_node("supervisor", SupervisorAgent(memory))
 
     graph.add_edge(START, "perception")
