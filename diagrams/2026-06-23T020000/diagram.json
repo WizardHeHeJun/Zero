@@ -1,0 +1,63 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "type": "frame",
+      "id": "root",
+      "x": 20,
+      "y": 20,
+      "layout": "dagre",
+      "width": "fit-content",
+      "height": "fit-content",
+      "padding": 56,
+      "fillColor": "#FFFFFF",
+      "borderColor": "#DEE0E3",
+      "borderWidth": 1,
+      "borderRadius": 16,
+      "layoutOptions": {
+        "rankdir": "LR",
+        "nodesep": 46,
+        "ranksep": 130,
+        "edges": [
+          ["context", "language_gen", "上下文"],
+          ["retrieved", "language_gen", "检索信息"],
+          ["emotion_core", "language_gen", "情感基调（内核驱动）"],
+          ["language_gen", "arbiter", "候选表达"],
+          ["emotion_core", "arbiter", "情感约束"],
+          ["arbiter", "language_gen", "不一致 · 重写"],
+          ["arbiter", "emotion_core", "反馈 · 微调情感"],
+          ["arbiter", "output", "自洽 → 最终表现"]
+        ]
+      },
+      "children": [
+        { "type": "ellipse", "id": "context", "width": 150, "height": 72, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "🗨️ 当前上下文", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        { "type": "cylinder", "id": "retrieved", "width": 165, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "📚 检索信息\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "来自记忆层 Zep", "fontSize": 10, "color": "#646A73" } ] },
+        {
+          "type": "frame", "id": "emotion_core", "layout": "vertical", "gap": 5, "padding": 16, "alignItems": "center", "width": 210, "height": "fit-content",
+          "fillColor": "#FEE3E2", "borderColor": "#D25D5A", "borderWidth": 3, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🫀 情感引擎 · 内核", "bold": true, "fontSize": 15, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "各脑区融合 → VAD 情绪状态\n持续驱动，不依赖语言", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "language_gen", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 200, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🗣️ 语言内容生成", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "上下文 + 检索 + 情感\n→ 组织表达内容", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "arbiter", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 200, "height": "fit-content",
+          "fillColor": "#FEF1CE", "borderColor": "#D4B45B", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "⚖️ 相互判断 / 一致性仲裁", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "情感 ⇄ 语言 校验\n收敛上限 2-3 次防死循环", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "ellipse", "id": "output", "width": 150, "height": 72, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "💬 最终表现", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" }
+      ]
+    }
+  ]
+}
