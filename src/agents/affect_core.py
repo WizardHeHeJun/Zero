@@ -37,5 +37,5 @@ class AffectCoreAgent:
             "post_mu": post_mu,
             "post_sigma": post_sigma,
             "affect_sample": e_star,
-            "trace": state.trace + [entry],
+            "trace": [entry],
         }

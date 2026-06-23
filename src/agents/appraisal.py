@@ -35,5 +35,5 @@ class AppraisalAgent:
             "prior_sigma": prior_sigma,
             "reward": reward,
             "appraisal": appraisal,
-            "trace": state.trace + [entry],
+            "trace": [entry],
         }

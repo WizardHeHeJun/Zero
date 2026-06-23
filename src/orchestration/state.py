@@ -7,7 +7,8 @@ state 不放大对象（向量/文档）；trace 仅存标量中间量。运行�
 
 from __future__ import annotations
 
-from typing import Any
+import operator
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,8 +58,8 @@ class AffectState(BaseModel):
     regulated_affect: tuple[float, float] | None = None
     expression: dict[str, Any] = Field(default_factory=dict)
 
-    # 观测与作用域
-    trace: list[dict[str, Any]] = Field(default_factory=list)
+    # 观测与作用域：trace 用 reducer 累加，节点只需返回自己的 [entry]（避免每步全量拷贝）
+    trace: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
     session_id: str = "default-session"
     user_id: str = "default-user"
     group_id: str = "default-group"

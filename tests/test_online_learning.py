@@ -31,7 +31,8 @@ async def test_runtime_state_not_leaked_into_graph_store() -> None:
         rng_seed=1,
     )
     # 经公开 query API 读取（不白盒访问后端内部），验证图谱只存事件/倾向摘要。
-    session_facts = await mem.query("", scope=Scope.SESSION, key="default-session")
+    # session_id 默认绑定 thread_id（"g1"），user_id 默认 "default-user"。
+    session_facts = await mem.query("", scope=Scope.SESSION, key="g1")
     user_facts = await mem.query("", scope=Scope.USER, key="default-user")
     contents = [f.content for f in [*session_facts, *user_facts]]
     assert contents, "任务完成应写入至少一条记忆"

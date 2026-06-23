@@ -22,4 +22,4 @@ class PerceptionAgent:
             stim.intensity,
         ]
         entry = {"node": "perception", "features": features}
-        return {"features": features, "trace": state.trace + [entry]}
+        return {"features": features, "trace": [entry]}

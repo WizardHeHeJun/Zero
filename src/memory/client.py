@@ -11,16 +11,16 @@ import logging
 from datetime import UTC, datetime
 
 from src.memory.types import Fact, Scope
-from src.storage.graph_store import InMemoryGraphStore
+from src.storage.graph_store import GraphStore, InMemoryGraphStore
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryClient:
-    """长期记忆读写入口；对下封装图谱后端，对上屏蔽存储细节。"""
+    """长期记忆读写入口；对下依赖 GraphStore 协议（非具体类），对上屏蔽存储细节。"""
 
-    def __init__(self, store: InMemoryGraphStore | None = None) -> None:
-        self.store = store if store is not None else InMemoryGraphStore()
+    def __init__(self, store: GraphStore | None = None) -> None:
+        self.store: GraphStore = store if store is not None else InMemoryGraphStore()
 
     async def write(
         self,

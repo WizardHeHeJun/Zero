@@ -27,4 +27,4 @@ class RegulationAgent:
             "regulated_affect": regulated,
             "enabled": state.regulation_enabled,
         }
-        return {"regulated_affect": regulated, "trace": state.trace + [entry]}
+        return {"regulated_affect": regulated, "trace": [entry]}

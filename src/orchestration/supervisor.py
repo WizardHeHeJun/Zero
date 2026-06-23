@@ -36,4 +36,4 @@ class SupervisorAgent:
                 key=state.user_id,
             )
         entry = {"node": "supervisor", "task_complete": True}
-        return {"task_complete": True, "trace": state.trace + [entry]}
+        return {"task_complete": True, "trace": [entry]}

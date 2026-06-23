@@ -31,5 +31,5 @@ class ValueAgent:
             "value_estimate": new_value,
             "value_table": table,
             "precision": pi,
-            "trace": state.trace + [entry],
+            "trace": [entry],
         }

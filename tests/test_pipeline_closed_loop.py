@@ -5,8 +5,11 @@ from __future__ import annotations
 import statistics
 
 from src.agents.affect_math import MAX_SAMPLE_SIGMA
-from src.orchestration.runner import run
+from src.memory.client import MemoryClient
+from src.orchestration.graph import build_graph
+from src.orchestration.runner import ALLOWED_CHECKPOINT_TYPES, run
 from src.orchestration.state import Stimulus
+from src.storage.checkpointer import build_checkpointer
 
 
 async def test_closed_loop_produces_trajectory_with_intermediates() -> None:
@@ -38,3 +41,15 @@ async def test_repeated_stimulus_sampling_is_bounded() -> None:
     assert statistics.pstdev(valences) <= MAX_SAMPLE_SIGMA
     # 存在抖动（采样确有随机性），而非常数
     assert statistics.pstdev(valences) > 0.0
+
+
+async def test_trace_accumulates_one_entry_per_node() -> None:
+    # trace reducer（Annotated[list, operator.add]）应逐节点累加，而非被覆盖。
+    graph = build_graph(build_checkpointer(ALLOWED_CHECKPOINT_TYPES), MemoryClient())
+    result = await graph.ainvoke(
+        {"stimulus": Stimulus(name="t", goal_congruence=0.5), "task_complete": False},
+        config={"configurable": {"thread_id": "trace1"}},
+    )
+    nodes = [entry["node"] for entry in result["trace"]]
+    # 默认 regulation 关闭：perception→appraisal→value→affect_core→expression→supervisor
+    assert nodes == ["perception", "appraisal", "value", "affect_core", "expression", "supervisor"]

@@ -27,11 +27,19 @@ async def run(
     *,
     thread_id: str,
     memory: MemoryClient | None = None,
+    session_id: str | None = None,
+    user_id: str = "default-user",
+    group_id: str = "default-group",
     regulation_enabled: bool = False,
     rng_seed: int | None = None,
 ) -> list[dict[str, Any]]:
-    """按序跑 stimuli，返回每个刺激的情绪向量与关键中间量。"""
+    """按序跑 stimuli，返回每个刺激的情绪向量与关键中间量。
+
+    session_id 默认绑定到 thread_id，使不同线程的会话记忆天然隔离（防串味）；
+    user_id/group_id 应由调用方按真实身份显式传入。
+    """
     client = memory if memory is not None else MemoryClient()
+    session = session_id if session_id is not None else thread_id
     checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
     graph = build_graph(checkpointer=checkpointer, memory=client)
 
@@ -40,6 +48,9 @@ async def run(
         result = await graph.ainvoke(
             {
                 "stimulus": stim,
+                "session_id": session,
+                "user_id": user_id,
+                "group_id": group_id,
                 "regulation_enabled": regulation_enabled,
                 "rng_seed": rng_seed,
                 "task_complete": False,

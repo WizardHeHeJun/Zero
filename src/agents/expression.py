@@ -30,4 +30,4 @@ class ExpressionAgent:
             "voluntary": voluntary,  # 随意通路（经 Regulation）
         }
         entry = {"node": "expression", "valence_arousal": state.affect_sample}
-        return {"expression": expression, "trace": state.trace + [entry]}
+        return {"expression": expression, "trace": [entry]}

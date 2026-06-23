@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,16 @@ class StoredFact:
     content: str
     valid_at: datetime
     invalid_at: datetime | None = None
+
+
+class GraphStore(Protocol):
+    """长期记忆图谱后端协议。记忆层依赖本协议而非具体实现，便于替换 Graphiti 等后端。"""
+
+    def add_fact(self, scope: str, key: str, content: str, valid_at: datetime) -> None: ...
+
+    def query_facts(
+        self, scope: str, key: str | None = None, at: datetime | None = None
+    ) -> list[StoredFact]: ...
 
 
 class InMemoryGraphStore:
