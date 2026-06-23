@@ -8,6 +8,15 @@ dependencies = [
     "pydantic>=2",
 ]
 
+[project.optional-dependencies]
+# 真网络化（ExpressionAgent 等占位的可训练替换）；本机用 conda env affective-expression 安装。
+ml = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "librosa>=0.10",
+    "scipy>=1.10",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -23,6 +32,13 @@ package = false
 pythonpath = ["."]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # 第三方 audioread（librosa 依赖）在 Py3.12 导入已弃用的 aifc/audioop/sunau
+    "ignore::DeprecationWarning:audioread",
+    "ignore:'aifc' is deprecated:DeprecationWarning",
+    "ignore:'audioop' is deprecated:DeprecationWarning",
+    "ignore:'sunau' is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

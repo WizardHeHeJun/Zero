@@ -59,6 +59,8 @@ pgdata/
 neo4j_data/
 redis_data/
 *.dump
+data/
+artifacts/
 
 # ── 日志 / 临时 ────────────────────────────────────
 logs/
