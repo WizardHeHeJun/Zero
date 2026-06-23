@@ -1,0 +1,119 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "type": "frame",
+      "id": "root",
+      "x": 20,
+      "y": 20,
+      "layout": "dagre",
+      "width": "fit-content",
+      "height": "fit-content",
+      "padding": 56,
+      "fillColor": "#FFFFFF",
+      "borderColor": "#DEE0E3",
+      "borderWidth": 1,
+      "borderRadius": 16,
+      "layoutOptions": {
+        "rankdir": "LR",
+        "nodesep": 38,
+        "ranksep": 120,
+        "edges": [
+          ["user_input", "supervisor", "感知输入"],
+          ["supervisor", "amygdala", "快通路"],
+          ["supervisor", "pfc", "慢通路"],
+          ["supervisor", "hippocampus"],
+          ["supervisor", "insula"],
+          ["supervisor", "reward"],
+          ["supervisor", "hypothalamus"],
+          ["amygdala", "integrator"],
+          ["pfc", "integrator"],
+          ["hippocampus", "integrator"],
+          ["insula", "integrator"],
+          ["reward", "integrator"],
+          ["hypothalamus", "integrator"],
+          ["integrator", "expression", "融合情绪"],
+          ["expression", "output", "统一表现"],
+          ["hippocampus", "memory", "读写"]
+        ]
+      },
+      "children": [
+        { "type": "ellipse", "id": "user_input", "width": 120, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "👤 用户输入", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        {
+          "type": "frame", "id": "supervisor", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 180, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎛️ Supervisor", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "感知 · 分发 · 协调", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "amygdala", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 185, "height": "fit-content",
+          "fillColor": "#FEF1CE", "borderColor": "#D4B45B", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "⚡ 杏仁核", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "快速情绪评估 · 快通路", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "pfc", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 185, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🧩 前额叶 PFC", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "审议 · 调控 · 抑制（慢通路）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "hippocampus", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 185, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "📚 海马体", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "情境记忆检索", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "insula", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 185, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "💗 岛叶", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "共情 · 内感受", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "reward", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 185, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎯 奖赏系统", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "动机 · 趋近", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "hypothalamus", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 185, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🌡️ 下丘脑", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "内驱 · 心情基线", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "integrator", "layout": "vertical", "gap": 4, "padding": 14, "alignItems": "center", "width": 190, "height": "fit-content",
+          "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🪄 Integrator", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "全局工作空间 · VAD 融合", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "expression", "layout": "vertical", "gap": 4, "padding": 14, "alignItems": "center", "width": 190, "height": "fit-content",
+          "fillColor": "#FEE3E2", "borderColor": "#D25D5A", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🗣️ Expression Agent", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "人格设定 + 情绪 → 统一表现", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "ellipse", "id": "output", "width": 120, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "💬 统一输出", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        { "type": "cylinder", "id": "memory", "width": 165, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆层 Zep\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "情感记忆 session / user", "fontSize": 10, "color": "#646A73" } ] }
+      ]
+    }
+  ]
+}
