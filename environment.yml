@@ -1,0 +1,23 @@
+# Conda 环境定义 —— 情感表达多 Agent 系统（affective-expression）
+#
+# 重建：  conda env create -f environment.yml
+# 激活：  conda activate affective-expression
+# 更新：  conda env update -f environment.yml --prune
+#
+# 依赖口径与 pyproject.toml 对齐（loose 约束、跨平台可重建）。
+# 本机 win-64 实测的精确版本见 environment.lock.yml。
+name: affective-expression
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # 运行依赖（= pyproject [project].dependencies）
+      - langgraph>=0.2
+      - pydantic>=2
+      # 开发工具（= pyproject [dependency-groups].dev）
+      - pytest>=8
+      - pytest-asyncio>=0.23
+      - ruff
+      - mypy
