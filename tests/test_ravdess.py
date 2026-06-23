@@ -18,11 +18,8 @@ pytest.importorskip("librosa")
 
 from src.agents.datasets.ravdess import load_ravdess, parse_emotion_code  # noqa: E402
 from src.agents.expression import ExpressionAgent  # noqa: E402
-from src.agents.models.prosody_decoder import (  # noqa: E402
-    PROSODY_DIM,
-    CompositeChannelDecoder,
-    ProsodyDecoder,
-)
+from src.agents.models.composite import CompositeChannelDecoder  # noqa: E402
+from src.agents.models.prosody_decoder import PROSODY_DIM, ProsodyDecoder  # noqa: E402
 from src.orchestration.state import AffectState  # noqa: E402
 
 CHANNELS = {"facs_au", "text_label", "physiology", "prosody"}
