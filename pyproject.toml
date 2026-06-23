@@ -13,6 +13,7 @@ dependencies = [
 ml = [
     "torch>=2.2",
     "numpy>=1.26",
+    "librosa>=0.10",
 ]
 
 [dependency-groups]
@@ -30,6 +31,13 @@ package = false
 pythonpath = ["."]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # 第三方 audioread（librosa 依赖）在 Py3.12 导入已弃用的 aifc/audioop/sunau
+    "ignore::DeprecationWarning:audioread",
+    "ignore:'aifc' is deprecated:DeprecationWarning",
+    "ignore:'audioop' is deprecated:DeprecationWarning",
+    "ignore:'sunau' is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100
