@@ -125,6 +125,13 @@ def sample_affect(
     return (v, a)
 
 
+def text_label(valence: float, arousal: float) -> str:
+    """按 valence-arousal 象限映射离散情绪词（占位与模型路径共用）。"""
+    if valence >= 0:
+        return "excited" if arousal >= 0.33 else "content"
+    return "angry" if arousal >= 0.33 else "sad"
+
+
 def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
     """把 (valence, arousal) 占位解码为 4 个表达通道的结构化结果。
 
@@ -143,10 +150,7 @@ def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
     facs_au["intensity"] = clamp(abs(arousal), 0.0, 1.0)
 
     # 2) 文本情绪标签：按 valence-arousal 象限映射离散词
-    if valence >= 0:
-        text_label = "excited" if arousal >= 0.33 else "content"
-    else:
-        text_label = "angry" if arousal >= 0.33 else "sad"
+    label = text_label(valence, arousal)
 
     # 3) 生理信号模拟：arousal 驱动交感输出
     physiology = {
@@ -164,7 +168,7 @@ def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
 
     return {
         "facs_au": facs_au,
-        "text_label": text_label,
+        "text_label": label,
         "physiology": physiology,
         "prosody": prosody,
     }

@@ -8,6 +8,13 @@ dependencies = [
     "pydantic>=2",
 ]
 
+[project.optional-dependencies]
+# 真网络化（ExpressionAgent 等占位的可训练替换）；本机用 conda env affective-expression 安装。
+ml = [
+    "torch>=2.2",
+    "numpy>=1.26",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
