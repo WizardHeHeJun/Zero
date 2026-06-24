@@ -133,6 +133,7 @@
 - **EmoBench 式情商探针回归**（`tests/test_ei_probe.py`）：curated 情绪场景 → 端到端管线 → `affect_label`/`motivational_system` 命中率（效价方向 + 动机系统 + 粒度多样性），文档化如何接真 EmoBench。
 - **测试**：`test_emotion_lexicon`(15)、`test_language_steering`(纯数学+fake backend+importorskip smoke)、`test_regulation`(策略)、EI 探针、`test_affect_math`/`test_language_agent` 增测。
 - **验证**：`pytest` **149 passed, 5 skipped**（+32；新增 steering smoke skip 1）；`ruff check`/`ruff format`/`mypy`(41 源) 干净。
+- **真 LLM 端到端已验证**（`main.py --llm`，OpenAI 兼容代理 + qwen-flash）：四情绪场景（喜/怒×强弱）生成语言情绪对路、独立反推 VAD 与内核 e* 同象限（狂喜↔狂喜、暴怒↔暴怒）、双向回路迭代 2–3 次将一致性收敛到 τ=0.15 以下（0.12–0.14）。模型经 `.env` 的 `ZERO_OPENAI_MODEL` 配（注意代理的 `limited` 是权限标签非模型名，需填真实 id 如 qwen-flash/deepseek-v4-flash/gpt-5.5）。
 
 ## 成果与验证
 
