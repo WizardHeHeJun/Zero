@@ -58,6 +58,42 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 
 见 [`diagrams/`](diagrams/) —— 多 Agent 协作系统 · 记忆架构分层（含情感链路）。
 
+## 项目结构
+
+```text
+Zero/
+├── src/                         # 核心系统（三层架构，依赖单向：编排 → 记忆 → 存储）
+│   ├── orchestration/           # 编排层：StateGraph 装配 + 运行入口
+│   │   ├── graph.py             #   build_graph：9 节点装配 + 条件边路由
+│   │   ├── state.py             #   AffectState / Stimulus（pydantic 结构化 state）
+│   │   ├── supervisor.py        #   SupervisorAgent：协调 + 任务完成节流写记忆
+│   │   ├── memory_recall.py     #   MemoryRecallAgent：读 user 长期倾向回灌（记忆读闭环）
+│   │   └── runner.py            #   run()：跑刺激序列、收集 (v,a) 轨迹
+│   ├── agents/                  # 编排层·各 Worker（节点契约 (state) -> dict 只回增量）
+│   │   ├── affect_math.py       #   纯数学内核：OCC / TD / 精度 / 高斯融合 / mood_step
+│   │   ├── perception.py · appraisal.py · value.py
+│   │   ├── affect_core.py       #   主动推断·后验采样 e*（随机性来源）
+│   │   ├── mood.py              #   MoodAgent：慢变心境双稳更新（A.7 滞后）
+│   │   ├── regulation.py · expression.py   # 掩饰 + 双通路·4 通道输出
+│   │   ├── models/              #   真网络化 torch 解码器（expression/prosody/physiology/facs/text/composite）
+│   │   └── datasets/            #   DataLoader：synthetic / ravdess / wesad / emobank / facs_csv
+│   ├── memory/                  # 记忆层：读写 API（显式 scope、任务完成节流）
+│   │   └── client.py · types.py
+│   └── storage/                 # 存储层（最底层）：运行态 + 长期记忆，env 选后端
+│       ├── checkpointer.py      #   build_checkpointer：InMemory / SQLite / Postgres（gated）
+│       └── graph_store.py       #   InMemory / SqliteGraphStore + build_graph_store
+├── tests/                       # 79 用例（核心 + ml；ml 缺 torch 自动 importorskip 跳过）
+├── scripts/                     # 训练脚本 train_*.py + 端到端 demo_pipeline.py
+├── Dockerfile · docker-compose.yml · .dockerignore · .env.example   # 容器化部署
+├── pyproject.toml               # 依赖（core / ml / db extra）+ ruff / mypy / pytest 配置
+├── environment.yml · environment.lock.yml · uv.lock                 # conda / uv 环境
+├── README.md · PROGRESS.md · DATASETS.md                            # 总览 / 工程记录 / 数据集清单
+├── notes/                       # 研究笔记（情感数学 / LLM 表达，含 A.7 推导）
+└── diagrams/                    # 架构设计图
+```
+
+> **本地 harness / 知识层**（gitignore，不入版本库）：`.claude/`（rules · skills · hooks · commands · agents）· `ai-docs/`（模块三件套 · catalog · pitfalls）· `ai-shared/` · `evals/` · `PRP/`（PRP 工作区）· `artifacts/` · `data/`（训练权重 / 数据集）。
+
 ## 环境准备（conda）
 
 Python 隔离环境用 conda 管理，环境名 `affective-expression`（Python 3.12，对齐 `pyproject.toml` 的 `requires-python`）。
