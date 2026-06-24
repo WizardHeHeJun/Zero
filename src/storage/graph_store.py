@@ -327,8 +327,8 @@ class GraphitiGraphStore:
         edges = await self.graphiti.search(query, group_ids=[group_id])
         results: list[StoredFact] = []
         for edge in edges:
-            valid = getattr(edge, "valid_at", None)
-            invalid = getattr(edge, "invalid_at", None)
+            valid = _coerce_dt(getattr(edge, "valid_at", None))
+            invalid = _coerce_dt(getattr(edge, "invalid_at", None))
             if at is None:
                 if invalid is not None:
                     continue
@@ -348,52 +348,80 @@ class GraphitiGraphStore:
         return results
 
     async def close(self) -> None:
-        """关闭 Graphiti（底层 Neo4j 驱动）连接池。"""
+        """关闭 Graphiti（底层图库驱动：neo4j 连接池 / kuzu 嵌入式连接）。"""
         await self.graphiti.close()
 
 
 def _build_graphiti(uri: str, user: str, password: str) -> Any:
-    """构造 Graphiti 客户端；显式配了 OpenAI 兼容网关则注入自定义 LLM/embedder，否则用其默认。
+    """构造 Graphiti 客户端：env `ZERO_GRAPHITI_DB` 选图库 neo4j（默认）/ kuzu（嵌入式，无服务）。
 
-    自定义构造失败（如版本间 import 路径差异）时告警回退默认，最大化跨版本健壮性。
+    LLM/embedder：显式配 OpenAI 兼容网关（`ZERO_OPENAI_*` / `ZERO_GRAPHITI_MODEL`）则注入，
+    否则用 Graphiti 默认（读 `OPENAI_API_KEY`）；自定义构造失败时告警回退默认。
+    ⚠ kuzu 后端 upstream 已 deprecated（会被移除），仅作本地 smoke 验证用；持久/生产走 neo4j。
     """
     from graphiti_core import Graphiti  # 延迟导入：缺驱动由 _graphiti_store 捕获回退
 
     base_url = os.getenv("ZERO_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
     api_key = os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     model = os.getenv("ZERO_GRAPHITI_MODEL")
+    llm_kwargs: dict[str, Any] = {}
     if base_url or model:
         try:
             from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
             from graphiti_core.llm_client.config import LLMConfig
             from graphiti_core.llm_client.openai_client import OpenAIClient
 
-            llm_client = OpenAIClient(
-                config=LLMConfig(api_key=api_key, base_url=base_url, model=model)
-            )
-            embedder = OpenAIEmbedder(
-                config=OpenAIEmbedderConfig(api_key=api_key, base_url=base_url)
-            )
-            return Graphiti(uri, user, password, llm_client=llm_client, embedder=embedder)
+            llm_kwargs = {
+                "llm_client": OpenAIClient(
+                    config=LLMConfig(api_key=api_key, base_url=base_url, model=model)
+                ),
+                "embedder": OpenAIEmbedder(
+                    config=OpenAIEmbedderConfig(api_key=api_key, base_url=base_url)
+                ),
+            }
         except Exception:
             logger.warning("自定义 Graphiti LLM/embedder 构造失败，回退默认 OpenAI 配置")
-    return Graphiti(uri, user, password)
+
+    if (os.getenv("ZERO_GRAPHITI_DB") or "neo4j").lower() == "kuzu":
+        from graphiti_core.driver.kuzu_driver import KuzuDriver  # 嵌入式：缺 kuzu 由工厂回退
+
+        path = os.getenv("ZERO_KUZU_PATH", "data/graphiti.kuzu")
+        if path != ":memory:":
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        return Graphiti(graph_driver=KuzuDriver(db=path), **llm_kwargs)
+    return Graphiti(uri, user, password, **llm_kwargs)
+
+
+def _coerce_dt(value: Any) -> datetime | None:
+    """把 Graphiti 边的 valid_at/invalid_at 归一成 datetime|None。
+
+    防 Kuzu 后端已知 bug（getzep/graphiti #893：valid_at 可能回非 datetime/字符串格式）——
+    无法解析则当 None（按"无界/当前有效"处理），避免 `str > datetime` 抛错。
+    """
+    if value is None or isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _graphiti_store() -> GraphitiGraphStore | None:
-    """构造 Graphiti 语义后端；缺 graphiti-core 时告警返回 None 触发回退（同 `_neo4j_store`）。
+    """构造 Graphiti 语义后端；缺驱动/构造失败时告警回退 None（语义是可选侧信道，绝不拖垮主管线）。
 
-    Neo4j 连接复用 `ZERO_NEO4J_{URI,USER,PASSWORD}`（与 Neo4jGraphStore / compose 一致）。
+    图库经 env `ZERO_GRAPHITI_DB` 选：`neo4j`（默认，复用 `ZERO_NEO4J_{URI,USER,PASSWORD}`）/
+    `kuzu`（嵌入式，落盘 `ZERO_KUZU_PATH`，默认 `data/graphiti.kuzu`，本地无服务）。
     """
     try:
-        import graphiti_core  # noqa: F401  仅探测驱动是否可用
-    except ImportError:
-        logger.warning("ZERO_SEMANTIC_BACKEND=graphiti 但缺 graphiti-core，回退（无语义记忆）")
+        uri = os.getenv("ZERO_NEO4J_URI", "bolt://localhost:7687")
+        user = os.getenv("ZERO_NEO4J_USER", "neo4j")
+        password = os.getenv("ZERO_NEO4J_PASSWORD", "password")
+        return GraphitiGraphStore(uri, user, password)
+    except Exception as exc:
+        logger.warning("Graphiti 语义后端构造失败（%s），回退无语义记忆", exc)
         return None
-    uri = os.getenv("ZERO_NEO4J_URI", "bolt://localhost:7687")
-    user = os.getenv("ZERO_NEO4J_USER", "neo4j")
-    password = os.getenv("ZERO_NEO4J_PASSWORD", "password")
-    return GraphitiGraphStore(uri, user, password)
 
 
 def build_semantic_store(backend: str | None = None) -> SemanticStore | None:

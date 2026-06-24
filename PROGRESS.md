@@ -87,9 +87,21 @@
 - **验证**：`pytest` **106 passed**（96 + 10 新）；`ruff`/`mypy` 干净。
 - **仍待真机验证**：本机无 Neo4j/Docker/LLM；服务器 `pip install -e ".[graphiti]"` + `ZERO_SEMANTIC_BACKEND=graphiti` + `ZERO_OPENAI_*`/`ZERO_NEO4J_*`，跑通 episode 抽实体/关系 → 语义召回 → 进语言层。
 
+### 阶段 9 — Graphiti 本地无 Docker 验证路径（kuzu 嵌入式 + .env 自动加载）
+
+阶段 8 的真机验证原本要 Docker+Neo4j+LLM（太重）；本阶段让它**在本机纯命令行就能验**（用户优先本地）。
+
+- **图库 env 可选**（`src/storage/graph_store.py`）：`_build_graphiti` 按 `ZERO_GRAPHITI_DB` 选 `neo4j`（默认/生产，`uri,user,password`）/ `kuzu`（嵌入式、无服务进程，`graph_driver=KuzuDriver(db=ZERO_KUZU_PATH)`）。⚠ **kuzu upstream 已 deprecated**（会被 graphiti-core 移除），仅作本地 smoke 跳板，钉 `kuzu>=0.6`；持久/生产仍走 neo4j。
+- **健壮性**：`_coerce_dt` 归一边的 `valid_at/invalid_at`（防 kuzu 已知 bug getzep/graphiti#893 的 `str>datetime` 崩溃）；`_graphiti_store` 改宽容 `except Exception` 回退——语义是可选侧信道，**绝不拖垮主管线**。
+- **命令行验证脚本** `scripts/verify_graphiti_local.py`：同一 user 跑两次刺激（共享一个 MemoryClient/图库连接），看第 2 次 `recalled_context` 非空 = 写 episode→抽实体→语义召回→进语言层 闭环跑通；脚本可选 `_load_dotenv()` 自动加载根目录 `.env`（python-dotenv，未装静默跳过）。
+- **配置就位**：`graphiti` extra 加 `kuzu` + `python-dotenv`；`.env.example` 补 `ZERO_GRAPHITI_DB`/`ZERO_KUZU_PATH`、`ZERO_SEMANTIC_BACKEND` 默认注释关、OpenAI 段合并为"语言层+Graphiti 共用一处"、加"每个 KEY 只出现一次"提醒。**库代码不依赖 dotenv**（仅便捷脚本加载 `.env`；正式/容器由真实环境注入）。
+- **测试**：`_coerce_dt` 确定性单测 + kuzu 实机 smoke（importorskip graphiti_core+kuzu + LLM 探测，优雅 skip）。
+- **验证**：`pytest` **107 passed**（+1）；`ruff`/`mypy` 干净。
+- **仍待真机跑通**：本机无 LLM key；用户带 OpenAI 兼容 key 跑 `python -m scripts.verify_graphiti_local` 即可本地验证闭环（无 Docker）。
+
 ## 成果与验证
 
-- **测试**：`pytest` 106 passed（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke 跳过 1）；`ruff check`/`ruff format`/`mypy`(37 源文件) 干净。
+- **测试**：`pytest` 107 passed（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1）；`ruff check`/`ruff format`/`mypy`(37 源文件) 干净。
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
@@ -118,10 +130,11 @@ DATASETS.md                                   数据集清单
 - PR #6（已合并）：本地真后端（SQLite 落盘 + env 后端工厂）+ 容器化脚手架 + MemoryRecall/Mood 两个 Worker。
 - 分支 `feat/neo4j-graphstore-backend`：Neo4j 长期记忆适配器（裸 Cypher 保时序失效）+ Postgres saver 加固 + README/文档口径同步。
 - 分支 `feat/local-backends-and-agents`（语言层）：`LanguageAgent` + affect↔language 双向收敛回路（`route_after_mood`/`route_after_language`，双向互调 + 终止上限）+ `OpenAILanguageModel`（OpenAI 兼容接口，生成 + 独立 VAD 反推，`llm` extra），全程默认关、零回归。
-- 阶段 8（本次）：Graphiti 语义记忆深度集成——`SemanticStore` 协议 + `GraphitiGraphStore` + `MemoryClient.write_episode/recall`，与确定性 GraphStore 并存的侧信道；Supervisor 写富 episode、MemoryRecall 语义召回 → `recalled_context` → LanguageAgent 检索（`graphiti` extra），默认关、零回归。
+- 阶段 8（PR #10，已合并 main）：Graphiti 语义记忆深度集成——`SemanticStore` 协议 + `GraphitiGraphStore` + `MemoryClient.write_episode/recall`，与确定性 GraphStore 并存的侧信道；Supervisor 写富 episode、MemoryRecall 语义召回 → `recalled_context` → LanguageAgent 检索（`graphiti` extra），默认关、零回归。
+- 分支 `feat/graphiti-kuzu-local-verify`（阶段 9，本次）：Graphiti 本地无 Docker 验证路径——`ZERO_GRAPHITI_DB` 选 neo4j/kuzu（嵌入式）、`_coerce_dt` 防 kuzu datetime bug、`scripts/verify_graphiti_local.py` + `.env` 自动加载、`.env.example` 去重补 kuzu 变量；`graphiti` extra 加 `kuzu`/`python-dotenv`。
 
 ## 待办（需外部介入或独立轨道）
 
 - **放数据跑真实训练**：任一 EULA-free 集（RAVDESS/WESAD/EmoBank）→ `data/` → 跑 `train_*`（脚手架已就绪）。
-- **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。**Graphiti 已深度集成（阶段 8）**：作为与确定性 GraphStore 并存的语义记忆侧信道接入（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND=graphiti` 门控、默认关；**待真机验证** Graphiti 实体/关系抽取 + 语义召回闭环（需 Neo4j + LLM）。
+- **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。**Graphiti 已深度集成（阶段 8）**：作为与确定性 GraphStore 并存的语义记忆侧信道接入（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND=graphiti` 门控、默认关。**本地验证路径已就绪（阶段 9）**：`ZERO_GRAPHITI_DB=kuzu`（嵌入式、无 Docker/无服务）+ OpenAI 兼容 key，跑 `python -m scripts.verify_graphiti_local` 即可在本机验证闭环；**待用户带 LLM key 实跑确认**（本机无 key）。
 - **扩 Worker 角色**：已加 MemoryRecall / Mood；可继续按 `/new-agent` 增加。
