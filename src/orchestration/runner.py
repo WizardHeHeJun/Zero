@@ -102,6 +102,7 @@ async def run(
                 "mood": state.mood,
                 "recalled_context": state.recalled_context,
                 "language_text": state.language_text,
+                "language_affect": state.language_affect,
                 "language_consistency": state.language_consistency,
                 "language_iter": state.language_iter,
                 "expression": state.expression,
