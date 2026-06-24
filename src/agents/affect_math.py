@@ -16,6 +16,13 @@ MIN_SIGMA = 0.05
 MIN_PRECISION = 1e-3
 MAX_SAMPLE_SIGMA = 0.5
 
+# Mood（A.7）慢变心境双稳动力学参数：self_gain*self_k > 1-inertia 时双稳（pitchfork）
+MOOD_INERTIA = 0.6
+MOOD_SELF_GAIN = 0.5
+MOOD_SELF_K = 2.0
+MOOD_DRIVE = 0.2
+MOOD_PRECISION = 0.8
+
 
 def sigmoid(x: float) -> float:
     """数值稳定的 logistic 函数。"""
@@ -110,6 +117,49 @@ def gaussian_fuse(
         post_mu.append(clamp(mu, -1.0, 1.0))
         post_sigma.append(clamp(sig, MIN_SIGMA, MAX_SAMPLE_SIGMA))
     return (post_mu[0], post_mu[1]), (post_sigma[0], post_sigma[1])
+
+
+def fuse_terms(
+    terms: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """多项高斯先验/证据按精度融合，逐维返回 (post_mu, post_sigma)。
+
+    每项 = (mu, precision)（逐维精度）；后验精度 = 各项精度之和。
+    仅含「先验 + 证据」两项时与 gaussian_fuse 数值一致（见 test）。
+    """
+    post_mu: list[float] = []
+    post_sigma: list[float] = []
+    for d in range(2):
+        num = 0.0
+        den = 0.0
+        for mu, prec in terms:
+            p = max(MIN_PRECISION, prec[d])
+            num += p * mu[d]
+            den += p
+        post_mu.append(clamp(num / den, -1.0, 1.0))
+        post_sigma.append(clamp(math.sqrt(1.0 / den), MIN_SIGMA, MAX_SAMPLE_SIGMA))
+    return (post_mu[0], post_mu[1]), (post_sigma[0], post_sigma[1])
+
+
+def mood_step(
+    prev_mood: tuple[float, float],
+    affect: tuple[float, float],
+    *,
+    inertia: float = MOOD_INERTIA,
+    self_gain: float = MOOD_SELF_GAIN,
+    self_k: float = MOOD_SELF_K,
+    drive: float = MOOD_DRIVE,
+) -> tuple[float, float]:
+    """慢变心境的双稳松弛：m' = inertia·m + self_gain·tanh(self_k·m) + drive·affect。
+
+    self_gain·self_k > 1-inertia 时 pitchfork 双稳：正/负心境两个吸引盆。
+    持续负向 affect 把 m 推入负盆后，轻微正向 affect 难以拉出 → 历史依赖/滞后。
+    逐维钳制 [-1, 1]。纯函数、无副作用。
+    """
+    out: list[float] = []
+    for m, a in zip(prev_mood, affect, strict=True):
+        out.append(clamp(inertia * m + self_gain * math.tanh(self_k * m) + drive * a, -1.0, 1.0))
+    return (out[0], out[1])
 
 
 def sample_affect(
