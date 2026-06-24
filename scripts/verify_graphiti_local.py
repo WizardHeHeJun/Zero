@@ -1,8 +1,8 @@
 """本地命令行验证 Graphiti 语义记忆闭环（无需 Docker / 无需服务）。
 
 前置：
-  pip install -e ".[graphiti]"        # 装 graphiti-core + kuzu（嵌入式图库）
-  设 env（PowerShell 用 $env:NAME="..."）：
+  pip install -e ".[graphiti]"        # 装 graphiti-core + kuzu（嵌入式图库）+ python-dotenv
+  配 env——二选一：填进根目录 `.env`（本脚本自动加载、填一次复用）；或 shell 导出 $env:NAME=：
     ZERO_SEMANTIC_BACKEND=graphiti
     ZERO_GRAPHITI_DB=kuzu   # 嵌入式图库、本地无服务（⚠ kuzu 已 deprecated，仅作本地 smoke）
     ZERO_KUZU_PATH=data/graphiti.kuzu   # 落盘路径（默认值，可不设）
@@ -29,7 +29,21 @@ from src.storage.graph_store import build_graph_store, build_semantic_store
 logger = logging.getLogger(__name__)
 
 
+def _load_dotenv() -> None:
+    """若装了 python-dotenv 且存在 .env，则加载（env 填进 .env 一次复用，免每次 shell 导出）。
+
+    可选：未装 python-dotenv 时静默跳过——仍可用 shell 导出 env。仅本便捷脚本加载 .env，
+    不影响库代码（库一律 os.getenv，由真实环境/容器注入）。
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv()
+
+
 async def verify() -> None:
+    _load_dotenv()
     semantic = build_semantic_store()
     if semantic is None:
         print(

@@ -35,6 +35,7 @@ llm = [
 graphiti = [
     "graphiti-core>=0.3",
     "kuzu>=0.6",
+    "python-dotenv>=1.0",  # 便捷：scripts/verify_graphiti_local 可自动加载 .env（库代码不依赖）
 ]
 
 [dependency-groups]
