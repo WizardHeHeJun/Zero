@@ -179,6 +179,6 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 106 / `ruff` / `mypy`）。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 117 passed / `ruff` / `mypy`）。
 - 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。
-- **Graphiti 语义记忆深度集成**（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall` 侧信道，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND` 门控、默认关——代码就绪，待真机验证（需 Neo4j + LLM）。测试全绿（`pytest` 106 / `ruff` / `mypy`）。更多 Worker 角色按需接入。
+- **语义记忆侧信道**（`SemanticStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索，`recall_enabled` 门控、默认关）：轻量 `SqliteVectorStore`（`sqlite_vec`，无图库/无服务）**已本地端到端验证闭环通过** ✅；`GraphitiGraphStore`（`graphiti`，实体/关系知识图谱）为需要图谱时的重型选项，走 Neo4j（⚠ kuzu 后端 Graphiti 有 FTS bug，不可用）。更多 Worker 角色按需接入。
