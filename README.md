@@ -48,7 +48,7 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 
 | 维度 | 后端 | env |
 | --- | --- | --- |
-| 长期记忆图谱 | `InMemory`（默认）/ `SqliteGraphStore`（落盘、时序失效） | `ZERO_MEMORY_BACKEND` · `ZERO_GRAPH_DB` |
+| 长期记忆图谱 | `InMemory`（默认）/ `SqliteGraphStore`（落盘、时序失效）/ `Neo4jGraphStore`（裸 Cypher、gated） | `ZERO_MEMORY_BACKEND` · `ZERO_GRAPH_DB` · `ZERO_NEO4J_{URI,USER,PASSWORD}` |
 | 运行态 Checkpointer | `InMemory`（默认）/ SQLite / Postgres（gated） | `ZERO_CHECKPOINT_BACKEND` · `ZERO_CHECKPOINT_DB` · `ZERO_PG_DSN` |
 
 - **容器化**：`Dockerfile` + `docker-compose.yml`（postgres + neo4j + app）+ `.dockerignore` + `.env.example`；真后端驱动在 `db` extra（`pip install -e ".[db]"`）。服务器上 `docker compose up` 即接 Postgres/Neo4j 验证。
@@ -142,4 +142,4 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 ## 状态
 
 - **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 端到端集成已完成，测试全绿（`pytest` / `ruff` / `mypy`）。
-- 记忆层、存储层为占位实现（接口对齐 Postgres / Graphiti），真实后端与更多 Worker 角色待接入。
+- 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。Graphiti（实体抽取/向量检索）与更多 Worker 角色按需接入。

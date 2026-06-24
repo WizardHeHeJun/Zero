@@ -9,9 +9,11 @@ services:
     environment:
       ZERO_CHECKPOINT_BACKEND: postgres
       ZERO_PG_DSN: postgresql://postgres:postgres@postgres:5432/zero
-      # Neo4j/Graphiti 适配器就绪后把 memory 后端改为 neo4j；当前先用 sqlite 落盘卷
-      ZERO_MEMORY_BACKEND: sqlite
-      ZERO_GRAPH_DB: /app/data/graph.sqlite3
+      # 长期记忆走 Neo4j（裸 Cypher 适配器，保时序失效语义）；连接参数对齐下方 neo4j 服务
+      ZERO_MEMORY_BACKEND: neo4j
+      ZERO_NEO4J_URI: bolt://neo4j:7687
+      ZERO_NEO4J_USER: neo4j
+      ZERO_NEO4J_PASSWORD: password
     volumes:
       - app_data:/app/data
 
