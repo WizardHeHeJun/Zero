@@ -54,3 +54,21 @@ def test_affect_distance_and_reconcile_math() -> None:
     assert affect_distance((0.0, 0.0), (0.3, 0.4)) == pytest.approx(0.5)
     assert reconcile_affect((0.0, 0.0), (1.0, 1.0), weight=0.5) == (0.5, 0.5)
     assert reconcile_affect((0.0, 0.0), (1.0, 1.0), weight=0.0) == (0.0, 0.0)
+
+
+async def test_appraisal_conditioning_injects_occ_summary_and_default_off() -> None:
+    stim = Stimulus(name="gift", goal_congruence=0.8, intensity=0.6)
+    on = await LanguageAgent()(
+        AffectState(
+            stimulus=stim,
+            affect_sample=(0.6, 0.4),
+            language_enabled=True,
+            appraisal_conditioning_enabled=True,
+        )
+    )
+    off = await LanguageAgent()(
+        AffectState(stimulus=stim, affect_sample=(0.6, 0.4), language_enabled=True)
+    )
+    assert "appraisal" in on["language_text"]
+    assert "目标一致性" in on["language_text"]  # OCC 评价结构并入
+    assert "appraisal" not in off["language_text"]  # 默认关 → 零回归

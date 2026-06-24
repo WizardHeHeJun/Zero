@@ -18,6 +18,7 @@ import os
 from typing import Any
 
 from src.agents.affect_math import clamp
+from src.agents.emotion_lexicon import suggest_affect_words
 from src.agents.language import LanguageDraft
 
 _COMPOSE_SYS = (
@@ -42,9 +43,13 @@ class OpenAILanguageModel:
         api_key: str | None = None,
         client: Any | None = None,
         temperature: float = 0.8,
+        use_lexicon: bool = False,
     ) -> None:
         self.model = model
         self.temperature = temperature
+        # 词典桥（NRC-VAD 加权解码的 API 侧近似）：开启时把与 e* 最对齐的情绪词注入 compose
+        # 提示，二段式 VAD 反推充当 reranker。默认关 → 对既有路径零回归。
+        self.use_lexicon = use_lexicon
         if client is not None:
             self.client = client
         else:
@@ -64,8 +69,9 @@ class OpenAILanguageModel:
         context: str,
         retrieved: str,
         feedback: str | None,
+        appraisal: str = "",
     ) -> LanguageDraft:
-        text = await self._compose(affect, context, retrieved, feedback)
+        text = await self._compose(affect, context, retrieved, feedback, appraisal)
         lang_affect = await self._appraise(text)
         return LanguageDraft(text=text, affect=lang_affect)
 
@@ -75,11 +81,18 @@ class OpenAILanguageModel:
         context: str,
         retrieved: str,
         feedback: str | None,
+        appraisal: str = "",
     ) -> str:
         parts = [
             f"情绪坐标: valence={affect[0]:.2f}, arousal={affect[1]:.2f}",
             f"上下文: {context or '（无）'}",
         ]
+        if appraisal:
+            parts.append(f"认知评价: {appraisal}（据此把握情绪的来由与分寸）")
+        if self.use_lexicon:
+            cues = suggest_affect_words(affect[0], affect[1], k=5)
+            if cues:
+                parts.append(f"可参考的贴合情绪词（不必全用）: {'、'.join(cues)}")
         if retrieved:
             parts.append(f"检索记忆: {retrieved}")
         if feedback:

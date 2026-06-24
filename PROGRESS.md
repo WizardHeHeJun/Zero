@@ -121,9 +121,22 @@
 - **权重发布**：GitHub Release `weights-v0.2`（real-data trained，4 个真实权重）；`weights-v0.1` 留作合成 demo。`artifacts/` 仍 gitignore，权重一律走 Release。
 - **文档同步**：README（真网络化表加句向量版 + 三通道实跑 + weights 下载）、ai-docs agents guide「真网络化」节 + catalog 里程碑（ai-docs 为本地 gitignore 知识层）。
 
+### 阶段 12 — 文本输出侧情绪补足（生物学 + 数学文献落地，默认关、零回归）
+
+承接 `notes/2026-06-24-text-output-emotion.md` 的文献调研（生物学：躯体标记/Panksepp 七系统/语言产出脑回路+神经调质/Gross 调节；数学：VAD 词典桥、VA 子空间环状 steering、可控生成四代、评价驱动 NLG、情商评测），把「文本输出」从 `e*→4 档离散词→套模板」补成有粒度、可控、可重评、可评测的表达。**全部加法、协议注入、默认关、零回归。**
+
+- **情绪词典层**（`src/agents/emotion_lexicon.py`，纯新增、torch/API-free）：`affect_label`（VA 极坐标 8 扇区 × 强度分级，粒度远超旧 4 档）、`motivational_system`（Panksepp 动机色彩 seeking/care/rage/panic_grief）、`SEED_VAD_LEXICON`+`affect_logit_bias`（NRC-VAD 词典桥/加权解码 `Δlogit=β·⟨φ(w),e*⟩`）+`suggest_affect_words`+`appraise_text`（词典法反推）、`intensity_envelope`（ECM 句内 sigmoid 情绪衰减）。**不动 `text_label`**（旧 4 档仍作通道值）。
+- **评价向量条件化**（CPM/EMA/APTNESS）：`appraisal_conditioning_enabled` 门控，`LanguageAgent` 把 OCC 评价结构（非仅最终 (v,a)）经 `_appraisal_summary` 并入生成；`LanguageModel.generate` 加 `appraisal=""` 参数（**仅开启且有摘要时才传** → 对未感知该参数的注入模型零回归），`_TemplateLanguageModel`/`OpenAILanguageModel` 同步支持。
+- **重评优先**（Gross 过程模型）：`affect_math.reappraise`（早期干预：负效价按积极锚重新解释上抬 + 唤醒平复，改体验）；`RegulationAgent` 按 `regulation_strategy` 选 `suppression`（默认，仍 (0.3v,0.5a)）/`reappraisal`。实测重评比抑制「更不负、唤醒更低」。
+- **VA steering 适配器**（`src/agents/language_steering.py`，开放权重，`steer` extra）：纯函数 steering 核（`axis_from_contrast` eq.1、`l2_normalize`、`orthogonalize` Gram-Schmidt、`steering_delta=α(V·w_V+A·w_A)`，torch-free 可单测）+ `SteerBackend` 协议（注入缝）+ 默认 `_TransformersSteerBackend`（延迟 import torch/transformers、前向 hook 加 delta 到目标层）。e\*=(v,a) 即天然 steering 坐标。
+- **OpenAI 词典提示**：`OpenAILanguageModel(use_lexicon=…)` 默认关；开启把 affect-congruent 建议词注入 compose 提示，二段式 VAD 反推充当 reranker。
+- **EmoBench 式情商探针回归**（`tests/test_ei_probe.py`）：curated 情绪场景 → 端到端管线 → `affect_label`/`motivational_system` 命中率（效价方向 + 动机系统 + 粒度多样性），文档化如何接真 EmoBench。
+- **测试**：`test_emotion_lexicon`(15)、`test_language_steering`(纯数学+fake backend+importorskip smoke)、`test_regulation`(策略)、EI 探针、`test_affect_math`/`test_language_agent` 增测。
+- **验证**：`pytest` **149 passed, 5 skipped**（+32；新增 steering smoke skip 1）；`ruff check`/`ruff format`/`mypy`(41 源) 干净。
+
 ## 成果与验证
 
-- **测试**：`pytest` 113 passed, 4 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(39 源文件) 干净。
+- **测试**：`pytest` 149 passed, 5 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1 + steering 实机 smoke 缺 ZERO_STEER_MODEL 跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(41 源文件) 干净。
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 

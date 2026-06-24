@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import random
 
+import pytest
+
 from src.agents.affect_math import (
     MAX_SAMPLE_SIGMA,
     MIN_PRECISION,
@@ -12,6 +14,7 @@ from src.agents.affect_math import (
     gaussian_fuse,
     occ_prior,
     precision,
+    reappraise,
     sample_affect,
     td_update,
 )
@@ -60,3 +63,22 @@ def test_sample_affect_seeded_is_reproducible_and_bounded() -> None:
     b = sample_affect(post_mu, post_sigma, rng=random.Random(42))
     assert a == b  # 同种子可复现
     assert -1.0 <= a[0] <= 1.0 and -1.0 <= a[1] <= 1.0
+
+
+def test_reappraise_lifts_negative_and_calms_more_than_suppression() -> None:
+    neg = (-0.8, 0.7)
+    rv, ra = reappraise(neg)
+    # 重评：负效价被重新解释而上抬、唤醒平复
+    assert rv > neg[0]
+    assert ra < neg[1]
+    # 比表达抑制(0.3v,0.5a)在负向上更不负、唤醒更低（重评改体验，更有效）
+    sup_v, sup_a = (0.3 * neg[0], 0.5 * neg[1])
+    assert rv > sup_v
+    assert ra < sup_a
+
+
+def test_reappraise_keeps_positive_valence_and_bounds() -> None:
+    pos = (0.6, 0.4)
+    rv, ra = reappraise(pos)
+    assert rv == pytest.approx(0.6)  # 高于积极锚 → 不上抬（不无端拔高）
+    assert -1.0 <= rv <= 1.0 and -1.0 <= ra <= 1.0

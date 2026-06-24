@@ -384,9 +384,7 @@ class SqliteVectorStore:
         resp = await self.client.embeddings.create(model=self.model, input=[text])
         return list(resp.data[0].embedding)
 
-    async def add_episode(
-        self, *, scope: str, key: str, content: str, valid_at: datetime
-    ) -> None:
+    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
         """写一条 episode：存文本 + 其 embedding。"""
         emb = await self._embed(content)
         self.conn.execute(
