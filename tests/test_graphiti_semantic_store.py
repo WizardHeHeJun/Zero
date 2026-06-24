@@ -156,6 +156,14 @@ def test_coerce_dt_guards_kuzu_datetime_formats() -> None:
     assert gs._coerce_dt(12345) is None  # 非预期类型 → None
 
 
+def test_group_id_sanitizes_for_graphiti() -> None:
+    # Graphiti 只允许 [A-Za-z0-9_-]；冒号等非法字符须替换为 _（否则 GroupIdValidationError）
+    assert gs._group_id("user", "verify-user") == "user_verify-user"
+    assert gs._group_id("user", None) == "user"
+    assert gs._group_id("user", "a:b c") == "user_a_b_c"  # 冒号/空格 → _
+    assert ":" not in gs._group_id("session", "tid:1")
+
+
 # --------------------- 实机 smoke（importorskip + env 探测 → skip） --------------------- #
 
 

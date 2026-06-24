@@ -301,7 +301,7 @@ class GraphitiGraphStore:
         from graphiti_core.nodes import EpisodeType  # 延迟导入：缺驱动由工厂回退
 
         await self._ensure_init()
-        group_id = f"{scope}:{key}"
+        group_id = _group_id(scope, key)
         await self.graphiti.add_episode(
             name=group_id,
             episode_body=content,
@@ -323,7 +323,7 @@ class GraphitiGraphStore:
     ) -> list[StoredFact]:
         """语义检索 group_id 内事实，映射成 StoredFact 并按时间语境过滤。"""
         await self._ensure_init()
-        group_id = f"{scope}:{key}" if key is not None else scope
+        group_id = _group_id(scope, key)
         edges = await self.graphiti.search(query, group_ids=[group_id])
         results: list[StoredFact] = []
         for edge in edges:
@@ -364,20 +364,30 @@ def _build_graphiti(uri: str, user: str, password: str) -> Any:
     base_url = os.getenv("ZERO_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
     api_key = os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     model = os.getenv("ZERO_GRAPHITI_MODEL")
+    embed_model = os.getenv("ZERO_GRAPHITI_EMBED_MODEL")  # 网关嵌入模型名（默认 3-small）
+    # 兜底：把 ZERO_OPENAI_* 暴露为标准 OPENAI_*，让 Graphiti 内部任何默认 OpenAI 子客户端也拿到凭证
+    if api_key:
+        os.environ.setdefault("OPENAI_API_KEY", api_key)
+    if base_url:
+        os.environ.setdefault("OPENAI_BASE_URL", base_url)
     llm_kwargs: dict[str, Any] = {}
     if base_url or model:
         try:
+            from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
             from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
             from graphiti_core.llm_client.config import LLMConfig
             from graphiti_core.llm_client.openai_client import OpenAIClient
 
+            llm_config = LLMConfig(api_key=api_key, base_url=base_url, model=model)
+            embed_cfg: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
+            if embed_model:
+                embed_cfg["embedding_model"] = embed_model
             llm_kwargs = {
-                "llm_client": OpenAIClient(
-                    config=LLMConfig(api_key=api_key, base_url=base_url, model=model)
-                ),
-                "embedder": OpenAIEmbedder(
-                    config=OpenAIEmbedderConfig(api_key=api_key, base_url=base_url)
-                ),
+                "llm_client": OpenAIClient(config=llm_config),
+                "embedder": OpenAIEmbedder(config=OpenAIEmbedderConfig(**embed_cfg)),
+                # 显式传重排客户端，否则 Graphiti 默认 `OpenAIRerankerClient()` 无参构造、
+                # 从标准 `OPENAI_API_KEY` 读凭证 → 缺凭证报错（key 在 ZERO_OPENAI_API_KEY）
+                "cross_encoder": OpenAIRerankerClient(config=llm_config),
             }
         except Exception:
             logger.warning("自定义 Graphiti LLM/embedder 构造失败，回退默认 OpenAI 配置")
@@ -406,6 +416,16 @@ def _coerce_dt(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _group_id(scope: str, key: str | None) -> str:
+    """构造 Graphiti group_id：`scope[_key]`，并把非 [A-Za-z0-9_-] 字符替换为 `_`。
+
+    Graphiti 的 validate_group_id 只允许字母数字/横杠/下划线——冒号等会报
+    GroupIdValidationError，故不能用 `f"{scope}:{key}"`。读写须用同一构造保证可召回。
+    """
+    raw = scope if key is None else f"{scope}_{key}"
+    return "".join(c if (c.isascii() and (c.isalnum() or c in "_-")) else "_" for c in raw)
 
 
 def _graphiti_store() -> GraphitiGraphStore | None:
