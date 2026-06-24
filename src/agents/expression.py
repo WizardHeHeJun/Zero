@@ -43,10 +43,18 @@ class ExpressionAgent:
             state.regulated_affect if state.regulated_affect is not None else state.affect_sample
         )
         voluntary = self._decode(voluntary_source)
-        expression = {
+        expression: dict[str, Any] = {
             "valence_arousal": state.affect_sample,
             "spontaneous": spontaneous,  # 非随意通路（直连 AffectCore）
             "voluntary": voluntary,  # 随意通路（经 Regulation）
         }
+        # 语言层开启时，把生成的语言内容并入最终表现（情感↔语言相互判断的产物）
+        if state.language_text is not None:
+            expression["language"] = {
+                "text": state.language_text,
+                "affect": state.language_affect,
+                "iters": state.language_iter,
+                "consistency": state.language_consistency,
+            }
         entry = {"node": "expression", "valence_arousal": state.affect_sample}
         return {"expression": expression, "trace": [entry]}

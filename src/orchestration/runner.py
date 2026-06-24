@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from src.agents.expression import ChannelDecoder
+from src.agents.language import LanguageModel
 from src.memory.client import MemoryClient
 from src.orchestration.graph import build_graph
 from src.orchestration.state import AffectState, Stimulus
@@ -35,20 +36,28 @@ async def run(
     regulation_enabled: bool = False,
     mood_enabled: bool = False,
     recall_enabled: bool = False,
+    language_enabled: bool = False,
+    language_max_iters: int = 3,
     rng_seed: int | None = None,
     expression_decoder: ChannelDecoder | None = None,
+    language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
     """按序跑 stimuli，返回每个刺激的情绪向量与关键中间量。
 
     session_id 默认绑定到 thread_id，使不同线程的会话记忆天然隔离（防串味）；
     user_id/group_id 应由调用方按真实身份显式传入。
     expression_decoder：可选注入训练好的真通道解码器，走真网络表达。
+    language_model：可选注入的语言模型（鸭子类型），开启 language_enabled 后驱动
+    affect↔language 双向收敛回路；未注入则用占位模板模型。
     """
     client = memory if memory is not None else MemoryClient(build_graph_store())
     session = session_id if session_id is not None else thread_id
     checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
     graph = build_graph(
-        checkpointer=checkpointer, memory=client, expression_decoder=expression_decoder
+        checkpointer=checkpointer,
+        memory=client,
+        expression_decoder=expression_decoder,
+        language_model=language_model,
     )
 
     trajectory: list[dict[str, Any]] = []
@@ -62,6 +71,8 @@ async def run(
                 "regulation_enabled": regulation_enabled,
                 "mood_enabled": mood_enabled,
                 "recall_enabled": recall_enabled,
+                "language_enabled": language_enabled,
+                "language_max_iters": language_max_iters,
                 "rng_seed": rng_seed,
                 "task_complete": False,
             },
@@ -81,6 +92,9 @@ async def run(
                 "precision": state.precision,
                 "value_estimate": state.value_estimate,
                 "mood": state.mood,
+                "language_text": state.language_text,
+                "language_consistency": state.language_consistency,
+                "language_iter": state.language_iter,
                 "expression": state.expression,
             }
         )

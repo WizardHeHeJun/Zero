@@ -23,6 +23,10 @@ db = [
     "psycopg[binary]>=3",
     "neo4j>=5",
 ]
+# 真语言层：OpenAI 兼容接口 adapter（编排层默认不依赖，注入 OpenAILanguageModel 时才需）
+llm = [
+    "openai>=1.0",
+]
 
 [dependency-groups]
 dev = [

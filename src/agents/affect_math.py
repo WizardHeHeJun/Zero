@@ -23,6 +23,10 @@ MOOD_SELF_K = 2.0
 MOOD_DRIVE = 0.2
 MOOD_PRECISION = 0.8
 
+# Language（affect↔language 双向收敛回路）
+LANGUAGE_TOLERANCE = 0.15  # 语言情感与内核 e* 的一致阈值 τ
+RECONCILE_WEIGHT = 0.5  # 双向互调：e* 向语言情感拉拢的权重
+
 
 def sigmoid(x: float) -> float:
     """数值稳定的 logistic 函数。"""
@@ -160,6 +164,27 @@ def mood_step(
     for m, a in zip(prev_mood, affect, strict=True):
         out.append(clamp(inertia * m + self_gain * math.tanh(self_k * m) + drive * a, -1.0, 1.0))
     return (out[0], out[1])
+
+
+def affect_distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """valence-arousal 平面上两情感点的欧氏距离（一致性度量）。"""
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def reconcile_affect(
+    e_star: tuple[float, float],
+    lang_affect: tuple[float, float],
+    *,
+    weight: float = RECONCILE_WEIGHT,
+) -> tuple[float, float]:
+    """双向互调：把内核 e* 向语言反推情感按 weight 拉拢，逐维钳制 [-1, 1]。
+
+    weight=0 保持 e*，weight=1 取 lang_affect，0.5 取中点。语言与情感相互判断时
+    用此把 e* 朝语言侧微调（与「重写语言」一起构成双向收敛）。纯函数、无副作用。
+    """
+    v = clamp(e_star[0] + weight * (lang_affect[0] - e_star[0]), -1.0, 1.0)
+    a = clamp(e_star[1] + weight * (lang_affect[1] - e_star[1]), -1.0, 1.0)
+    return (v, a)
 
 
 def sample_affect(

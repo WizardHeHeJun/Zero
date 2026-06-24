@@ -64,9 +64,20 @@
 - **测试**：`tests/test_neo4j_graph_store.py` 工厂回退 2 例（本机直跑）+ 时序语义 2 例（`importorskip` + 连接探测，无实例优雅 skip）；`ruff`/`mypy` 干净。
 - **仍待真机验证**：本机无 Docker，需在服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复 + Neo4j 时序语义。
 
+### 阶段 7 — 语言层 + affect↔language 双向收敛回路 + OpenAI adapter
+
+把设想「情感是内核、语言由上下文+检索+情感生成、两者相互判断得出最终表现」落成一条**带终止上限的双向收敛回路**（默认关、零回归）。
+- **回路接线**（`graph.py`）：`mood` 后插门控 `language` 节点；`route_after_mood`（扩展原 `route_after_affect_core`，加 language 优先分支）+ `route_after_language`（不一致且 `iter<language_max_iters` 则回 language，否则进 regulation/expression）两个纯路由函数，独立可单测。
+- **LanguageAgent**（`src/agents/language.py`，async）：用 e*+上下文+检索（复用 `recalled_disposition`）生成语言并反推情感；回路重写前 `reconcile_affect` 把 e* 向语言情感拉拢——**双向互调**（情感也被语言微调，e* 不再纯固定内核）。可注入 `LanguageModel` 协议，默认占位 `_TemplateLanguageModel`（torch/API-free）。
+- **OpenAILanguageModel**（`src/agents/language_openai.py`，optional `llm` extra）：通用 OpenAI 兼容接口（`base_url` 可指 OpenAI/vLLM/第三方网关），**两段式** = 生成回应 + 独立二次调用客观给文本打 VAD（使「相互判断」真实有效）；client 可注入、未注入延迟 import openai；编排层与默认路径不依赖 openai。
+- **state/贯通**：`AffectState` 加 `language_*`（含 `language_enabled` 门控、`language_max_iters` 终止上限）；`expression` 把语言并入最终表现；`runner.run` 贯通开关 + 注入 `language_model`。
+- **async 化**：`LanguageModel.generate`/`LanguageAgent.__call__`/占位/相关测试改 async（真 LLM 网络 I/O 不阻塞事件循环，与 supervisor async 节点同款）。
+- 新测：`test_routing`（扩展加 language 路由）、`test_language_agent`、`test_language_loop`（端到端回路收敛/上限/双向微调）、`test_language_openai`（fake async client，不依赖 openai）。
+- 验证：`pytest` **96 passed**（79 + language 13 + adapter 4）；`ruff`/`mypy` 干净。
+
 ## 成果与验证
 
-- **测试**：`pytest` 59 passed；`ruff check`/`ruff format`/`mypy`(33 源文件) 干净。
+- **测试**：`pytest` 96 passed（含 ml 缺 torch 时跳过 2）；`ruff check`/`ruff format`/`mypy`(37 源文件) 干净。
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
@@ -93,7 +104,8 @@ DATASETS.md                                   数据集清单
 - PR #3（已合并）：真网络化 三-1~三-5 + 端到端集成。
 - PR #4（已合并）：v2 时间深度 / 心境（A.7 滞后），默认关、零回归。
 - PR #6（已合并）：本地真后端（SQLite 落盘 + env 后端工厂）+ 容器化脚手架 + MemoryRecall/Mood 两个 Worker。
-- 分支 `feat/neo4j-graphstore-backend`（本次）：Neo4j 长期记忆适配器（裸 Cypher 保时序失效）+ Postgres saver 加固 + README/文档口径同步。
+- 分支 `feat/neo4j-graphstore-backend`：Neo4j 长期记忆适配器（裸 Cypher 保时序失效）+ Postgres saver 加固 + README/文档口径同步。
+- 分支 `feat/local-backends-and-agents`（本次语言层）：`LanguageAgent` + affect↔language 双向收敛回路（`route_after_mood`/`route_after_language`，双向互调 + 终止上限）+ `OpenAILanguageModel`（OpenAI 兼容接口，生成 + 独立 VAD 反推，`llm` extra），全程默认关、零回归。
 
 ## 待办（需外部介入或独立轨道）
 
