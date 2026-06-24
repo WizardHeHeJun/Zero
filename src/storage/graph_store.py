@@ -12,7 +12,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class SqliteGraphStore:
     """SQLite 落盘图谱存储；与 InMemoryGraphStore 同语义但持久化、可跨进程/重启留存。
 
     新事实使同 (scope, key) 的旧事实失效（设 invalid_at）而非物理删除；查询带时间语境。
-    容器化部署时路径由 env 注入；后续可整体换 Neo4j/Graphiti（见 build_graph_store）。
+    容器化部署时路径由 env 注入；可经 build_graph_store 切 Neo4j（已实现）或后续 Graphiti。
     """
 
     def __init__(self, path: str = ":memory:") -> None:
@@ -125,11 +125,102 @@ class SqliteGraphStore:
         return results
 
 
+class Neo4jGraphStore:
+    """Neo4j 落盘图谱存储；与 InMemory/Sqlite 同语义（时序失效），用裸 Cypher 实现。
+
+    新事实使同 (scope, key) 的旧事实失效（设 invalid_at）而非物理删除；查询带时间语境。
+    valid_at/invalid_at 以 ISO 字符串存储、Python 侧按时间语境过滤——与 SqliteGraphStore 同形，
+    便于在两后端间无缝切换。需要实体抽取/向量检索时可整体换 Graphiti（见 build_graph_store）。
+    驱动惰性连接：构造不发起连接，真正连接发生在首次会话；缺 neo4j 驱动由工厂捕获回退。
+    """
+
+    def __init__(self, uri: str, user: str, password: str) -> None:
+        from neo4j import GraphDatabase  # 延迟导入：缺驱动时由 build_graph_store 捕获回退
+
+        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+
+    def close(self) -> None:
+        """关闭驱动连接池。"""
+        self.driver.close()
+
+    def add_fact(self, scope: str, key: str, content: str, valid_at: datetime) -> None:
+        """写入一条事实；使同 (scope, key) 的旧事实在 valid_at 失效。"""
+        ts = valid_at.isoformat()
+        with self.driver.session() as session:
+            session.execute_write(self._add_fact_tx, scope, key, content, ts)
+        logger.debug("neo4j_graph_store add_fact scope=%s key=%s", scope, key)
+
+    @staticmethod
+    def _add_fact_tx(tx: Any, scope: str, key: str, content: str, ts: str) -> None:
+        tx.run(
+            "MATCH (f:Fact {scope: $scope, key: $key}) "
+            "WHERE f.invalid_at IS NULL SET f.invalid_at = $ts",
+            scope=scope,
+            key=key,
+            ts=ts,
+        )
+        tx.run(
+            "CREATE (f:Fact {scope: $scope, key: $key, content: $content, "
+            "valid_at: $ts, invalid_at: null})",
+            scope=scope,
+            key=key,
+            content=content,
+            ts=ts,
+        )
+
+    def query_facts(
+        self, scope: str, key: str | None = None, at: datetime | None = None
+    ) -> list[StoredFact]:
+        """查询在时刻 at 有效的事实（at 为空表示取当前有效事实）。"""
+        with self.driver.session() as session:
+            rows = session.execute_read(self._query_facts_tx, scope)
+        results: list[StoredFact] = []
+        for s, k, content, valid_at, invalid_at in rows:
+            if key is not None and k != key:
+                continue
+            valid = datetime.fromisoformat(valid_at)
+            invalid = datetime.fromisoformat(invalid_at) if invalid_at else None
+            fact = StoredFact(scope=s, key=k, content=content, valid_at=valid, invalid_at=invalid)
+            if at is None:
+                if invalid is None:
+                    results.append(fact)
+            elif valid <= at and (invalid is None or at < invalid):
+                results.append(fact)
+        return results
+
+    @staticmethod
+    def _query_facts_tx(tx: Any, scope: str) -> list[tuple[str, str, str, str, str | None]]:
+        result = tx.run(
+            "MATCH (f:Fact {scope: $scope}) "
+            "RETURN f.scope, f.key, f.content, f.valid_at, f.invalid_at",
+            scope=scope,
+        )
+        return [tuple(record.values()) for record in result]
+
+
+def _neo4j_store() -> Neo4jGraphStore | None:
+    """构造 Neo4j 后端；缺 neo4j 驱动时告警并返回 None 触发回退（与 checkpointer 同款）。
+
+    连接参数取 env：`ZERO_NEO4J_URI`（默认 `bolt://localhost:7687`）、
+    `ZERO_NEO4J_USER`（默认 `neo4j`）、`ZERO_NEO4J_PASSWORD`（默认 `password`，与 compose 一致）。
+    """
+    try:
+        import neo4j  # noqa: F401  仅探测驱动是否可用
+    except ImportError:
+        logger.warning("ZERO_MEMORY_BACKEND=neo4j 但缺 neo4j 驱动，回退 InMemory")
+        return None
+    uri = os.getenv("ZERO_NEO4J_URI", "bolt://localhost:7687")
+    user = os.getenv("ZERO_NEO4J_USER", "neo4j")
+    password = os.getenv("ZERO_NEO4J_PASSWORD", "password")
+    return Neo4jGraphStore(uri, user, password)
+
+
 def build_graph_store(backend: str | None = None) -> GraphStore:
-    """按 env `ZERO_MEMORY_BACKEND` 选长期记忆后端：`memory`（默认，零回归）/ `sqlite`。
+    """按 env `ZERO_MEMORY_BACKEND` 选长期记忆后端：`memory`（默认，零回归）/ `sqlite` / `neo4j`。
 
     `sqlite` 路径取 env `ZERO_GRAPH_DB`（默认 `data/graph.sqlite3`，自动建目录）。
-    容器化部署时通过 env 切后端/路径；Neo4j/Graphiti 适配器留待 `db` extra（gated）。
+    `neo4j` 连接参数见 `_neo4j_store`；缺驱动告警回退 InMemory。
+    容器化部署时通过 env 切后端/路径；需实体抽取/向量检索时可整体换 Graphiti。
     """
     choice = (backend or os.getenv("ZERO_MEMORY_BACKEND") or "memory").lower()
     if choice == "sqlite":
@@ -137,4 +228,9 @@ def build_graph_store(backend: str | None = None) -> GraphStore:
         if path != ":memory:":
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         return SqliteGraphStore(path)
+    if choice == "neo4j":
+        store = _neo4j_store()
+        if store is not None:
+            return store
+        return InMemoryGraphStore()
     return InMemoryGraphStore()

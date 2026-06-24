@@ -71,19 +71,25 @@ def _sqlite_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | Non
 
 
 def _postgres_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | None:
-    """Postgres 运行态后端（容器化部署目标）；缺 langgraph-checkpoint-postgres 时返回 None。
+    """Postgres 运行态后端（容器化部署目标）；缺 langgraph-checkpoint-postgres/psycopg 时返回 None。
 
-    DSN 取 env `ZERO_PG_DSN`。具体构造按容器内 langgraph 版本接线（首次需 `.setup()`）；
-    本机无驱动、不参与单测，于容器内验证。
+    DSN 取 env `ZERO_PG_DSN`。新版 langgraph 的 `PostgresSaver.from_conn_string` 是 context
+    manager（退出即关连接），直接 `.setup()` 会拿到已关闭连接——故持有显式长连接，按
+    langgraph 文档要求的参数（`autocommit=True, prepare_threshold=0, row_factory=dict_row`）构造，
+    与 sqlite 路径同款。首次需 `.setup()` 建表；本机无驱动、不参与单测，于容器内验证。
     """
     try:
         from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg import Connection
+        from psycopg.rows import dict_row
     except ImportError:
         logger.warning(
-            "ZERO_CHECKPOINT_BACKEND=postgres 但缺 langgraph-checkpoint-postgres，回退 InMemory"
+            "ZERO_CHECKPOINT_BACKEND=postgres 但缺 langgraph-checkpoint-postgres/psycopg，"
+            "回退 InMemory"
         )
         return None
     dsn = os.getenv("ZERO_PG_DSN", "postgresql://postgres:postgres@localhost:5432/zero")
-    saver = PostgresSaver.from_conn_string(dsn)
+    conn = Connection.connect(dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row)
+    saver = PostgresSaver(conn, serde=serde) if serde is not None else PostgresSaver(conn)
     saver.setup()
     return saver
