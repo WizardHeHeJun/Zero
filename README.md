@@ -35,6 +35,7 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 | 生理 physiology | `PhysiologyDecoder` | WESAD | `scripts/train_physiology.py` |
 | 表情 FACS AU | `FacsDecoder` | AffectNet / DISFA | `scripts/train_facs.py` |
 | 文本→(v,a) 输入侧 | `TextAffectRegressor` | EmoBank | `scripts/train_text_affect.py` |
+| 文本→(v,a)·句向量升级 | `STTextAffectRegressor`（冻结 MiniLM + MLP 头，语义泛化/跨域更稳） | EmoBank | `scripts/train_text_affect_st.py` |
 
 - 数据集获取清单见 **[DATASETS.md](DATASETS.md)**。
 - `CompositeChannelDecoder` 可叠加注入多通道真模型；经 `build_graph(..., expression_decoder=…)` / `runner.run(..., expression_decoder=…)` 接入管线（编排层经鸭子类型 `ChannelDecoder` 引用，**不依赖 torch**）。
@@ -113,7 +114,7 @@ Zero/
 │   │   ├── language.py          #   LanguageAgent：语言生成 + affect↔language 双向回路（gated）
 │   │   ├── language_openai.py   #   OpenAILanguageModel：OpenAI 兼容接口 adapter（生成 + 独立 VAD 反推）
 │   │   ├── models/              #   真网络化 torch 解码器（expression/prosody/physiology/facs/text/composite）
-│   │   └── datasets/            #   DataLoader：synthetic / ravdess / wesad / emobank / facs_csv
+│   │   └── datasets/            #   DataLoader：synthetic / ravdess / wesad / emobank(+_st 句向量) / facs_csv
 │   ├── memory/                  # 记忆层：读写 API（显式 scope、任务完成节流）
 │   │   └── client.py · types.py
 │   └── storage/                 # 存储层（最底层）：运行态 + 长期记忆，env 选后端
@@ -171,6 +172,10 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 # 权重存 artifacts/（已 gitignore），再注入 CompositeChannelDecoder 接管线
 ```
 
+**三通道已在真实公开数据上实跑验证**：文本 EmoBank（词袋 loss 0.016 / 句向量 0.0056，跨域更稳）、韵律 RAVDESS（loss 0.026，pitch 随 arousal 单调上升）、生理 WESAD（loss 0.024，stress 心率/皮电最高的应激→自主神经激活）。
+
+> **预训练权重**：上面四个真实数据训练权重可直接从 Release [`weights-v0.2`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.2)（real-data trained）下载，放到 `artifacts/` 即用；`weights-v0.1` 为合成 demo 权重。
+
 ## 文档
 
 - **[DATASETS.md](DATASETS.md)** — 真网络化所需数据集清单（含获取方式/许可）。
@@ -179,6 +184,6 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 117 passed / `ruff` / `mypy`）。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 117 passed / `ruff` / `mypy`）。
 - 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。
 - **语义记忆侧信道**（`SemanticStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索，`recall_enabled` 门控、默认关）：轻量 `SqliteVectorStore`（`sqlite_vec`，无图库/无服务）**已本地端到端验证闭环通过** ✅；`GraphitiGraphStore`（`graphiti`，实体/关系知识图谱）为需要图谱时的重型选项，走 Neo4j（⚠ kuzu 后端 Graphiti 有 FTS bug，不可用）。更多 Worker 角色按需接入。
