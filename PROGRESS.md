@@ -44,6 +44,16 @@
 - 新测：`test_mood_dynamics`（双稳两盆 / **滞后捕获** / 有界 / `fuse_terms`≡`gaussian_fuse`）、`test_mood_pipeline`（**历史依赖**：连灌 6 次负面后，同一温和刺激在"有负面过去"的 thread 比全新 thread 更负；默认关不产 mood）。
 - 验证：`pytest` **65 passed**（v1 的 59 + mood 的 6）；`ruff`/`mypy` 干净。
 
+### 阶段 5 — 本地真后端 + 容器化 + 两个新 Worker
+
+把占位后端升级为本地真持久化、为后续 Docker 部署铺好 env 驱动开关；记忆从「仅写」补上「读」闭环。
+- **本地真后端**：`SqliteGraphStore`（stdlib sqlite3，时序失效、落盘可跨进程/重启留存）+ `build_graph_store`（env `ZERO_MEMORY_BACKEND` 选 memory/sqlite）；`build_checkpointer` 加 env `ZERO_CHECKPOINT_BACKEND`（memory/sqlite/postgres，缺驱动回退 InMemory）；`runner` 默认经工厂取后端。默认全 memory → 零回归。
+- **容器化就绪**：`Dockerfile` + `docker-compose.yml`（postgres + neo4j + app）+ `.dockerignore` + `.env.example`；`db` extra（langgraph-checkpoint-sqlite/postgres、psycopg、neo4j）。本机无 Docker，作部署脚手架，服务器 `docker compose up` 即接真后端。
+- **MemoryRecallAgent**（`src/orchestration/`，注入 client）：管线开头读 user 长期倾向 → `recalled_disposition` 偏置 `AppraisalAgent` 先验 valence（reward 不变，TD 通路不动）——**闭合记忆 读↔写**。`recall_enabled` 门控。
+- **MoodAgent**（`src/agents/`）：把 v2 心境的 `mood_step` 更新从 `affect_core` 抽成独立节点（affect_core 仍**读**心境融合，MoodAgent **写**）。`mood_enabled` 门控。
+- 图重连：`memory_recall → … → affect_core → mood →（条件边）regulation/expression`；两新节点默认 no-op。
+- 验证：`pytest` **79 passed**（+9 新测：SqliteGraphStore 持久化、MoodAgent、MemoryRecall 含端到端闭环）；`ruff`/`mypy` 干净。
+
 ## 成果与验证
 
 - **测试**：`pytest` 59 passed；`ruff check`/`ruff format`/`mypy`(33 源文件) 干净。
@@ -71,10 +81,11 @@ DATASETS.md                                   数据集清单
 - PR #1（已合并）：编排骨架 + code-review 整改 + diagrams。
 - PR #2（已合并）：conda 环境配置（`environment.yml`/lock）。
 - PR #3（已合并）：真网络化 三-1~三-5 + 端到端集成。
-- 分支 `feat/affect-mood-v2`（未提交 / 待 PR）：v2 时间深度 / 心境（A.7 滞后），默认关、零回归。
+- PR #4（已合并）：v2 时间深度 / 心境（A.7 滞后），默认关、零回归。
+- 分支 `feat/local-backends-and-agents`（待 PR）：本地真后端（SQLite 落盘 + env 后端工厂）+ 容器化脚手架 + MemoryRecall/Mood 两个 Worker。
 
 ## 待办（需外部介入或独立轨道）
 
 - **放数据跑真实训练**：任一 EULA-free 集（RAVDESS/WESAD/EmoBank）→ `data/` → 跑 `train_*`（脚手架已就绪）。
-- **接真实后端**：记忆/存储层占位 → 真实 Postgres + Graphiti。
-- **扩 Worker 角色**：按 `/new-agent` 增加新的协作 Agent。
+- **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂（容器化就绪）；服务器侧 Postgres/Neo4j 经 `docker compose up` + `db` extra 接入并验证（Graphiti/Neo4j GraphStore 适配器待补）。
+- **扩 Worker 角色**：已加 MemoryRecall / Mood；可继续按 `/new-agent` 增加。

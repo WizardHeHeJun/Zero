@@ -16,6 +16,13 @@ ml = [
     "librosa>=0.10",
     "scipy>=1.10",
 ]
+# 真后端（容器化部署）：运行态 Postgres/SQLite saver + 长期记忆 Neo4j 驱动
+db = [
+    "langgraph-checkpoint-sqlite",
+    "langgraph-checkpoint-postgres",
+    "psycopg[binary]>=3",
+    "neo4j>=5",
+]
 
 [dependency-groups]
 dev = [
