@@ -29,8 +29,12 @@ llm = [
 ]
 # 语义记忆侧信道（深度集成）：Graphiti（LLM 抽实体/关系入图 + 语义/向量检索；自带 neo4j/openai）。
 # 与确定性 GraphStore 并存、默认关；置 ZERO_SEMANTIC_BACKEND=graphiti 时才需。
+# kuzu = 嵌入式图库（ZERO_GRAPHITI_DB=kuzu），本地无服务/无 Docker 即可验证；
+# ⚠ upstream 已 deprecated（未来会被 graphiti-core 移除）——仅作本地 smoke，持久/生产用 neo4j；
+# 若某天新版 graphiti-core 移除 kuzu 驱动，把 graphiti-core 钉到最后支持的版本即可。
 graphiti = [
     "graphiti-core>=0.3",
+    "kuzu>=0.6",
 ]
 
 [dependency-groups]

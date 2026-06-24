@@ -71,7 +71,15 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 - **存储层** `SemanticStore` 协议 + `GraphitiGraphStore`（`src/storage/graph_store.py`）：LLM 抽实体/关系入图 + 语义/向量检索，scope/key→Graphiti `group_id`；构造不连接、首次读写一次性建索引；LLM/embedder 复用 `ZERO_OPENAI_*` + `ZERO_GRAPHITI_MODEL`，Neo4j 复用 `ZERO_NEO4J_*`。
 - **记忆层** `MemoryClient.write_episode`（富文本 episode→语义记忆）/ `recall`（语义检索）；确定性 `write`/`query` 不变。无语义后端时二者 no-op/返回空（零回归）。
 - **深度集成落点**：Supervisor 任务完成时额外写自然语言情感事件 episode → Graphiti 抽实体/关系；MemoryRecall 语义召回 → `recalled_context` → **LanguageAgent 检索串并入**，语义图谱由此真正影响语言生成。全链 `ZERO_SEMANTIC_BACKEND=graphiti` + `recall_enabled` 门控，默认关。
-- 装 `graphiti` extra：`pip install -e ".[graphiti]"`。**代码就绪，待真机验证**（需 Neo4j + LLM）。
+- 装 `graphiti` extra：`pip install -e ".[graphiti]"`。**图库可选**：`ZERO_GRAPHITI_DB=neo4j`（默认，持久/生产）或 `kuzu`（嵌入式、本地无服务/无 Docker，⚠ upstream 已 deprecated，仅作本地 smoke）。
+
+**本地验证（无 Docker）**：装 `.[graphiti]` + 配 `ZERO_SEMANTIC_BACKEND=graphiti` · `ZERO_GRAPHITI_DB=kuzu` · `ZERO_OPENAI_*` · `ZERO_GRAPHITI_MODEL`，跑：
+
+```powershell
+python -m scripts.verify_graphiti_local   # 同一 user 跑两次，看 recalled_context 非空 = 语义召回闭环跑通
+```
+
+持久/生产验证仍走 Neo4j（Desktop 或服务器）。
 
 ## 架构图
 

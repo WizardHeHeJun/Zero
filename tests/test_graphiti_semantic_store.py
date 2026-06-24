@@ -144,6 +144,18 @@ async def test_language_unaffected_without_context() -> None:
     assert "recall:" not in out["language_text"]
 
 
+# ------------------ Kuzu 时间格式防护（#893，确定性本机测试） ------------------ #
+
+
+def test_coerce_dt_guards_kuzu_datetime_formats() -> None:
+    dt = datetime(2026, 1, 1, tzinfo=UTC)
+    assert gs._coerce_dt(dt) is dt  # datetime 原样
+    assert gs._coerce_dt("2026-01-01T00:00:00+00:00") == dt  # ISO 字符串解析
+    assert gs._coerce_dt("not-a-date") is None  # 不可解析 → None（按无界处理，不抛）
+    assert gs._coerce_dt(None) is None
+    assert gs._coerce_dt(12345) is None  # 非预期类型 → None
+
+
 # --------------------- 实机 smoke（importorskip + env 探测 → skip） --------------------- #
 
 
@@ -173,6 +185,32 @@ async def test_graphiti_roundtrip_smoke() -> None:
         facts = await store.search(
             "What does Alice love?", scope="user", key="u1", at=t0 + timedelta(hours=1)
         )
+        assert isinstance(facts, list)
+    finally:
+        await store.close()
+
+
+async def test_graphiti_kuzu_roundtrip_smoke(tmp_path, monkeypatch) -> None:
+    """本地无服务路径：嵌入式 kuzu 图库 + OpenAI 兼容 LLM 往返（无 Docker / 无 Neo4j）。
+
+    需装 graphiti-core + kuzu 且配 LLM；缺任一优雅 skip。这是用户本地"先跑通流程"的 smoke。
+    """
+    import os
+
+    pytest.importorskip("graphiti_core")
+    pytest.importorskip("kuzu")
+    if not (os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        pytest.skip("无 OpenAI 兼容 LLM 配置，跳过 kuzu 实机用例")
+    monkeypatch.setenv("ZERO_GRAPHITI_DB", "kuzu")
+    monkeypatch.setenv("ZERO_KUZU_PATH", str(tmp_path / "graphiti.kuzu"))
+    try:
+        store = gs.GraphitiGraphStore("", "", "")  # kuzu 下 uri/user/password 忽略
+    except Exception as exc:
+        pytest.skip(f"kuzu 图库构造失败，跳过：{exc}")
+    try:
+        t0 = datetime(2026, 1, 1, tzinfo=UTC)
+        await store.add_episode(scope="user", key="u1", content="Alice loves cats.", valid_at=t0)
+        facts = await store.search("What does Alice love?", scope="user", key="u1")
         assert isinstance(facts, list)
     finally:
         await store.close()
