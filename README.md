@@ -20,7 +20,7 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 ```
 
 - 7 个 Worker（`src/agents/`）+ MemoryRecall（`src/orchestration/`）+ Supervisor；节点契约 `(state) -> dict` 只返回增量。`MemoryRecall`/`Mood` 由 `recall_enabled`/`mood_enabled` 门控，默认 no-op、零回归。
-- 记忆层 `src/memory/`（显式 scope、任务完成节流，**读↔写闭环**：Supervisor 写长期倾向、MemoryRecall 读回偏置 appraisal）；存储层 `src/storage/`（Checkpointer + 图谱，env 选后端，接口对齐 Postgres/Graphiti）。
+- 记忆层 `src/memory/`（显式 scope、任务完成节流，**读↔写闭环**：Supervisor 写长期倾向、MemoryRecall 读回偏置 appraisal）；存储层 `src/storage/`（最底层；运行态 Checkpointer + 长期记忆图谱，env 选后端：运行态 InMemory/SQLite/Postgres、图谱 InMemory/SQLite/Neo4j，接口对齐 Graphiti）。
 - 数学内核：OCC 评价 → RPE/精度 → 高斯积融合 → 后验采样 → 双通路（真笑/假笑）× 4 通道（FACS AU / 文本标签 / 生理 / 韵律）。
 
 ### 真网络化（optional `ml` extra：torch/numpy/librosa/scipy）
@@ -81,8 +81,8 @@ Zero/
 │   │   └── client.py · types.py
 │   └── storage/                 # 存储层（最底层）：运行态 + 长期记忆，env 选后端
 │       ├── checkpointer.py      #   build_checkpointer：InMemory / SQLite / Postgres（gated）
-│       └── graph_store.py       #   InMemory / SqliteGraphStore + build_graph_store
-├── tests/                       # 79 用例（核心 + ml；ml 缺 torch 自动 importorskip 跳过）
+│       └── graph_store.py       #   InMemory / Sqlite / Neo4jGraphStore（裸 Cypher）+ build_graph_store
+├── tests/                       # 核心 + ml + 真后端用例（ml 缺 torch / Neo4j 缺实例时自动 importorskip / 优雅跳过）
 ├── scripts/                     # 训练脚本 train_*.py + 端到端 demo_pipeline.py
 ├── Dockerfile · docker-compose.yml · .dockerignore · .env.example   # 容器化部署
 ├── pyproject.toml               # 依赖（core / ml / db extra）+ ruff / mypy / pytest 配置
