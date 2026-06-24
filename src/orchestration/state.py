@@ -67,8 +67,12 @@ class AffectState(BaseModel):
     # Mood（A.7 慢变心境：时间深度/滞后）—— 运行态，进 Checkpointer，不入图谱
     mood: tuple[float, float] | None = None
 
+    # MemoryRecall：长期 user 情绪倾向回灌（MemoryRecallAgent 读 → AppraisalAgent 用）
+    recalled_disposition: float | None = None
+
     # 控制开关
     regulation_enabled: bool = False  # 开启掩饰/再评价（双通路对比）
     mood_enabled: bool = False  # 开启慢变心境的历史依赖/滞后（A.7）
+    recall_enabled: bool = False  # 开启长期倾向回灌偏置 appraisal（记忆读闭环）
     rng_seed: int | None = None  # 采样可控（测试用）
     task_complete: bool = False

@@ -15,12 +15,12 @@
 把"人的情感表达"建模为一条**贝叶斯流水线**，落成多 Agent 编排：
 
 ```text
-Stimulus → Perception → Appraisal(OCC 先验) → Value(在线 TD / 精度) → AffectCore(主动推断·后验采样 e*)
-                                                              → Regulation(掩饰) → Expression(双通路·4 通道)
+Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(OCC 先验·可回灌偏置) → Value(在线 TD/精度)
+        → AffectCore(主动推断·后验采样 e*) → Mood(心境双稳·gated A.7) → Regulation(掩饰) → Expression(双通路·4 通道)
 ```
 
-- 6 个 Worker Agent（`src/agents/`）+ Supervisor（`src/orchestration/`）；节点契约 `(state) -> dict` 只返回增量。
-- 记忆层 `src/memory/`（显式 scope、任务完成节流）；存储层 `src/storage/`（Checkpointer + 图谱占位，接口对齐 Postgres/Graphiti）。
+- 7 个 Worker（`src/agents/`）+ MemoryRecall（`src/orchestration/`）+ Supervisor；节点契约 `(state) -> dict` 只返回增量。`MemoryRecall`/`Mood` 由 `recall_enabled`/`mood_enabled` 门控，默认 no-op、零回归。
+- 记忆层 `src/memory/`（显式 scope、任务完成节流，**读↔写闭环**：Supervisor 写长期倾向、MemoryRecall 读回偏置 appraisal）；存储层 `src/storage/`（Checkpointer + 图谱，env 选后端，接口对齐 Postgres/Graphiti）。
 - 数学内核：OCC 评价 → RPE/精度 → 高斯积融合 → 后验采样 → 双通路（真笑/假笑）× 4 通道（FACS AU / 文本标签 / 生理 / 韵律）。
 
 ### 真网络化（optional `ml` extra：torch/numpy/librosa/scipy）
@@ -41,6 +41,18 @@ Stimulus → Perception → Appraisal(OCC 先验) → Value(在线 TD / 精度) 
 ### 时间深度 / 心境（v2 · A.7 · 默认关）
 
 给情绪加「回不去的过去」：慢变 `mood`（运行态，进 Checkpointer，不入图谱）按双稳动力学 `m' = inertia·m + gain·tanh(k·m) + drive·e*`（`gain·k=1.0 > 1−inertia=0.4` → pitchfork 双稳）演化，并作为**第三个精度加权先验**回馈 `AffectCore`。于是情绪轨迹**历史依赖**：持续负面把心境推入负盆后，轻微正向也拉不出（滞后 / 反刍）。经 `mood_enabled=True` 开启，默认关闭、对 v1 **零回归**。设计见 [PRP/affective-expression-v2/design.md](PRP/affective-expression-v2/design.md)，理论见 [notes/2026-06-23-…](notes/2026-06-23-emotion-math-and-llm-expression.md) 的 A.7。
+
+### 本地真后端 + 容器化（env 驱动，optional `db` extra）
+
+占位后端升级为**本地真持久化**，并为后续 Docker 部署铺好 env 开关——默认全内存、零依赖可跑，设 env 即切落盘/真后端：
+
+| 维度 | 后端 | env |
+| --- | --- | --- |
+| 长期记忆图谱 | `InMemory`（默认）/ `SqliteGraphStore`（落盘、时序失效） | `ZERO_MEMORY_BACKEND` · `ZERO_GRAPH_DB` |
+| 运行态 Checkpointer | `InMemory`（默认）/ SQLite / Postgres（gated） | `ZERO_CHECKPOINT_BACKEND` · `ZERO_CHECKPOINT_DB` · `ZERO_PG_DSN` |
+
+- **容器化**：`Dockerfile` + `docker-compose.yml`（postgres + neo4j + app）+ `.dockerignore` + `.env.example`；真后端驱动在 `db` extra（`pip install -e ".[db]"`）。服务器上 `docker compose up` 即接 Postgres/Neo4j 验证。
+- **记忆读闭环**：`MemoryRecallAgent` 在管线开头读 user 长期情绪倾向，偏置 `Appraisal` 先验（reward 不变，TD 通路不动）；`MoodAgent` 把 v2 心境的双稳更新独立成节点（A.7）。二者默认门控关闭。
 
 ## 架构图
 

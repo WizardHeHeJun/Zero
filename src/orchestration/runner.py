@@ -16,6 +16,7 @@ from src.memory.client import MemoryClient
 from src.orchestration.graph import build_graph
 from src.orchestration.state import AffectState, Stimulus
 from src.storage.checkpointer import build_checkpointer
+from src.storage.graph_store import build_graph_store
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ async def run(
     user_id/group_id 应由调用方按真实身份显式传入。
     expression_decoder：可选注入训练好的真通道解码器，走真网络表达。
     """
-    client = memory if memory is not None else MemoryClient()
+    client = memory if memory is not None else MemoryClient(build_graph_store())
     session = session_id if session_id is not None else thread_id
     checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
     graph = build_graph(

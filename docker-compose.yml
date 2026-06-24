@@ -1,0 +1,42 @@
+# 情感表达多 Agent 系统 — 编排（postgres 运行态 + neo4j 长期记忆 + app）。
+# 本机无 Docker，仅作部署脚手架；在装有 Docker 的服务器上 `docker compose up`。
+services:
+  app:
+    build: .
+    depends_on:
+      - postgres
+      - neo4j
+    environment:
+      ZERO_CHECKPOINT_BACKEND: postgres
+      ZERO_PG_DSN: postgresql://postgres:postgres@postgres:5432/zero
+      # Neo4j/Graphiti 适配器就绪后把 memory 后端改为 neo4j；当前先用 sqlite 落盘卷
+      ZERO_MEMORY_BACKEND: sqlite
+      ZERO_GRAPH_DB: /app/data/graph.sqlite3
+    volumes:
+      - app_data:/app/data
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: zero
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+volumes:
+  app_data:
+  pg_data:
+  neo4j_data:
