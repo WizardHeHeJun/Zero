@@ -70,9 +70,17 @@ class AffectState(BaseModel):
     # MemoryRecall：长期 user 情绪倾向回灌（MemoryRecallAgent 读 → AppraisalAgent 用）
     recalled_disposition: float | None = None
 
+    # Language（affect↔language 双向收敛回路）—— 运行态观测量
+    language_text: str | None = None  # 生成的语言内容
+    language_affect: tuple[float, float] | None = None  # 语言反推出的情感
+    language_consistency: float | None = None  # dist(language_affect, e*)，可观测
+    language_iter: int = 0  # 回路迭代计数
+
     # 控制开关
     regulation_enabled: bool = False  # 开启掩饰/再评价（双通路对比）
     mood_enabled: bool = False  # 开启慢变心境的历史依赖/滞后（A.7）
     recall_enabled: bool = False  # 开启长期倾向回灌偏置 appraisal（记忆读闭环）
+    language_enabled: bool = False  # 开启语言层 + affect↔language 双向收敛回路
+    language_max_iters: int = 3  # 回路终止上限（防死循环）
     rng_seed: int | None = None  # 采样可控（测试用）
     task_complete: bool = False

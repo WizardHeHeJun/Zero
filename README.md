@@ -1,6 +1,6 @@
 # Zero
 
-> 多 Agent 协作系统。当前已落地**情感表达子系统**（affective-expression）：编排骨架 + 真网络化全通道脚手架 + 端到端集成。
+> 多 Agent 协作系统。当前已落地**情感表达子系统**（affective-expression）：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成。
 
 三层运行架构：
 
@@ -16,10 +16,11 @@
 
 ```text
 Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(OCC 先验·可回灌偏置) → Value(在线 TD/精度)
-        → AffectCore(主动推断·后验采样 e*) → Mood(心境双稳·gated A.7) → Regulation(掩饰) → Expression(双通路·4 通道)
+        → AffectCore(主动推断·后验采样 e*) → Mood(心境双稳·gated A.7)
+        → Language(语言生成·affect↔language 双向回路·gated) → Regulation(掩饰) → Expression(双通路·4 通道)
 ```
 
-- 7 个 Worker（`src/agents/`）+ MemoryRecall（`src/orchestration/`）+ Supervisor；节点契约 `(state) -> dict` 只返回增量。`MemoryRecall`/`Mood` 由 `recall_enabled`/`mood_enabled` 门控，默认 no-op、零回归。
+- 8 个 Worker（`src/agents/`）+ MemoryRecall（`src/orchestration/`）+ Supervisor；节点契约 `(state) -> dict` 只返回增量。`MemoryRecall`/`Mood`/`Language` 由 `recall_enabled`/`mood_enabled`/`language_enabled` 门控，默认 no-op、零回归。
 - 记忆层 `src/memory/`（显式 scope、任务完成节流，**读↔写闭环**：Supervisor 写长期倾向、MemoryRecall 读回偏置 appraisal）；存储层 `src/storage/`（最底层；运行态 Checkpointer + 长期记忆图谱，env 选后端：运行态 InMemory/SQLite/Postgres、图谱 InMemory/SQLite/Neo4j，接口对齐 Graphiti）。
 - 数学内核：OCC 评价 → RPE/精度 → 高斯积融合 → 后验采样 → 双通路（真笑/假笑）× 4 通道（FACS AU / 文本标签 / 生理 / 韵律）。
 
@@ -41,6 +42,14 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 ### 时间深度 / 心境（v2 · A.7 · 默认关）
 
 给情绪加「回不去的过去」：慢变 `mood`（运行态，进 Checkpointer，不入图谱）按双稳动力学 `m' = inertia·m + gain·tanh(k·m) + drive·e*`（`gain·k=1.0 > 1−inertia=0.4` → pitchfork 双稳）演化，并作为**第三个精度加权先验**回馈 `AffectCore`。于是情绪轨迹**历史依赖**：持续负面把心境推入负盆后，轻微正向也拉不出（滞后 / 反刍）。经 `mood_enabled=True` 开启，默认关闭、对 v1 **零回归**。设计见 [PRP/affective-expression-v2/design.md](PRP/affective-expression-v2/design.md)，理论见 [notes/2026-06-23-…](notes/2026-06-23-emotion-math-and-llm-expression.md) 的 A.7。
+
+### 语言层 + affect↔language 双向回路（含 OpenAI adapter · 默认关）
+
+把"情感是内核、语言由上下文+检索+情感生成、两者相互判断得出最终表现"落成一条**带终止上限的双向收敛回路**：
+
+- `mood` 之后、`expression` 之前插入门控的 `language` 节点（`src/agents/language.py`）：用 e* + 上下文 + 检索信息生成语言并反推其情感；条件边 `route_after_language` 比较语言情感与内核 e*，不一致且未达 `language_max_iters` 上限则回路重写，重写前 `reconcile_affect` 把 e* 向语言情感拉拢——**双向互调**（情感也被语言微调，e* 不再纯固定内核）。
+- **可注入语言模型**（鸭子类型 `LanguageModel` 协议，同 `ChannelDecoder`）：默认占位 `_TemplateLanguageModel`（torch/API-free）；真接入用 `OpenAILanguageModel`（`src/agents/language_openai.py`，optional `llm` extra）——通用 OpenAI 兼容接口（`base_url` 可指 OpenAI / 本地 vLLM / 第三方网关），**两段式**：① 按目标情感生成回应 ② 独立再调一次客观给文本打 VAD，使"相互判断"真实有效。
+- `language_enabled` 门控、默认关、对前序**零回归**；`runner.run(..., language_enabled=True, language_model=…)` 贯通。env：`ZERO_OPENAI_BASE_URL` / `ZERO_OPENAI_API_KEY`（回退 `OPENAI_*`）。
 
 ### 本地真后端 + 容器化（env 驱动，optional `db` extra）
 
@@ -64,17 +73,19 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 Zero/
 ├── src/                         # 核心系统（三层架构，依赖单向：编排 → 记忆 → 存储）
 │   ├── orchestration/           # 编排层：StateGraph 装配 + 运行入口
-│   │   ├── graph.py             #   build_graph：9 节点装配 + 条件边路由
+│   │   ├── graph.py             #   build_graph：10 节点装配 + 条件边路由（含 language 双向回路）
 │   │   ├── state.py             #   AffectState / Stimulus（pydantic 结构化 state）
 │   │   ├── supervisor.py        #   SupervisorAgent：协调 + 任务完成节流写记忆
 │   │   ├── memory_recall.py     #   MemoryRecallAgent：读 user 长期倾向回灌（记忆读闭环）
 │   │   └── runner.py            #   run()：跑刺激序列、收集 (v,a) 轨迹
 │   ├── agents/                  # 编排层·各 Worker（节点契约 (state) -> dict 只回增量）
-│   │   ├── affect_math.py       #   纯数学内核：OCC / TD / 精度 / 高斯融合 / mood_step
+│   │   ├── affect_math.py       #   纯数学内核：OCC / TD / 精度 / 高斯融合 / mood_step / 语言距离·互调
 │   │   ├── perception.py · appraisal.py · value.py
 │   │   ├── affect_core.py       #   主动推断·后验采样 e*（随机性来源）
 │   │   ├── mood.py              #   MoodAgent：慢变心境双稳更新（A.7 滞后）
 │   │   ├── regulation.py · expression.py   # 掩饰 + 双通路·4 通道输出
+│   │   ├── language.py          #   LanguageAgent：语言生成 + affect↔language 双向回路（gated）
+│   │   ├── language_openai.py   #   OpenAILanguageModel：OpenAI 兼容接口 adapter（生成 + 独立 VAD 反推）
 │   │   ├── models/              #   真网络化 torch 解码器（expression/prosody/physiology/facs/text/composite）
 │   │   └── datasets/            #   DataLoader：synthetic / ravdess / wesad / emobank / facs_csv
 │   ├── memory/                  # 记忆层：读写 API（显式 scope、任务完成节流）
@@ -85,7 +96,7 @@ Zero/
 ├── tests/                       # 核心 + ml + 真后端用例（ml 缺 torch / Neo4j 缺实例时自动 importorskip / 优雅跳过）
 ├── scripts/                     # 训练脚本 train_*.py + 端到端 demo_pipeline.py
 ├── Dockerfile · docker-compose.yml · .dockerignore · .env.example   # 容器化部署
-├── pyproject.toml               # 依赖（core / ml / db extra）+ ruff / mypy / pytest 配置
+├── pyproject.toml               # 依赖（core / ml / db / llm extra）+ ruff / mypy / pytest 配置
 ├── environment.yml · environment.lock.yml · uv.lock                 # conda / uv 环境
 ├── README.md · PROGRESS.md · DATASETS.md                            # 总览 / 工程记录 / 数据集清单
 ├── notes/                       # 研究笔记（情感数学 / LLM 表达，含 A.7 推导）
@@ -113,6 +124,7 @@ pytest -q
 
 > 仓库同时支持 **uv**（`uv.lock` + `[tool.uv]`）：`uv sync` 亦可建好 `.venv`。两条路径依赖口径都以 `pyproject.toml` 为准。
 > 真网络化需安装 `ml` extra：`pip install -e ".[ml]"`（或在 conda 环境内装 torch/numpy/librosa/scipy）。
+> 真语言层（OpenAI 兼容接口）需 `llm` extra：`pip install -e ".[llm]"`，并配 `ZERO_OPENAI_BASE_URL`/`ZERO_OPENAI_API_KEY`（回退 `OPENAI_*`）。
 
 ## 跑测试 / 端到端 demo
 
@@ -141,5 +153,5 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 端到端集成已完成，测试全绿（`pytest` / `ruff` / `mypy`）。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 96 / `ruff` / `mypy`）。
 - 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。Graphiti（实体抽取/向量检索）与更多 Worker 角色按需接入。
