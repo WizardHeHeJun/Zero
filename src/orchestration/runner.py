@@ -32,6 +32,7 @@ async def run(
     user_id: str = "default-user",
     group_id: str = "default-group",
     regulation_enabled: bool = False,
+    mood_enabled: bool = False,
     rng_seed: int | None = None,
     expression_decoder: ChannelDecoder | None = None,
 ) -> list[dict[str, Any]]:
@@ -57,6 +58,7 @@ async def run(
                 "user_id": user_id,
                 "group_id": group_id,
                 "regulation_enabled": regulation_enabled,
+                "mood_enabled": mood_enabled,
                 "rng_seed": rng_seed,
                 "task_complete": False,
             },
@@ -75,6 +77,7 @@ async def run(
                 "rpe": state.rpe,
                 "precision": state.precision,
                 "value_estimate": state.value_estimate,
+                "mood": state.mood,
                 "expression": state.expression,
             }
         )

@@ -64,7 +64,11 @@ class AffectState(BaseModel):
     user_id: str = "default-user"
     group_id: str = "default-group"
 
+    # Mood（A.7 慢变心境：时间深度/滞后）—— 运行态，进 Checkpointer，不入图谱
+    mood: tuple[float, float] | None = None
+
     # 控制开关
     regulation_enabled: bool = False  # 开启掩饰/再评价（双通路对比）
+    mood_enabled: bool = False  # 开启慢变心境的历史依赖/滞后（A.7）
     rng_seed: int | None = None  # 采样可控（测试用）
     task_complete: bool = False

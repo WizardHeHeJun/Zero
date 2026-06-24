@@ -35,6 +35,15 @@
 - `build_graph(..., expression_decoder=…)` / `runner.run(..., expression_decoder=…)` 注入真解码器（鸭子类型 `ChannelDecoder`，编排层不依赖 torch）。
 - `scripts/demo_pipeline.py`：合成训练 → 注入 → 跑刺激序列，**真模型驱动表达流过完整管线**（无需外部数据）。
 
+### 阶段 4 — v2：时间深度 / 心境（A.7 滞后）
+
+给情绪加「回不去的过去」。理论依据 `notes/2026-06-23-…` 的 A.7（Gottman 双稳动力系统），设计见 `PRP/affective-expression-v2/design.md`。
+- `affect_math.py`：`mood_step`（双稳松弛 `m'=inertia·m+gain·tanh(k·m)+drive·e*`，`gain·k=1.0>1−inertia=0.4` → pitchfork）+ `fuse_terms`（多项精度融合，2 项时 ≡ `gaussian_fuse`，已单测断言）+ `MOOD_*` 常量。**没动 `gaussian_fuse`**。
+- `AffectState.mood`（运行态，进 Checkpointer 不入图谱）+ `mood_enabled`（默认 `False`）；`affect_core` 开启时把"已在的心境"并入为第三个精度加权先验、采样后 `mood_step` 更新；`runner` 贯通 `mood_enabled`、`mood` 进轨迹。
+- **加法、默认关、零回归**：关闭时 `affect_core` 原样走 `gaussian_fuse`，v1 行为不变。
+- 新测：`test_mood_dynamics`（双稳两盆 / **滞后捕获** / 有界 / `fuse_terms`≡`gaussian_fuse`）、`test_mood_pipeline`（**历史依赖**：连灌 6 次负面后，同一温和刺激在"有负面过去"的 thread 比全新 thread 更负；默认关不产 mood）。
+- 验证：`pytest` **65 passed**（v1 的 59 + mood 的 6）；`ruff`/`mypy` 干净。
+
 ## 成果与验证
 
 - **测试**：`pytest` 59 passed；`ruff check`/`ruff format`/`mypy`(33 源文件) 干净。
@@ -61,7 +70,8 @@ DATASETS.md                                   数据集清单
 
 - PR #1（已合并）：编排骨架 + code-review 整改 + diagrams。
 - PR #2（已合并）：conda 环境配置（`environment.yml`/lock）。
-- PR #3（进行中）：真网络化 三-1~三-5 + 端到端集成。
+- PR #3（已合并）：真网络化 三-1~三-5 + 端到端集成。
+- 分支 `feat/affect-mood-v2`（未提交 / 待 PR）：v2 时间深度 / 心境（A.7 滞后），默认关、零回归。
 
 ## 待办（需外部介入或独立轨道）
 

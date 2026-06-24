@@ -38,6 +38,10 @@ Stimulus → Perception → Appraisal(OCC 先验) → Value(在线 TD / 精度) 
 - 数据集获取清单见 **[DATASETS.md](DATASETS.md)**。
 - `CompositeChannelDecoder` 可叠加注入多通道真模型；经 `build_graph(..., expression_decoder=…)` / `runner.run(..., expression_decoder=…)` 接入管线（编排层经鸭子类型 `ChannelDecoder` 引用，**不依赖 torch**）。
 
+### 时间深度 / 心境（v2 · A.7 · 默认关）
+
+给情绪加「回不去的过去」：慢变 `mood`（运行态，进 Checkpointer，不入图谱）按双稳动力学 `m' = inertia·m + gain·tanh(k·m) + drive·e*`（`gain·k=1.0 > 1−inertia=0.4` → pitchfork 双稳）演化，并作为**第三个精度加权先验**回馈 `AffectCore`。于是情绪轨迹**历史依赖**：持续负面把心境推入负盆后，轻微正向也拉不出（滞后 / 反刍）。经 `mood_enabled=True` 开启，默认关闭、对 v1 **零回归**。设计见 [PRP/affective-expression-v2/design.md](PRP/affective-expression-v2/design.md)，理论见 [notes/2026-06-23-…](notes/2026-06-23-emotion-math-and-llm-expression.md) 的 A.7。
+
 ## 架构图
 
 见 [`diagrams/`](diagrams/) —— 多 Agent 协作系统 · 记忆架构分层（含情感链路）。
