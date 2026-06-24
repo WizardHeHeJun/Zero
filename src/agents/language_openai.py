@@ -38,7 +38,7 @@ class OpenAILanguageModel:
     def __init__(
         self,
         *,
-        model: str = "gpt-4o-mini",
+        model: str,
         base_url: str | None = None,
         api_key: str | None = None,
         client: Any | None = None,
