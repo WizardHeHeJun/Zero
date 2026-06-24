@@ -34,6 +34,7 @@ async def run(
     group_id: str = "default-group",
     regulation_enabled: bool = False,
     mood_enabled: bool = False,
+    recall_enabled: bool = False,
     rng_seed: int | None = None,
     expression_decoder: ChannelDecoder | None = None,
 ) -> list[dict[str, Any]]:
@@ -60,6 +61,7 @@ async def run(
                 "group_id": group_id,
                 "regulation_enabled": regulation_enabled,
                 "mood_enabled": mood_enabled,
+                "recall_enabled": recall_enabled,
                 "rng_seed": rng_seed,
                 "task_complete": False,
             },
