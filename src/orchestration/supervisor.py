@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Scope
 from src.orchestration.state import AffectState
@@ -32,6 +33,15 @@ class SupervisorAgent:
             value = state.value_estimate if state.value_estimate is not None else 0.0
             await self.memory.write(
                 f"disposition stimulus={stim_name} value={value:.3f}",
+                scope=Scope.USER,
+                key=state.user_id,
+            )
+            # 富 episode：自然语言情感事件 → 语义记忆（Graphiti 抽实体/关系入图）。
+            # 无语义后端时 no-op（零回归）；仍只在本任务完成节点写（节流，memory-rules #1）。
+            label = text_label(affect[0], affect[1])
+            await self.memory.write_episode(
+                f"用户对刺激「{stim_name}」表现出 {label} 情绪"
+                f"（valence={affect[0]:.2f}, arousal={affect[1]:.2f}），价值估计 {value:.3f}。",
                 scope=Scope.USER,
                 key=state.user_id,
             )

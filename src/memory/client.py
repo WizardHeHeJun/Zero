@@ -11,16 +11,24 @@ import logging
 from datetime import UTC, datetime
 
 from src.memory.types import Fact, Scope
-from src.storage.graph_store import GraphStore, InMemoryGraphStore
+from src.storage.graph_store import GraphStore, InMemoryGraphStore, SemanticStore
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryClient:
-    """长期记忆读写入口；对下依赖 GraphStore 协议（非具体类），对上屏蔽存储细节。"""
+    """长期记忆读写入口；对下依赖 GraphStore 协议（非具体类），对上屏蔽存储细节。
 
-    def __init__(self, store: GraphStore | None = None) -> None:
+    可选注入 `semantic`（SemanticStore，如 Graphiti）：与确定性 GraphStore 并存的
+    语义记忆侧信道，承载富 episode 写入（`write_episode`）+ 语义召回（`recall`）。
+    未注入时二者 no-op / 返回空——严格零回归，不影响确定性 write/query 路径。
+    """
+
+    def __init__(
+        self, store: GraphStore | None = None, *, semantic: SemanticStore | None = None
+    ) -> None:
         self.store: GraphStore = store if store is not None else InMemoryGraphStore()
+        self.semantic: SemanticStore | None = semantic
 
     async def write(
         self,
@@ -50,6 +58,54 @@ class MemoryClient:
             raise ValueError("memory.query 必须显式指定 Scope，禁止默认作用域")
         logger.debug("memory.query scope=%s key=%s q=%s", scope.value, key, query)
         stored = self.store.query_facts(scope=scope.value, key=key, at=at)
+        return [
+            Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
+        ]
+
+    async def write_episode(
+        self,
+        content: str,
+        *,
+        scope: Scope,
+        key: str = "default",
+        valid_at: datetime | None = None,
+    ) -> None:
+        """写一条自然语言 episode 到语义记忆（Graphiti 抽取实体/关系入图）。
+
+        必须显式 scope；仅应在任务完成节点调用（节流，同 write）。无语义后端时 no-op
+        （严格零回归）。与确定性 `write` 互补：write 存结构化标量事实，write_episode 存
+        供语义召回的富文本。
+        """
+        if not isinstance(scope, Scope):
+            raise ValueError("memory.write_episode 必须显式指定 Scope，禁止默认作用域")
+        if self.semantic is None:
+            return
+        when = valid_at if valid_at is not None else datetime.now(UTC)
+        await self.semantic.add_episode(scope=scope.value, key=key, content=content, valid_at=when)
+        logger.info("memory.write_episode scope=%s key=%s", scope.value, key)
+
+    async def recall(
+        self,
+        query: str,
+        *,
+        scope: Scope,
+        key: str | None = None,
+        at: datetime | None = None,
+        limit: int = 5,
+    ) -> list[Fact]:
+        """语义召回（向量/图检索），按作用域与时间语境返回相关事实。
+
+        必须显式 scope。无语义后端时返回 `[]`（零回归）——与确定性 `query`（结构化
+        (scope,key) 命中）不同，本方法吃 query 文本做语义检索。
+        """
+        if not isinstance(scope, Scope):
+            raise ValueError("memory.recall 必须显式指定 Scope，禁止默认作用域")
+        if self.semantic is None:
+            return []
+        stored = await self.semantic.search(query, scope=scope.value, key=key, at=at, limit=limit)
+        logger.debug(
+            "memory.recall scope=%s key=%s q=%s n=%d", scope.value, key, query, len(stored)
+        )
         return [
             Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
         ]

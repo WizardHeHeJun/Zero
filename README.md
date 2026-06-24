@@ -57,11 +57,21 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 
 | 维度 | 后端 | env |
 | --- | --- | --- |
-| 长期记忆图谱 | `InMemory`（默认）/ `SqliteGraphStore`（落盘、时序失效）/ `Neo4jGraphStore`（裸 Cypher、gated） | `ZERO_MEMORY_BACKEND` · `ZERO_GRAPH_DB` · `ZERO_NEO4J_{URI,USER,PASSWORD}` |
+| 长期记忆图谱（确定性 (scope,key) 失效） | `InMemory`（默认）/ `SqliteGraphStore`（落盘、时序失效）/ `Neo4jGraphStore`（裸 Cypher、gated） | `ZERO_MEMORY_BACKEND` · `ZERO_GRAPH_DB` · `ZERO_NEO4J_{URI,USER,PASSWORD}` |
+| 语义记忆侧信道（富 episode + 语义召回） | 无（默认）/ `GraphitiGraphStore`（LLM 抽实体/关系 + 向量检索，gated，`graphiti` extra） | `ZERO_SEMANTIC_BACKEND` · `ZERO_GRAPHITI_MODEL` · `ZERO_OPENAI_*` · `ZERO_NEO4J_*` |
 | 运行态 Checkpointer | `InMemory`（默认）/ SQLite / Postgres（gated） | `ZERO_CHECKPOINT_BACKEND` · `ZERO_CHECKPOINT_DB` · `ZERO_PG_DSN` |
 
 - **容器化**：`Dockerfile` + `docker-compose.yml`（postgres + neo4j + app）+ `.dockerignore` + `.env.example`；真后端驱动在 `db` extra（`pip install -e ".[db]"`）。服务器上 `docker compose up` 即接 Postgres/Neo4j 验证。
 - **记忆读闭环**：`MemoryRecallAgent` 在管线开头读 user 长期情绪倾向，偏置 `Appraisal` 先验（reward 不变，TD 通路不动）；`MoodAgent` 把 v2 心境的双稳更新独立成节点（A.7）。二者默认门控关闭。
+
+### 语义记忆深度集成（Graphiti · 侧信道 · 默认关）
+
+把 Graphiti 作为**与确定性 GraphStore 并存的语义记忆侧信道**接入——不替换基础后端，不把 LLM/网络塞进 affect 数学的确定性热路径：
+
+- **存储层** `SemanticStore` 协议 + `GraphitiGraphStore`（`src/storage/graph_store.py`）：LLM 抽实体/关系入图 + 语义/向量检索，scope/key→Graphiti `group_id`；构造不连接、首次读写一次性建索引；LLM/embedder 复用 `ZERO_OPENAI_*` + `ZERO_GRAPHITI_MODEL`，Neo4j 复用 `ZERO_NEO4J_*`。
+- **记忆层** `MemoryClient.write_episode`（富文本 episode→语义记忆）/ `recall`（语义检索）；确定性 `write`/`query` 不变。无语义后端时二者 no-op/返回空（零回归）。
+- **深度集成落点**：Supervisor 任务完成时额外写自然语言情感事件 episode → Graphiti 抽实体/关系；MemoryRecall 语义召回 → `recalled_context` → **LanguageAgent 检索串并入**，语义图谱由此真正影响语言生成。全链 `ZERO_SEMANTIC_BACKEND=graphiti` + `recall_enabled` 门控，默认关。
+- 装 `graphiti` extra：`pip install -e ".[graphiti]"`。**代码就绪，待真机验证**（需 Neo4j + LLM）。
 
 ## 架构图
 
@@ -153,5 +163,6 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 96 / `ruff` / `mypy`）。
-- 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。Graphiti（实体抽取/向量检索）与更多 Worker 角色按需接入。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 106 / `ruff` / `mypy`）。
+- 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。
+- **Graphiti 语义记忆深度集成**（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall` 侧信道，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND` 门控、默认关——代码就绪，待真机验证（需 Neo4j + LLM）。测试全绿（`pytest` 106 / `ruff` / `mypy`）。更多 Worker 角色按需接入。

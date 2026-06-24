@@ -14,6 +14,13 @@ services:
       ZERO_NEO4J_URI: bolt://neo4j:7687
       ZERO_NEO4J_USER: neo4j
       ZERO_NEO4J_PASSWORD: password
+      # 可选：语义记忆侧信道（Graphiti，深度集成）。与上方确定性后端正交、默认关。
+      # 开启需 app 装 graphiti extra（pip install -e ".[graphiti]"）+ OpenAI 兼容 LLM；
+      # Graphiti 复用上方同一 neo4j 实例（ZERO_NEO4J_*）。取消注释即启用：
+      # ZERO_SEMANTIC_BACKEND: graphiti
+      # ZERO_GRAPHITI_MODEL: gpt-4o-mini
+      # ZERO_OPENAI_BASE_URL: https://api.openai.com/v1
+      # ZERO_OPENAI_API_KEY: sk-...
     volumes:
       - app_data:/app/data
 
