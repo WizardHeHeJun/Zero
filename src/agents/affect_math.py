@@ -27,6 +27,11 @@ MOOD_PRECISION = 0.8
 LANGUAGE_TOLERANCE = 0.15  # 语言情感与内核 e* 的一致阈值 τ
 RECONCILE_WEIGHT = 0.5  # 双向互调：e* 向语言情感拉拢的权重
 
+# Regulation 重评（Gross 过程模型）：reappraisal 改「构念/意义」而非末端压制
+REAPPRAISAL_ANCHOR = 0.1  # 重评把负/低效价重新解释、向其拉拢的「积极锚」
+REAPPRAISAL_LIFT = 0.7  # 向积极锚拉拢的比例（重评改变体验，不只是表达）
+REAPPRAISAL_CALM = 0.4  # 重评对唤醒的平复系数（威胁被重构 → 唤醒下降）
+
 
 def sigmoid(x: float) -> float:
     """数值稳定的 logistic 函数。"""
@@ -185,6 +190,24 @@ def reconcile_affect(
     v = clamp(e_star[0] + weight * (lang_affect[0] - e_star[0]), -1.0, 1.0)
     a = clamp(e_star[1] + weight * (lang_affect[1] - e_star[1]), -1.0, 1.0)
     return (v, a)
+
+
+def reappraise(
+    affect: tuple[float, float],
+    *,
+    anchor: float = REAPPRAISAL_ANCHOR,
+    lift: float = REAPPRAISAL_LIFT,
+    calm: float = REAPPRAISAL_CALM,
+) -> tuple[float, float]:
+    """认知重评（Gross 过程模型，早期干预）：改变对情境的「构念/意义」。
+
+    与「表达抑制」（晚期、仅按比例压制输出幅度）不同，重评把负/低效价重新解释、
+    向积极锚 `anchor` 拉拢（valence 上抬），并显著平复唤醒（威胁被重构 → 体验也变）；
+    效价已高于锚则不再上抬（不无端拔高积极情绪）。逐维钳制 [-1, 1]，纯函数。
+    """
+    v, a = affect
+    v2 = v + lift * (anchor - v) if v < anchor else v
+    return clamp(v2, -1.0, 1.0), clamp(calm * a, -1.0, 1.0)
 
 
 def sample_affect(

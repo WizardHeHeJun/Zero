@@ -81,9 +81,11 @@ class AffectState(BaseModel):
 
     # 控制开关
     regulation_enabled: bool = False  # 开启掩饰/再评价（双通路对比）
+    regulation_strategy: str = "suppression"  # 调节策略：suppression（默认）/ reappraisal（Gross）
     mood_enabled: bool = False  # 开启慢变心境的历史依赖/滞后（A.7）
     recall_enabled: bool = False  # 开启长期倾向回灌偏置 appraisal（记忆读闭环）
     language_enabled: bool = False  # 开启语言层 + affect↔language 双向收敛回路
+    appraisal_conditioning_enabled: bool = False  # 把 OCC 评价结构并入语言生成（CPM/EMA）
     language_max_iters: int = 3  # 回路终止上限（防死循环）
     rng_seed: int | None = None  # 采样可控（测试用）
     task_complete: bool = False

@@ -43,6 +43,13 @@ graphiti = [
 nlp = [
     "sentence-transformers>=2.2",
 ]
+# 表示空间 steering（输出侧）：把 e*=(v,a) 作为 steering 坐标加到开放权重 LM 的隐状态。
+# 注入 SteeringLanguageModel 且用默认 transformers 后端时才需；编排层/默认路径不依赖。
+steer = [
+    "torch>=2.2",
+    "transformers>=4.40",
+    "numpy>=1.26",
+]
 
 [dependency-groups]
 dev = [

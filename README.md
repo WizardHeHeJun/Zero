@@ -17,7 +17,7 @@
 ```text
 Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(OCC 先验·可回灌偏置) → Value(在线 TD/精度)
         → AffectCore(主动推断·后验采样 e*) → Mood(心境双稳·gated A.7)
-        → Language(语言生成·affect↔language 双向回路·gated) → Regulation(掩饰) → Expression(双通路·4 通道)
+        → Language(语言生成·affect↔language 双向回路·gated) → Regulation(掩饰/重评·gated) → Expression(双通路·4 通道)
 ```
 
 - 8 个 Worker（`src/agents/`）+ MemoryRecall（`src/orchestration/`）+ Supervisor；节点契约 `(state) -> dict` 只返回增量。`MemoryRecall`/`Mood`/`Language` 由 `recall_enabled`/`mood_enabled`/`language_enabled` 门控，默认 no-op、零回归。
@@ -51,6 +51,16 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 - `mood` 之后、`expression` 之前插入门控的 `language` 节点（`src/agents/language.py`）：用 e* + 上下文 + 检索信息生成语言并反推其情感；条件边 `route_after_language` 比较语言情感与内核 e*，不一致且未达 `language_max_iters` 上限则回路重写，重写前 `reconcile_affect` 把 e* 向语言情感拉拢——**双向互调**（情感也被语言微调，e* 不再纯固定内核）。
 - **可注入语言模型**（鸭子类型 `LanguageModel` 协议，同 `ChannelDecoder`）：默认占位 `_TemplateLanguageModel`（torch/API-free）；真接入用 `OpenAILanguageModel`（`src/agents/language_openai.py`，optional `llm` extra）——通用 OpenAI 兼容接口（`base_url` 可指 OpenAI / 本地 vLLM / 第三方网关），**两段式**：① 按目标情感生成回应 ② 独立再调一次客观给文本打 VAD，使"相互判断"真实有效。
 - `language_enabled` 门控、默认关、对前序**零回归**；`runner.run(..., language_enabled=True, language_model=…)` 贯通。env：`ZERO_OPENAI_BASE_URL` / `ZERO_OPENAI_API_KEY`（回退 `OPENAI_*`）。
+
+### 文本输出情绪补足（词工程 / steering / 重评 / 评价条件化 · 默认关）
+
+把"生成的语言"从 `e*→4 档离散词→套模板`，补成**有粒度、可控、可重评、可评测**的表达（生物学+数学文献见 [notes/2026-06-24-…](notes/2026-06-24-text-output-emotion.md)）：
+
+- **情绪词典层** `src/agents/emotion_lexicon.py`（纯函数、torch/API-free）：`affect_label`（VA 极坐标 8 扇区×强度细粒度词，远超旧 4 档）+ `motivational_system`（Panksepp 动机色彩）+ `affect_logit_bias`（NRC-VAD 词典桥 / 加权解码 `Δlogit=β·⟨φ(w),e*⟩`）+ `intensity_envelope`（ECM 句内情绪衰减）。**不动 `text_label`**（旧 4 档仍作通道值），零回归。
+- **重评优先**（Gross 过程模型）：`RegulationAgent` 经 `regulation_strategy` 选 `suppression`（默认）/`reappraisal`（改构念意义而非末端砍输出，更不负、唤醒更低）。
+- **评价条件化**（CPM/EMA）：`appraisal_conditioning_enabled` 把 OCC 评价结构（非仅最终 (v,a)）并入语言生成；默认关、对未感知该参数的注入模型零回归。
+- **VA steering 适配器** `src/agents/language_steering.py`（开放权重，`steer` extra）：e\*=(v,a) 作 steering 坐标，`steering_delta=α(V·w_V+A·w_A)` 加到 LM 隐状态；纯函数 steering 核 torch-free 可测，`SteerBackend` 协议可注入、默认延迟 transformers hook 后端。
+- **情商探针回归** `tests/test_ei_probe.py`（EmoBench 式：场景→管线→效价方向/动机系统/粒度命中率）。
 
 ### 本地真后端 + 容器化（env 驱动，optional `db` extra）
 
@@ -113,6 +123,8 @@ Zero/
 │   │   ├── regulation.py · expression.py   # 掩饰 + 双通路·4 通道输出
 │   │   ├── language.py          #   LanguageAgent：语言生成 + affect↔language 双向回路（gated）
 │   │   ├── language_openai.py   #   OpenAILanguageModel：OpenAI 兼容接口 adapter（生成 + 独立 VAD 反推）
+│   │   ├── emotion_lexicon.py   #   情绪词典层：细粒度词 / Panksepp 动机 / VAD 词典桥 / ECM 时间包络
+│   │   ├── language_steering.py #   SteeringLanguageModel：VA steering 适配器（开放权重·steer extra）
 │   │   ├── models/              #   真网络化 torch 解码器（expression/prosody/physiology/facs/text/composite）
 │   │   └── datasets/            #   DataLoader：synthetic / ravdess / wesad / emobank(+_st 句向量) / facs_csv
 │   ├── memory/                  # 记忆层：读写 API（显式 scope、任务完成节流）
@@ -184,6 +196,6 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + 端到端集成已完成，测试全绿（`pytest` 117 passed / `ruff` / `mypy`）。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + **文本输出情绪补足**（词工程细粒度词典 / VA steering / 重评 / 评价条件化，默认关、零回归）+ 端到端集成已完成，测试全绿（`pytest` 149 passed / `ruff` / `mypy`）。
 - 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。
 - **语义记忆侧信道**（`SemanticStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索，`recall_enabled` 门控、默认关）：轻量 `SqliteVectorStore`（`sqlite_vec`，无图库/无服务）**已本地端到端验证闭环通过** ✅；`GraphitiGraphStore`（`graphiti`，实体/关系知识图谱）为需要图谱时的重型选项，走 Neo4j（⚠ kuzu 后端 Graphiti 有 FTS bug，不可用）。更多 Worker 角色按需接入。
