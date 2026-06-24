@@ -61,6 +61,7 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 - **评价条件化**（CPM/EMA）：`appraisal_conditioning_enabled` 把 OCC 评价结构（非仅最终 (v,a)）并入语言生成；默认关、对未感知该参数的注入模型零回归。
 - **VA steering 适配器** `src/agents/language_steering.py`（开放权重，`steer` extra）：e\*=(v,a) 作 steering 坐标，`steering_delta=α(V·w_V+A·w_A)` 加到 LM 隐状态；纯函数 steering 核 torch-free 可测，`SteerBackend` 协议可注入、默认延迟 transformers hook 后端。
 - **情商探针回归** `tests/test_ei_probe.py`（EmoBench 式：场景→管线→效价方向/动机系统/粒度命中率）。
+- **真 LLM 端到端已验证** ✅：`python main.py --llm`（OpenAI 兼容代理 + qwen-flash）四情绪场景生成语言情绪对路、独立反推 VAD 与内核 e\* 同象限（狂喜↔狂喜、暴怒↔暴怒）、双向回路迭代 2–3 次收敛到 τ=0.15 以下。
 
 ### 本地真后端 + 容器化（env 驱动，optional `db` extra）
 
@@ -163,7 +164,7 @@ pytest -q
 
 > 仓库同时支持 **uv**（`uv.lock` + `[tool.uv]`）：`uv sync` 亦可建好 `.venv`。两条路径依赖口径都以 `pyproject.toml` 为准。
 > 真网络化需安装 `ml` extra：`pip install -e ".[ml]"`（或在 conda 环境内装 torch/numpy/librosa/scipy）。
-> 真语言层（OpenAI 兼容接口）需 `llm` extra：`pip install -e ".[llm]"`，并配 `ZERO_OPENAI_BASE_URL`/`ZERO_OPENAI_API_KEY`（回退 `OPENAI_*`）。
+> 真语言层（OpenAI 兼容接口）需 `llm` extra：`pip install -e ".[llm]"`，并配 `ZERO_OPENAI_BASE_URL`/`ZERO_OPENAI_API_KEY`（回退 `OPENAI_*`）+ `ZERO_OPENAI_MODEL`（须填 key 实际有权限的真实模型 id，非权限标签）。配置只走 `.env`，代码不写死模型默认。
 
 ## 跑测试 / 端到端 demo
 
@@ -173,6 +174,10 @@ pytest -q
 
 # 端到端 demo：合成训练 ExpressionDecoder → 注入管线 → 跑刺激序列（无需外部数据）
 python -m scripts.demo_pipeline
+
+# 文本输出情绪验证（真 LLM，OpenAI 兼容接口）：内核情绪 → 生成语言 → 独立 VAD 反推 → 一致性
+#   需 .[llm] + 在 .env 配 ZERO_OPENAI_API_KEY / ZERO_OPENAI_MODEL（真实模型 id）/ 可选 ZERO_OPENAI_BASE_URL
+python main.py --llm
 ```
 
 ## 真实数据训练（可选）
@@ -196,6 +201,6 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + **文本输出情绪补足**（词工程细粒度词典 / VA steering / 重评 / 评价条件化，默认关、零回归）+ 端到端集成已完成，测试全绿（`pytest` 149 passed / `ruff` / `mypy`）。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + **文本输出情绪补足**（词工程细粒度词典 / VA steering / 重评 / 评价条件化，默认关、零回归）+ 端到端集成已完成，测试全绿（`pytest` 149 passed / `ruff` / `mypy`），**真 LLM 端到端已验证**（`main.py --llm`，PR #19 已合并 main）。
 - 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。
 - **语义记忆侧信道**（`SemanticStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索，`recall_enabled` 门控、默认关）：轻量 `SqliteVectorStore`（`sqlite_vec`，无图库/无服务）**已本地端到端验证闭环通过** ✅；`GraphitiGraphStore`（`graphiti`，实体/关系知识图谱）为需要图谱时的重型选项，走 Neo4j（⚠ kuzu 后端 Graphiti 有 FTS bug，不可用）。更多 Worker 角色按需接入。
