@@ -38,9 +38,25 @@ class MemoryRecallAgent:
     async def __call__(self, state: AffectState) -> dict:
         if not state.recall_enabled:
             return {}
+        out: dict = {}
+        entry: dict = {"node": "memory_recall"}
+
+        # 确定性标量 disposition（偏置 appraisal）——不变
         facts = await self.memory.query("disposition", scope=Scope.USER, key=state.user_id)
         disposition = _parse_disposition(facts)
-        if disposition is None:
+        if disposition is not None:
+            out["recalled_disposition"] = disposition
+            entry["recalled_disposition"] = disposition
+
+        # 语义召回（语义记忆侧信道）→ recalled_context 喂语言层检索；
+        # 无语义后端时 recall 返回 []，整段自动 no-op（严格零回归）。
+        query = state.stimulus.name if state.stimulus is not None else "disposition"
+        recalled = await self.memory.recall(query, scope=Scope.USER, key=state.user_id)
+        if recalled:
+            out["recalled_context"] = [f.content for f in recalled]
+            entry["recalled_context_n"] = len(recalled)
+
+        if not out:
             return {}
-        entry = {"node": "memory_recall", "recalled_disposition": disposition}
-        return {"recalled_disposition": disposition, "trace": [entry]}
+        out["trace"] = [entry]
+        return out

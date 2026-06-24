@@ -80,11 +80,13 @@ class LanguageAgent:
             out["affect_sample"] = affect
 
         context = state.stimulus.name if state.stimulus is not None else ""
-        retrieved = (
-            f"disposition={state.recalled_disposition:.2f}"
-            if state.recalled_disposition is not None
-            else ""
-        )
+        # 检索信息 = 确定性 disposition + 语义召回事实（Graphiti 等）；后者为空时退化为现状
+        retrieved_parts: list[str] = []
+        if state.recalled_disposition is not None:
+            retrieved_parts.append(f"disposition={state.recalled_disposition:.2f}")
+        if state.recalled_context:
+            retrieved_parts.append("; ".join(state.recalled_context))
+        retrieved = " | ".join(retrieved_parts)
         feedback = (
             f"prev_dist={state.language_consistency:.3f}"
             if state.language_iter > 0 and state.language_consistency is not None

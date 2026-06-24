@@ -17,7 +17,7 @@ from src.memory.client import MemoryClient
 from src.orchestration.graph import build_graph
 from src.orchestration.state import AffectState, Stimulus
 from src.storage.checkpointer import build_checkpointer
-from src.storage.graph_store import build_graph_store
+from src.storage.graph_store import build_graph_store, build_semantic_store
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,11 @@ async def run(
     language_model：可选注入的语言模型（鸭子类型），开启 language_enabled 后驱动
     affect↔language 双向收敛回路；未注入则用占位模板模型。
     """
-    client = memory if memory is not None else MemoryClient(build_graph_store())
+    client = (
+        memory
+        if memory is not None
+        else MemoryClient(build_graph_store(), semantic=build_semantic_store())
+    )
     session = session_id if session_id is not None else thread_id
     checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
     graph = build_graph(
@@ -92,6 +96,7 @@ async def run(
                 "precision": state.precision,
                 "value_estimate": state.value_estimate,
                 "mood": state.mood,
+                "recalled_context": state.recalled_context,
                 "language_text": state.language_text,
                 "language_consistency": state.language_consistency,
                 "language_iter": state.language_iter,

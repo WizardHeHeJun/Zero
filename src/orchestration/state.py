@@ -69,6 +69,9 @@ class AffectState(BaseModel):
 
     # MemoryRecall：长期 user 情绪倾向回灌（MemoryRecallAgent 读 → AppraisalAgent 用）
     recalled_disposition: float | None = None
+    # 语义召回（Graphiti 等语义记忆侧信道）的相关事实串 → 喂 LanguageAgent 检索；
+    # 无语义后端时恒空（零回归）。仅存短文本，不放大对象（遵守 state 约束）。
+    recalled_context: list[str] = Field(default_factory=list)
 
     # Language（affect↔language 双向收敛回路）—— 运行态观测量
     language_text: str | None = None  # 生成的语言内容

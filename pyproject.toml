@@ -27,6 +27,11 @@ db = [
 llm = [
     "openai>=1.0",
 ]
+# 语义记忆侧信道（深度集成）：Graphiti（LLM 抽实体/关系入图 + 语义/向量检索；自带 neo4j/openai）。
+# 与确定性 GraphStore 并存、默认关；置 ZERO_SEMANTIC_BACKEND=graphiti 时才需。
+graphiti = [
+    "graphiti-core>=0.3",
+]
 
 [dependency-groups]
 dev = [

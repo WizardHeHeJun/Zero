@@ -75,9 +75,21 @@
 - 新测：`test_routing`（扩展加 language 路由）、`test_language_agent`、`test_language_loop`（端到端回路收敛/上限/双向微调）、`test_language_openai`（fake async client，不依赖 openai）。
 - 验证：`pytest` **96 passed**（79 + language 13 + adapter 4）；`ruff`/`mypy` 干净。
 
+### 阶段 8 — Graphiti 语义记忆深度集成（侧信道，默认关、零回归）
+
+把待办里「引入 Graphiti（实体抽取/向量检索）」落成一条**与确定性 GraphStore 并存的语义记忆侧信道**——不替换基础后端，不把 LLM/网络塞进 affect 数学的确定性热路径。
+
+- **存储层**（`src/storage/graph_store.py`，纯新增）：`SemanticStore` 协议（`@runtime_checkable`，全异步 `add_episode`/`search`）+ `GraphitiGraphStore`（包 `graphiti_core.Graphiti`，scope/key→`group_id`，构造不连接、首次读写一次性建索引，LLM/embedder 复用 `ZERO_OPENAI_*`+`ZERO_GRAPHITI_MODEL`，Neo4j 复用 `ZERO_NEO4J_*`）+ `build_semantic_store`（env `ZERO_SEMANTIC_BACKEND`，默认空→None、缺驱动告警回退）。**现有 GraphStore/三后端一字不动**。
+- **记忆层**（`src/memory/client.py`，纯新增）：`MemoryClient(store, *, semantic=…)`；`write_episode`（富文本 episode→语义记忆，强制 scope、仅任务完成节点）+ `recall`（语义/向量检索，吃 query 文本；无后端返回 `[]`）。确定性 `write`/`query` 不变。
+- **编排层深度集成落点**（全门控 + 能力检测）：`state.recalled_context`；Supervisor 任务完成时**额外**写自然语言情感事件 episode；MemoryRecall 语义召回 → `recalled_context`；**LanguageAgent 检索串并入 `recalled_context`**——Graphiti 的实体/关系召回由此真正影响语言生成。无语义后端时全链 no-op。
+- **依赖/容器**：`graphiti` extra（`graphiti-core>=0.3`，自带 neo4j/openai）；`docker-compose.yml` app 加注释式语义后端 env（默认注释关）。
+- **测试**：`tests/test_graphiti_semantic_store.py` —— 工厂回退（本机直跑）+ **FakeSemanticStore 确定性接线**（write_episode/recall 路由、显式 scope、`recalled_context` 填充、进语言检索、无后端零回归）+ 实机 smoke（importorskip + LLM/连接探测优雅 skip）。
+- **验证**：`pytest` **106 passed**（96 + 10 新）；`ruff`/`mypy` 干净。
+- **仍待真机验证**：本机无 Neo4j/Docker/LLM；服务器 `pip install -e ".[graphiti]"` + `ZERO_SEMANTIC_BACKEND=graphiti` + `ZERO_OPENAI_*`/`ZERO_NEO4J_*`，跑通 episode 抽实体/关系 → 语义召回 → 进语言层。
+
 ## 成果与验证
 
-- **测试**：`pytest` 96 passed（含 ml 缺 torch 时跳过 2）；`ruff check`/`ruff format`/`mypy`(37 源文件) 干净。
+- **测试**：`pytest` 106 passed（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke 跳过 1）；`ruff check`/`ruff format`/`mypy`(37 源文件) 干净。
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
@@ -105,10 +117,11 @@ DATASETS.md                                   数据集清单
 - PR #4（已合并）：v2 时间深度 / 心境（A.7 滞后），默认关、零回归。
 - PR #6（已合并）：本地真后端（SQLite 落盘 + env 后端工厂）+ 容器化脚手架 + MemoryRecall/Mood 两个 Worker。
 - 分支 `feat/neo4j-graphstore-backend`：Neo4j 长期记忆适配器（裸 Cypher 保时序失效）+ Postgres saver 加固 + README/文档口径同步。
-- 分支 `feat/local-backends-and-agents`（本次语言层）：`LanguageAgent` + affect↔language 双向收敛回路（`route_after_mood`/`route_after_language`，双向互调 + 终止上限）+ `OpenAILanguageModel`（OpenAI 兼容接口，生成 + 独立 VAD 反推，`llm` extra），全程默认关、零回归。
+- 分支 `feat/local-backends-and-agents`（语言层）：`LanguageAgent` + affect↔language 双向收敛回路（`route_after_mood`/`route_after_language`，双向互调 + 终止上限）+ `OpenAILanguageModel`（OpenAI 兼容接口，生成 + 独立 VAD 反推，`llm` extra），全程默认关、零回归。
+- 阶段 8（本次）：Graphiti 语义记忆深度集成——`SemanticStore` 协议 + `GraphitiGraphStore` + `MemoryClient.write_episode/recall`，与确定性 GraphStore 并存的侧信道；Supervisor 写富 episode、MemoryRecall 语义召回 → `recalled_context` → LanguageAgent 检索（`graphiti` extra），默认关、零回归。
 
 ## 待办（需外部介入或独立轨道）
 
 - **放数据跑真实训练**：任一 EULA-free 集（RAVDESS/WESAD/EmoBank）→ `data/` → 跑 `train_*`（脚手架已就绪）。
-- **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。Graphiti（实体抽取/向量检索）与现同步极简协议有阻抗，留待按需单独引入。
+- **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。**Graphiti 已深度集成（阶段 8）**：作为与确定性 GraphStore 并存的语义记忆侧信道接入（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND=graphiti` 门控、默认关；**待真机验证** Graphiti 实体/关系抽取 + 语义召回闭环（需 Neo4j + LLM）。
 - **扩 Worker 角色**：已加 MemoryRecall / Mood；可继续按 `/new-agent` 增加。

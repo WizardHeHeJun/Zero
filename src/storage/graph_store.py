@@ -7,12 +7,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Protocol
+from datetime import UTC, datetime
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -234,3 +235,174 @@ def build_graph_store(backend: str | None = None) -> GraphStore:
             return store
         return InMemoryGraphStore()
     return InMemoryGraphStore()
+
+
+# --------------------------------------------------------------------------- #
+# 语义记忆侧信道（Graphiti）：与上面的确定性 GraphStore 并存、互不影响。
+# 确定性 (scope,key) 失效模型走 GraphStore；富 episode 写入 + 语义/向量召回走
+# 下面的 SemanticStore。默认无后端（build_semantic_store -> None），严格零回归。
+# --------------------------------------------------------------------------- #
+
+
+@runtime_checkable
+class SemanticStore(Protocol):
+    """语义记忆后端协议（Graphiti 等）：富 episode 写入 + 语义召回，全异步。
+
+    与 `GraphStore`（确定性 (scope,key) 失效）正交：记忆层据能力检测择优，
+    无实现时上层自动 no-op。`search` 用 query 文本做语义/向量检索（GraphStore
+    的 query_facts 不吃 query，二者语义不同）。
+    """
+
+    async def add_episode(
+        self, *, scope: str, key: str, content: str, valid_at: datetime
+    ) -> None: ...
+
+    async def search(
+        self,
+        query: str,
+        *,
+        scope: str,
+        key: str | None = None,
+        at: datetime | None = None,
+        limit: int = 5,
+    ) -> list[StoredFact]: ...
+
+
+class GraphitiGraphStore:
+    """Graphiti 语义记忆后端：LLM 抽取实体/关系入图 + 语义向量检索 + 时序失效。
+
+    scope/key → Graphiti `group_id`（`f"{scope}:{key}"`）。`add_episode` 写自然语言
+    episode（Graphiti 自动抽实体/关系）；`search` 做语义检索，边 `.fact/.valid_at/
+    .invalid_at` 映射成 `StoredFact` 并按 `at` 做时间语境过滤。失效语义由 Graphiti
+    （LLM/矛盾驱动）负责，与 GraphStore 的确定性同 key 覆盖不同——故只验往返、不强断言。
+
+    构造不连接：`Graphiti(...)` 仅建驱动；首次读写时一次性建索引/约束（flag + Lock）。
+    LLM/embedder 复用语言层 env（`ZERO_OPENAI_*`，回退 `OPENAI_*`）+ `ZERO_GRAPHITI_MODEL`；
+    Neo4j 连接复用 `ZERO_NEO4J_*`。驱动惰性导入：缺 graphiti-core 由工厂捕获回退。
+    """
+
+    def __init__(self, uri: str, user: str, password: str) -> None:
+        self.graphiti = _build_graphiti(uri, user, password)
+        self.initialized = False
+        self.init_lock = asyncio.Lock()
+
+    async def _ensure_init(self) -> None:
+        """首次读写时一次性建索引/约束（双检锁，避免并发重复 setup）。"""
+        if self.initialized:
+            return
+        async with self.init_lock:
+            if self.initialized:
+                return
+            await self.graphiti.build_indices_and_constraints()
+            self.initialized = True
+
+    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
+        """写一条自然语言 episode；Graphiti 抽取实体/关系入图，按 group_id 隔离。"""
+        from graphiti_core.nodes import EpisodeType  # 延迟导入：缺驱动由工厂回退
+
+        await self._ensure_init()
+        group_id = f"{scope}:{key}"
+        await self.graphiti.add_episode(
+            name=group_id,
+            episode_body=content,
+            source=EpisodeType.text,
+            source_description="affective-expression memory",
+            reference_time=valid_at,
+            group_id=group_id,
+        )
+        logger.debug("graphiti add_episode scope=%s key=%s", scope, key)
+
+    async def search(
+        self,
+        query: str,
+        *,
+        scope: str,
+        key: str | None = None,
+        at: datetime | None = None,
+        limit: int = 5,
+    ) -> list[StoredFact]:
+        """语义检索 group_id 内事实，映射成 StoredFact 并按时间语境过滤。"""
+        await self._ensure_init()
+        group_id = f"{scope}:{key}" if key is not None else scope
+        edges = await self.graphiti.search(query, group_ids=[group_id])
+        results: list[StoredFact] = []
+        for edge in edges:
+            valid = getattr(edge, "valid_at", None)
+            invalid = getattr(edge, "invalid_at", None)
+            if at is None:
+                if invalid is not None:
+                    continue
+            elif (valid is not None and valid > at) or (invalid is not None and at >= invalid):
+                continue
+            results.append(
+                StoredFact(
+                    scope=scope,
+                    key=key or "",
+                    content=edge.fact,
+                    valid_at=valid or at or datetime.now(UTC),
+                    invalid_at=invalid,
+                )
+            )
+            if len(results) >= limit:
+                break
+        return results
+
+    async def close(self) -> None:
+        """关闭 Graphiti（底层 Neo4j 驱动）连接池。"""
+        await self.graphiti.close()
+
+
+def _build_graphiti(uri: str, user: str, password: str) -> Any:
+    """构造 Graphiti 客户端；显式配了 OpenAI 兼容网关则注入自定义 LLM/embedder，否则用其默认。
+
+    自定义构造失败（如版本间 import 路径差异）时告警回退默认，最大化跨版本健壮性。
+    """
+    from graphiti_core import Graphiti  # 延迟导入：缺驱动由 _graphiti_store 捕获回退
+
+    base_url = os.getenv("ZERO_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+    api_key = os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    model = os.getenv("ZERO_GRAPHITI_MODEL")
+    if base_url or model:
+        try:
+            from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+            from graphiti_core.llm_client.config import LLMConfig
+            from graphiti_core.llm_client.openai_client import OpenAIClient
+
+            llm_client = OpenAIClient(
+                config=LLMConfig(api_key=api_key, base_url=base_url, model=model)
+            )
+            embedder = OpenAIEmbedder(
+                config=OpenAIEmbedderConfig(api_key=api_key, base_url=base_url)
+            )
+            return Graphiti(uri, user, password, llm_client=llm_client, embedder=embedder)
+        except Exception:
+            logger.warning("自定义 Graphiti LLM/embedder 构造失败，回退默认 OpenAI 配置")
+    return Graphiti(uri, user, password)
+
+
+def _graphiti_store() -> GraphitiGraphStore | None:
+    """构造 Graphiti 语义后端；缺 graphiti-core 时告警返回 None 触发回退（同 `_neo4j_store`）。
+
+    Neo4j 连接复用 `ZERO_NEO4J_{URI,USER,PASSWORD}`（与 Neo4jGraphStore / compose 一致）。
+    """
+    try:
+        import graphiti_core  # noqa: F401  仅探测驱动是否可用
+    except ImportError:
+        logger.warning("ZERO_SEMANTIC_BACKEND=graphiti 但缺 graphiti-core，回退（无语义记忆）")
+        return None
+    uri = os.getenv("ZERO_NEO4J_URI", "bolt://localhost:7687")
+    user = os.getenv("ZERO_NEO4J_USER", "neo4j")
+    password = os.getenv("ZERO_NEO4J_PASSWORD", "password")
+    return GraphitiGraphStore(uri, user, password)
+
+
+def build_semantic_store(backend: str | None = None) -> SemanticStore | None:
+    """按 env `ZERO_SEMANTIC_BACKEND` 选语义记忆后端：空（默认，无语义记忆/零回归）/ `graphiti`。
+
+    与 `build_graph_store`（确定性后端）正交：语义记忆是可选侧信道，默认不启用、零依赖。
+    `graphiti` 缺驱动时告警回退 None（上层据此 no-op）。
+    """
+    choice = (backend or os.getenv("ZERO_SEMANTIC_BACKEND") or "").lower()
+    if choice == "graphiti":
+        return _graphiti_store()
+    return None
