@@ -64,26 +64,30 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 - **容器化**：`Dockerfile` + `docker-compose.yml`（postgres + neo4j + app）+ `.dockerignore` + `.env.example`；真后端驱动在 `db` extra（`pip install -e ".[db]"`）。服务器上 `docker compose up` 即接 Postgres/Neo4j 验证。
 - **记忆读闭环**：`MemoryRecallAgent` 在管线开头读 user 长期情绪倾向，偏置 `Appraisal` 先验（reward 不变，TD 通路不动）；`MoodAgent` 把 v2 心境的双稳更新独立成节点（A.7）。二者默认门控关闭。
 
-### 语义记忆深度集成（Graphiti · 侧信道 · 默认关）
+### 语义记忆侧信道（默认关、零回归）
 
-把 Graphiti 作为**与确定性 GraphStore 并存的语义记忆侧信道**接入——不替换基础后端，不把 LLM/网络塞进 affect 数学的确定性热路径：
+`SemanticStore` 协议（`src/storage/graph_store.py`）让语义记忆**与确定性 GraphStore 并存、可换实现**——不替换基础后端，不把 LLM/网络塞进 affect 数学的确定性热路径。两种后端按体量选：
 
-- **存储层** `SemanticStore` 协议 + `GraphitiGraphStore`（`src/storage/graph_store.py`）：LLM 抽实体/关系入图 + 语义/向量检索，scope/key→Graphiti `group_id`；构造不连接、首次读写一次性建索引；LLM/embedder 复用 `ZERO_OPENAI_*` + `ZERO_GRAPHITI_MODEL`，Neo4j 复用 `ZERO_NEO4J_*`。
-- **记忆层** `MemoryClient.write_episode`（富文本 episode→语义记忆）/ `recall`（语义检索）；确定性 `write`/`query` 不变。无语义后端时二者 no-op/返回空（零回归）。
-- **深度集成落点**：Supervisor 任务完成时额外写自然语言情感事件 episode → Graphiti 抽实体/关系；MemoryRecall 语义召回 → `recalled_context` → **LanguageAgent 检索串并入**，语义图谱由此真正影响语言生成。全链 `ZERO_SEMANTIC_BACKEND=graphiti` + `recall_enabled` 门控，默认关。
-- 装 `graphiti` extra：`pip install -e ".[graphiti]"`。**图库可选**：`ZERO_GRAPHITI_DB=neo4j`（默认，持久/生产）或 `kuzu`（嵌入式、本地无服务/无 Docker，⚠ upstream 已 deprecated，仅作本地 smoke）。
+| 后端 | `ZERO_SEMANTIC_BACKEND` | 实质 | 服务/依赖 |
+| --- | --- | --- | --- |
+| **SqliteVectorStore**（推荐/轻量） | `sqlite_vec` | SQLite 存 episode+embedding、余弦相似度 Top-K 召回 | 无图库/无服务/无 Docker，仅需 `openai` |
+| **GraphitiGraphStore** | `graphiti` | LLM 抽实体/关系入知识图谱 + 语义检索 | 需图库 Neo4j + `.[graphiti]`（⚠ kuzu 后端 Graphiti 有 FTS bug，不可用） |
 
-**本地验证（无 Docker / 无服务）**：用嵌入式 kuzu 图库 + OpenAI 兼容 LLM，命令行即可跑通闭环：
+- **记忆层** `MemoryClient.write_episode`（富 episode→语义记忆）/ `recall`（语义检索）；确定性 `write`/`query` 不变。无语义后端时二者 no-op/返回空。
+- **深度集成落点**：Supervisor 任务完成时额外写自然语言情感事件 episode；MemoryRecall 语义召回 → `recalled_context` → **LanguageAgent 检索串并入**，语义记忆由此真正影响语言生成。`recall_enabled` 门控。
+- embedding 走 OpenAI 兼容接口（`ZERO_OPENAI_*` + `ZERO_GRAPHITI_EMBED_MODEL`），两后端共用。
+
+**本地验证（无 Docker / 无服务，sqlite_vec）**——命令行即可跑通闭环：
 
 ```powershell
-pip install -e ".[graphiti]"     # graphiti-core + kuzu + python-dotenv
-Copy-Item .env.example .env      # 再在 .env 里：取消 ZERO_SEMANTIC_BACKEND=graphiti 注释、ZERO_GRAPHITI_DB 改 kuzu、填真 OPENAI_API_KEY
+pip install -e ".[llm]"          # 仅需 openai（embedding）；sqlite_vec 不要图库
+Copy-Item .env.example .env      # 在 .env 里：取消 ZERO_SEMANTIC_BACKEND=sqlite_vec 注释、填真 OPENAI_API_KEY、按需改 EMBED_MODEL
 python -m scripts.verify_graphiti_local   # 同一 user 跑两次，看 recalled_context 非空 = 语义召回闭环跑通
 ```
 
-- `scripts/verify_graphiti_local.py` 会自动加载根目录 `.env`（python-dotenv，未装则退回 shell 导出 env）；env 变量见 `.env.example`。
-- ⚠ kuzu upstream 已 deprecated，仅作本地 smoke 跳板；**持久/生产仍走 Neo4j**（`ZERO_GRAPHITI_DB=neo4j` 默认，Desktop 或服务器）。
-- 注意：库代码不依赖 dotenv，只有该便捷脚本加载 `.env`；正式运行/容器由真实环境注入（secrets 走 `.env`、不入库）。
+- 脚本自动加载根目录 `.env`（python-dotenv，未装则退回 shell 导出）；env 见 `.env.example`。
+- 想要实体/关系知识图谱时再上 `graphiti` 后端（Neo4j Desktop/服务器）——`SemanticStore` 协议同形、编排层无感切换。
+- 库代码不依赖 dotenv，只有该便捷脚本加载 `.env`；正式运行/容器由真实环境注入（secrets 走 `.env`、不入库）。
 
 ## 架构图
 

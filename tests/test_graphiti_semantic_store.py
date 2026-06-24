@@ -164,6 +164,60 @@ def test_group_id_sanitizes_for_graphiti() -> None:
     assert ":" not in gs._group_id("session", "tid:1")
 
 
+# ---------------- 轻量 SQLite 向量后端（无图库，确定性本机测试） ---------------- #
+
+
+def test_cosine_similarity() -> None:
+    assert gs._cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
+    assert gs._cosine([1.0, 0.0], [0.0, 1.0]) == 0.0
+    assert gs._cosine([1.0, 0.0], [0.0, 0.0]) == 0.0  # 零向量 → 0，不抛
+
+
+async def test_sqlite_vector_store_ranks_and_filters(monkeypatch) -> None:
+    """用 fake embedder（关键词 one-hot）验证语义召回排序 + scope/key 过滤，不依赖真 LLM。"""
+    store = gs.SqliteVectorStore(":memory:")
+    vocab = {"cat": [1.0, 0.0, 0.0], "dog": [0.0, 1.0, 0.0], "car": [0.0, 0.0, 1.0]}
+
+    async def fake_embed(text: str) -> list[float]:
+        v = [0.0, 0.0, 0.0]
+        for word, vec in vocab.items():
+            if word in text:
+                v = [a + b for a, b in zip(v, vec, strict=False)]
+        return v if any(v) else [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(store, "_embed", fake_embed)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    await store.add_episode(scope="user", key="u1", content="I love cat", valid_at=t0)
+    await store.add_episode(scope="user", key="u1", content="I drive car", valid_at=t0)
+
+    facts = await store.search("cat", scope="user", key="u1", limit=1)
+    assert facts and "cat" in facts[0].content  # 最相似的是 cat 那条
+    assert await store.search("cat", scope="user", key="other") == []  # key 过滤
+    assert await store.search("cat", scope="session", key="u1") == []  # scope 过滤
+
+
+def test_factory_sqlite_vec_falls_back_without_openai(monkeypatch) -> None:
+    """选 sqlite_vec 但缺 openai（embedding 依赖）→ 回退 None，不抛。"""
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("simulated missing openai")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setenv("ZERO_SEMANTIC_BACKEND", "sqlite_vec")
+    assert build_semantic_store() is None
+
+
+def test_factory_sqlite_vec_constructs(monkeypatch) -> None:
+    """装了 openai 时 sqlite_vec → SqliteVectorStore（构造不调 LLM，client 延迟建）。"""
+    pytest.importorskip("openai")
+    monkeypatch.setenv("ZERO_SEMANTIC_BACKEND", "sqlite_vec")
+    monkeypatch.setenv("ZERO_SEMANTIC_DB", ":memory:")
+    assert isinstance(build_semantic_store(), gs.SqliteVectorStore)
+
+
 # --------------------- 实机 smoke（importorskip + env 探测 → skip） --------------------- #
 
 
