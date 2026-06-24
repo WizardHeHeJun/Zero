@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -352,6 +353,89 @@ class GraphitiGraphStore:
         await self.graphiti.close()
 
 
+class SqliteVectorStore:
+    """轻量语义记忆后端：SQLite 存 episode 文本+embedding，search 算余弦相似度 Top-K。
+
+    满足 SemanticStore 协议但**不依赖图数据库**——无服务/无 Docker，适合小体量本地原型/验证。
+    embedding 走 OpenAI 兼容接口（复用 `ZERO_OPENAI_*` + `ZERO_GRAPHITI_EMBED_MODEL`，默认
+    text-embedding-3-small）。丢掉 Graphiti 的实体/关系抽取，只保留语义召回；需要知识图谱时
+    换 GraphitiGraphStore（同 SemanticStore 协议，编排层无感切换）。
+    """
+
+    def __init__(self, path: str = ":memory:") -> None:
+        self.conn = sqlite3.connect(path)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS episodes ("
+            "scope TEXT NOT NULL, key TEXT NOT NULL, content TEXT NOT NULL, "
+            "valid_at TEXT NOT NULL, embedding TEXT NOT NULL)"
+        )
+        self.conn.commit()
+        self.client: Any = None
+        self.base_url = os.getenv("ZERO_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+        self.api_key = os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        self.model = os.getenv("ZERO_GRAPHITI_EMBED_MODEL", "text-embedding-3-small")
+
+    async def _embed(self, text: str) -> list[float]:
+        """文本 → embedding 向量（OpenAI 兼容接口，延迟建 client；缺 openai 由工厂回退）。"""
+        if self.client is None:
+            from openai import AsyncOpenAI  # 延迟导入
+
+            self.client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
+        resp = await self.client.embeddings.create(model=self.model, input=[text])
+        return list(resp.data[0].embedding)
+
+    async def add_episode(
+        self, *, scope: str, key: str, content: str, valid_at: datetime
+    ) -> None:
+        """写一条 episode：存文本 + 其 embedding。"""
+        emb = await self._embed(content)
+        self.conn.execute(
+            "INSERT INTO episodes (scope, key, content, valid_at, embedding) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (scope, key, content, valid_at.isoformat(), json.dumps(emb)),
+        )
+        self.conn.commit()
+        logger.debug("sqlite_vector add_episode scope=%s key=%s", scope, key)
+
+    async def search(
+        self,
+        query: str,
+        *,
+        scope: str,
+        key: str | None = None,
+        at: datetime | None = None,
+        limit: int = 5,
+    ) -> list[StoredFact]:
+        """对 scope[/key] 下 episode 算 query 余弦相似度，返回 Top-limit（带时间语境过滤）。"""
+        q = await self._embed(query)
+        rows = self.conn.execute(
+            "SELECT scope, key, content, valid_at, embedding FROM episodes WHERE scope = ?",
+            (scope,),
+        ).fetchall()
+        scored: list[tuple[float, StoredFact]] = []
+        for s, k, content, valid_at, emb_json in rows:
+            if key is not None and k != key:
+                continue
+            valid = datetime.fromisoformat(valid_at)
+            if at is not None and valid > at:
+                continue
+            sim = _cosine(q, json.loads(emb_json))
+            scored.append((sim, StoredFact(scope=s, key=k, content=content, valid_at=valid)))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [fact for _, fact in scored[:limit]]
+
+    def close(self) -> None:
+        """关闭 SQLite 连接。"""
+        self.conn.close()
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """余弦相似度（纯 Python，不依赖 numpy）；任一零向量返回 0。"""
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    norm = (sum(x * x for x in a) ** 0.5) * (sum(y * y for y in b) ** 0.5)
+    return dot / norm if norm else 0.0
+
+
 def _build_graphiti(uri: str, user: str, password: str) -> Any:
     """构造 Graphiti 客户端：env `ZERO_GRAPHITI_DB` 选图库 neo4j（默认）/ kuzu（嵌入式，无服务）。
 
@@ -444,13 +528,31 @@ def _graphiti_store() -> GraphitiGraphStore | None:
         return None
 
 
+def _sqlite_vector_store() -> SqliteVectorStore | None:
+    """构造轻量 SQLite 向量后端；缺 openai（embedding 依赖）时告警回退 None。
+
+    落盘路径 env `ZERO_SEMANTIC_DB`（默认 `data/semantic.sqlite3`，自动建目录；`:memory:` 不落盘）。
+    """
+    try:
+        import openai  # noqa: F401  仅探测 embedding 依赖是否可用
+    except ImportError:
+        logger.warning("ZERO_SEMANTIC_BACKEND=sqlite_vec 但缺 openai，回退（无语义记忆）")
+        return None
+    path = os.getenv("ZERO_SEMANTIC_DB", "data/semantic.sqlite3")
+    if path != ":memory:":
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    return SqliteVectorStore(path)
+
+
 def build_semantic_store(backend: str | None = None) -> SemanticStore | None:
-    """按 env `ZERO_SEMANTIC_BACKEND` 选语义记忆后端：空（默认，无语义记忆/零回归）/ `graphiti`。
+    """按 env `ZERO_SEMANTIC_BACKEND` 选语义后端：空（默认/零回归）/ `sqlite_vec` / `graphiti`。
 
     与 `build_graph_store`（确定性后端）正交：语义记忆是可选侧信道，默认不启用、零依赖。
-    `graphiti` 缺驱动时告警回退 None（上层据此 no-op）。
+    `sqlite_vec`（轻量、无图库、SQLite+向量相似度）缺 openai、`graphiti` 缺驱动 → 告警回退 None。
     """
     choice = (backend or os.getenv("ZERO_SEMANTIC_BACKEND") or "").lower()
     if choice == "graphiti":
         return _graphiti_store()
+    if choice in ("sqlite_vec", "sqlite", "vector"):
+        return _sqlite_vector_store()
     return None

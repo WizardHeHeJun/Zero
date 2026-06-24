@@ -99,9 +99,20 @@
 - **验证**：`pytest` **107 passed**（+1）；`ruff`/`mypy` 干净。
 - **仍待真机跑通**：本机无 LLM key；用户带 OpenAI 兼容 key 跑 `python -m scripts.verify_graphiti_local` 即可本地验证闭环（无 Docker）。
 
+### 阶段 10 — 文本输入侧句向量升级（词袋→语义编码，跨域泛化实测）
+
+阶段 2 三-5 的 `TextAffectRegressor` 用哈希词袋（无语义泛化、跨域即失效，预测幅度被压在 ±0.12）；本步换预训练句向量编码器，干净隔离出「语义表示 vs 词袋」一个变量（词袋版零回归、并存作基线）。
+
+- **句向量模型**（`src/agents/models/text_affect_regressor_st.py`，纯新增）：`STTextAffectRegressor` = **冻结** `all-MiniLM-L6-v2`(384维) 句向量 → 同款 MLP 头，只训头。编码器**非 module 成员**（经 `encode_texts`+`lru_cache` 单例延迟 import sentence-transformers），故 `state_dict` 仅含 MLP 头。
+- **loader/脚本**（纯新增）：`emobank_st.load_emobank_embeddings` 复用 `read_emobank_rows`（从 `emobank.py` 抽出的共用 CSV 解析/归一化源）+ 预计算句向量；`scripts/train_text_affect_st.py` 全批量训练。**词袋版零回归**（`load_emobank` 改为复用 `read_emobank_rows`，行为不变）。
+- **实测对比**（EmoBank 全量 10062 句、同 MLP 头、CPU）：loss `0.0156 → 0.0056`（降 64%）；幅度 ±0.12 → ±0.6；"furious" arousal `+0.05 → +0.73`（学到「愤怒=高唤起」需语义的映射）；**跨域**——口语「omg…lit…best night」词袋错判负(−0.07)/句向量判对(+0.52)，商业体裁「revenue disappointing」词袋几无反应(−0.02)/句向量识别负(−0.33)。坐实文献：更广域靠**语义表示**而非堆数据量。
+- **依赖/成本**：新 `nlp` extra（`sentence-transformers`），独立于 `ml`、默认词袋路径不引入；首次联网下 MiniLM 权重(~80MB)。编码器**冻结**（CPU 务实选择），端到端微调可再涨但需 GPU。
+- **测试**：`tests/test_emobank_st.py`（importorskip torch+sentence_transformers 优雅跳过）—— 共用解析、ST 头 forward、句向量 loader 维度、predict 范围、训练 smoke。
+- **验证**：`pytest` **113 passed**（107 + 6 新）；`ruff`/`mypy`(39 源) 干净。
+
 ## 成果与验证
 
-- **测试**：`pytest` 107 passed（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1）；`ruff check`/`ruff format`/`mypy`(37 源文件) 干净。
+- **测试**：`pytest` 113 passed, 4 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(39 源文件) 干净。
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
@@ -131,10 +142,11 @@ DATASETS.md                                   数据集清单
 - 分支 `feat/neo4j-graphstore-backend`：Neo4j 长期记忆适配器（裸 Cypher 保时序失效）+ Postgres saver 加固 + README/文档口径同步。
 - 分支 `feat/local-backends-and-agents`（语言层）：`LanguageAgent` + affect↔language 双向收敛回路（`route_after_mood`/`route_after_language`，双向互调 + 终止上限）+ `OpenAILanguageModel`（OpenAI 兼容接口，生成 + 独立 VAD 反推，`llm` extra），全程默认关、零回归。
 - 阶段 8（PR #10，已合并 main）：Graphiti 语义记忆深度集成——`SemanticStore` 协议 + `GraphitiGraphStore` + `MemoryClient.write_episode/recall`，与确定性 GraphStore 并存的侧信道；Supervisor 写富 episode、MemoryRecall 语义召回 → `recalled_context` → LanguageAgent 检索（`graphiti` extra），默认关、零回归。
-- 分支 `feat/graphiti-kuzu-local-verify`（阶段 9，本次）：Graphiti 本地无 Docker 验证路径——`ZERO_GRAPHITI_DB` 选 neo4j/kuzu（嵌入式）、`_coerce_dt` 防 kuzu datetime bug、`scripts/verify_graphiti_local.py` + `.env` 自动加载、`.env.example` 去重补 kuzu 变量；`graphiti` extra 加 `kuzu`/`python-dotenv`。
+- 分支 `feat/graphiti-kuzu-local-verify`（阶段 9）：Graphiti 本地无 Docker 验证路径——`ZERO_GRAPHITI_DB` 选 neo4j/kuzu（嵌入式）、`_coerce_dt` 防 kuzu datetime bug、`scripts/verify_graphiti_local.py` + `.env` 自动加载、`.env.example` 去重补 kuzu 变量；`graphiti` extra 加 `kuzu`/`python-dotenv`。
+- 分支 `chore/temp-main-launcher`（阶段 10，本次）：文本输入侧句向量升级——`STTextAffectRegressor`（冻结 MiniLM + MLP 头）+ `emobank_st`/`train_text_affect_st` + `test_emobank_st`，词袋版零回归并存作基线；实测 loss 降 64% + 跨域口语/商业体裁判对；新 `nlp` extra（`sentence-transformers`）。
 
 ## 待办（需外部介入或独立轨道）
 
-- **放数据跑真实训练**：任一 EULA-free 集（RAVDESS/WESAD/EmoBank）→ `data/` → 跑 `train_*`（脚手架已就绪）。
+- **放数据跑真实训练**：**EmoBank 已实跑**（词袋版 loss 0.016；句向量升级版 loss 0.0056、跨域更稳，见阶段 10）；其余 EULA-free 集（RAVDESS 韵律 / WESAD 生理）仍待放 `data/` 跑对应 `train_*`（脚手架已就绪）。
 - **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。**Graphiti 已深度集成（阶段 8）**：作为与确定性 GraphStore 并存的语义记忆侧信道接入（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND=graphiti` 门控、默认关。**本地验证路径已就绪（阶段 9）**：`ZERO_GRAPHITI_DB=kuzu`（嵌入式、无 Docker/无服务）+ OpenAI 兼容 key，跑 `python -m scripts.verify_graphiti_local` 即可在本机验证闭环；**待用户带 LLM key 实跑确认**（本机无 key）。
 - **扩 Worker 角色**：已加 MemoryRecall / Mood；可继续按 `/new-agent` 增加。
