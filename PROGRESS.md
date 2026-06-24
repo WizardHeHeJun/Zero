@@ -147,6 +147,6 @@ DATASETS.md                                   数据集清单
 
 ## 待办（需外部介入或独立轨道）
 
-- **放数据跑真实训练**：**EmoBank 已实跑**（词袋版 loss 0.016；句向量升级版 loss 0.0056、跨域更稳，见阶段 10）；其余 EULA-free 集（RAVDESS 韵律 / WESAD 生理）仍待放 `data/` 跑对应 `train_*`（脚手架已就绪）。
+- **放数据跑真实训练（三通道全部实跑 3/3）**：**EmoBank 文本**（词袋 loss 0.016 / 句向量升级 0.0056、跨域更稳，见阶段 10）、**RAVDESS 韵律**（Zenodo 免登录、全量 1440 条，loss 0.126→0.026，pitch 随 arousal 单调上升的真实声学映射）、**WESAD 生理**（uni-siegen sciebo 全量 15 受试者 1474 窗，loss 0.053→0.024，stress 心率 92.7bpm/皮电最高 vs meditation 67.5 的应激→自主神经激活映射）均已实跑；脚手架（loader + `train_*`）在三类真实数据上验证可用。各通道 speech_rate/energy、体温等弱区分项属 loader 特征代理的尺度问题，非模型问题。
 - **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。**Graphiti 已深度集成（阶段 8）**：作为与确定性 GraphStore 并存的语义记忆侧信道接入（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND=graphiti` 门控、默认关。**本地验证路径已就绪（阶段 9）**：`ZERO_GRAPHITI_DB=kuzu`（嵌入式、无 Docker/无服务）+ OpenAI 兼容 key，跑 `python -m scripts.verify_graphiti_local` 即可在本机验证闭环；**待用户带 LLM key 实跑确认**（本机无 key）。
 - **扩 Worker 角色**：已加 MemoryRecall / Mood；可继续按 `/new-agent` 增加。
