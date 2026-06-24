@@ -110,6 +110,17 @@
 - **测试**：`tests/test_emobank_st.py`（importorskip torch+sentence_transformers 优雅跳过）—— 共用解析、ST 头 forward、句向量 loader 维度、predict 范围、训练 smoke。
 - **验证**：`pytest` **113 passed**（107 + 6 新）；`ruff`/`mypy`(39 源) 干净。
 
+### 阶段 11 — 真实数据三通道全部实跑（3/3）+ 权重发布（weights-v0.2）+ 文档同步
+
+把阶段 2 真网络化脚手架真正喂上真实公开数据：文本/韵律/生理三通道全部在真实数据上训练验证，权重发布到 Release，README/知识层同步。**RAVDESS/WESAD 为纯运行现成脚手架（无代码改动）；文本句向量升级的代码见阶段 10。**
+
+- **文本 EmoBank**（输入侧）：词袋 `TextAffectRegressor` loss 0.016；句向量 `STTextAffectRegressor`（阶段 10）loss 0.0056、跨域口语/商业体裁判对——坐实「语义表示 > 词袋」。
+- **韵律 RAVDESS**（Zenodo 免登录、全量 1440 条）：`ProsodyDecoder` loss 0.126→0.026；推理验证 **pitch 随 arousal 单调上升**的真实声学映射（F0 主由唤起度驱动，valence 次要）。
+- **生理 WESAD**（uni-siegen sciebo 2.25GB、15 受试者切 1474 个 30s 窗）：`PhysiologyDecoder` loss 0.053→0.024；推理验证 **stress 心率 92.7bpm·皮电最高 vs meditation 67.5** 的应激→自主神经（交感/副交感）激活。⚠ 数据获取坑：UCI 只给指针、其 sciebo 链接 `pYjSgfOVs6Ntahr` 已失效，改用经典 `HGdUkoNlW1Ub0Gx`。
+- **弱区分项**（韵律 speech_rate/energy、生理体温）属 loader 特征代理的归一化尺度问题，非模型问题。
+- **权重发布**：GitHub Release `weights-v0.2`（real-data trained，4 个真实权重）；`weights-v0.1` 留作合成 demo。`artifacts/` 仍 gitignore，权重一律走 Release。
+- **文档同步**：README（真网络化表加句向量版 + 三通道实跑 + weights 下载）、ai-docs agents guide「真网络化」节 + catalog 里程碑（ai-docs 为本地 gitignore 知识层）。
+
 ## 成果与验证
 
 - **测试**：`pytest` 113 passed, 4 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(39 源文件) 干净。
@@ -143,7 +154,9 @@ DATASETS.md                                   数据集清单
 - 分支 `feat/local-backends-and-agents`（语言层）：`LanguageAgent` + affect↔language 双向收敛回路（`route_after_mood`/`route_after_language`，双向互调 + 终止上限）+ `OpenAILanguageModel`（OpenAI 兼容接口，生成 + 独立 VAD 反推，`llm` extra），全程默认关、零回归。
 - 阶段 8（PR #10，已合并 main）：Graphiti 语义记忆深度集成——`SemanticStore` 协议 + `GraphitiGraphStore` + `MemoryClient.write_episode/recall`，与确定性 GraphStore 并存的侧信道；Supervisor 写富 episode、MemoryRecall 语义召回 → `recalled_context` → LanguageAgent 检索（`graphiti` extra），默认关、零回归。
 - 分支 `feat/graphiti-kuzu-local-verify`（阶段 9）：Graphiti 本地无 Docker 验证路径——`ZERO_GRAPHITI_DB` 选 neo4j/kuzu（嵌入式）、`_coerce_dt` 防 kuzu datetime bug、`scripts/verify_graphiti_local.py` + `.env` 自动加载、`.env.example` 去重补 kuzu 变量；`graphiti` extra 加 `kuzu`/`python-dotenv`。
-- 分支 `chore/temp-main-launcher`（阶段 10，本次）：文本输入侧句向量升级——`STTextAffectRegressor`（冻结 MiniLM + MLP 头）+ `emobank_st`/`train_text_affect_st` + `test_emobank_st`，词袋版零回归并存作基线；实测 loss 降 64% + 跨域口语/商业体裁判对；新 `nlp` extra（`sentence-transformers`）。
+- 分支 `chore/temp-main-launcher`（阶段 10）：文本输入侧句向量升级——`STTextAffectRegressor`（冻结 MiniLM + MLP 头）+ `emobank_st`/`train_text_affect_st` + `test_emobank_st`，词袋版零回归并存作基线；实测 loss 降 64% + 跨域口语/商业体裁判对；新 `nlp` extra（`sentence-transformers`）。
+- 分支 `docs/ravdess-prosody-done`（阶段 11，PR #16 已合 main）：RAVDESS 韵律 + WESAD 生理真实数据实跑记录（PROGRESS 待办标 3/3）。
+- 分支 `docs/readme-weights-v0.2`（阶段 11，PR #17 已合 main）：README 同步三通道实跑 + 句向量升级 + `weights-v0.2`（real-data trained）release 发布；ai-docs 本地知识层同步。
 
 ## 待办（需外部介入或独立轨道）
 
