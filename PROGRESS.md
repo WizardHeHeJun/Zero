@@ -220,6 +220,15 @@
 - **落点**：`language.py`/`language_openai.py`/`language_steering.py`(retrieved)、`main.py`(recall_enabled+user_id+attitude_appeal)。新测 `test_chat_memory_integration.py`(17)+`test_attitude_prior.py`(13)。
 - **验证**：`pytest` **222 passed, 5 skipped**（基线 209 净增 13）；rebase 到含 #27/#28 的最新 main 后全仓库 **247 passed, 5 skipped**；ruff/mypy 干净。**PR #29 待合并。**
 
+### 阶段 21 — 对话情景记忆：语义召回真正通电 + 显著性门控 episode（科学家议会·守红线）
+
+阶段20 把 `recalled_context` 接进了 `converse`，但 `--chat` 默认没开语义后端 → `recall` 恒空、"记得过去交流"没真通。经**科学家议会**（心理/神经/CS 三席）评审"对话经历该写什么/何时/scope/召回怎么用"，定 A+B。决策+引文见 `notes/2026-06-25-conversation-episodic-memory-council.md`。
+
+- **A 工程通电（必修）**：`main.py _run_chat` 补 `ZERO_SEMANTIC_BACKEND=sqlite_vec` setdefault（开箱即用，缺 openai 告警回退零回归）+ Stimulus 补传 `text=user`（gist 依赖）；语义侧信道失败隔离——`SqliteVectorStore._embed` raise、`MemoryClient.write_episode/recall` try/except→warning+跳过/返 []，**embedding 失败绝不崩主对话**（守"语义可选侧信道"）。
+- **B 记忆语义（议会设计·全确定性守红线）**：①episode 改**确定性三层拼接**（你说=stimulus.text[:200] / 我说=language_text[:200] / 情绪 text_label+v,a + 显著性元数据 precision/streams/value），**禁 LLM 生成摘要**（心理席 gist 主导 + Neisser/Conway）；②`language_enabled=False` 时跳过 language 段（无模板噪声）；③**显著性门控写入**——`salience=precision×|rpe| < ZERO_EPISODE_SALIENCE_MIN(0.15)` 跳过 write_episode（海马情绪/新颖性门控 McGaugh/Lisman&Grace；结构化 write 不门控）；④**选择性召回**——recall query 拼情绪线索(mood-congruent，Faul&LaBar)、`search` 加 `sim_threshold(0.65)` 过滤防 proactive interference(arXiv 2506.08184)；⑤`add_episode` dedup(>0.92 跳过)防图谱抖动。阈值全走 env。
+- **落点**：`main.py`、`storage/backends/semantic.py`(_embed/search/add_episode/__init__)、`memory/client.py`(隔离)、`orchestration/supervisor.py`(门控+三层拼接)、`memory_recall.py`(情绪线索)。新测 `test_episodic_memory.py`(29)。
+- **验证**：`pytest` **276 passed, 5 skipped**（基线 247 净增 29）；ruff/format/mypy 干净；code-reviewer PASS（无 BLOCK、红线全守）。**待合并。** 完整巩固/遗忘（睡眠/Ebbinghaus）留路线图后期。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
@@ -259,6 +268,7 @@ DATASETS.md                                   数据集清单
 - PR #27（阶段 18，已合并 main）：文本输入侧情感经独立低精度流接入内核（受约束方案 c），科学家议会四席评审 + 落库引文。
 - PR #28（阶段 19，已合并 main）：对话模块前置债——`ConversationModel` 协议 + 双存储边界文档化（hybrid 架构定调）。
 - PR #29（阶段 20，待合并）：记忆层服务对话（recall 回灌）+ 长期 attitude 进 AppraisalAgent 先验；含本次 PROGRESS/README/知识层文档同步。
+- 分支 `feat/chat-episodic-memory`（阶段 21，栈在 #29 上）：对话情景记忆——语义召回通电(sqlite_vec 默认开)+显著性门控确定性 episode+选择性召回+侧信道失败隔离；科学家议会评记忆语义、守红线（gist 确定性拼接禁 LLM）。
 
 ## 待办（需外部介入或独立轨道）
 

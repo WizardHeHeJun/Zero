@@ -43,6 +43,7 @@ class SemanticStore(Protocol):
         key: str | None = None,
         at: datetime | None = None,
         limit: int = 5,
+        sim_threshold: float | None = None,
     ) -> list[StoredFact]: ...
 
 
@@ -98,8 +99,12 @@ class GraphitiGraphStore:
         key: str | None = None,
         at: datetime | None = None,
         limit: int = 5,
+        sim_threshold: float | None = None,
     ) -> list[StoredFact]:
-        """语义检索 group_id 内事实，映射成 StoredFact 并按时间语境过滤。"""
+        """语义检索 group_id 内事实，映射成 StoredFact 并按时间语境过滤。
+
+        sim_threshold 参数保持协议兼容（Graphiti 侧暂不实现过滤，图检索分数由 Graphiti 内部管理）。
+        """
         await self._ensure_init()
         group_id = _group_id(scope, key)
         edges = await self.graphiti.search(query, group_ids=[group_id])
@@ -151,19 +156,45 @@ class SqliteVectorStore:
         self.base_url = os.getenv("ZERO_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
         self.api_key = os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
         self.model = os.getenv("ZERO_GRAPHITI_EMBED_MODEL", "text-embedding-3-small")
+        self.sim_threshold = float(os.getenv("ZERO_RECALL_SIM_MIN", "0.65"))
+        self.dedup_threshold = float(os.getenv("ZERO_EPISODE_DEDUP_MAX", "0.92"))
 
     async def _embed(self, text: str) -> list[float]:
         """文本 → embedding 向量（OpenAI 兼容接口，延迟建 client；缺 openai 由工厂回退）。"""
-        if self.client is None:
-            from openai import AsyncOpenAI  # 延迟导入
+        try:
+            if self.client is None:
+                from openai import AsyncOpenAI  # 延迟导入
 
-            self.client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
-        resp = await self.client.embeddings.create(model=self.model, input=[text])
-        return list(resp.data[0].embedding)
+                self.client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
+            resp = await self.client.embeddings.create(model=self.model, input=[text])
+            return list(resp.data[0].embedding)
+        except Exception:
+            raise
 
     async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
-        """写一条 episode：存文本 + 其 embedding。"""
+        """写一条 episode：存文本 + 其 embedding。写入前做 dedup 检测，跳过高度相似的重复内容。"""
         emb = await self._embed(content)
+        # B-5 dedup：不走 search 的 sim_threshold 剪枝，直接比对所有已存 episode 原始向量
+        try:
+            rows = self.conn.execute(
+                "SELECT embedding FROM episodes WHERE scope = ? AND key = ?",
+                (scope, key),
+            ).fetchall()
+            for (emb_json,) in rows:
+                existing_emb = json.loads(emb_json)
+                if _cosine(emb, existing_emb) > self.dedup_threshold:
+                    logger.debug(
+                        "sqlite_vector dedup skip scope=%s key=%s (sim>%.2f)",
+                        scope,
+                        key,
+                        self.dedup_threshold,
+                    )
+                    return
+        except Exception as exc:
+            # dedup 失败保守退化：正常写入，宁多写不崩
+            logger.warning(
+                "dedup probe failed scope=%s key=%s: %s, writing anyway", scope, key, exc
+            )
         self.conn.execute(
             "INSERT INTO episodes (scope, key, content, valid_at, embedding) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -180,8 +211,13 @@ class SqliteVectorStore:
         key: str | None = None,
         at: datetime | None = None,
         limit: int = 5,
+        sim_threshold: float | None = None,
     ) -> list[StoredFact]:
-        """对 scope[/key] 下 episode 算 query 余弦相似度，返回 Top-limit（带时间语境过滤）。"""
+        """对 scope[/key] 下 episode 算 query 余弦相似度，返回 Top-limit（带时间语境过滤）。
+
+        sim_threshold 显式传时使用该值，否则用 self.sim_threshold（来自 env
+        ZERO_RECALL_SIM_MIN，默认 0.65）过滤低相似度结果。
+        """
         q = await self._embed(query)
         rows = self.conn.execute(
             "SELECT scope, key, content, valid_at, embedding FROM episodes WHERE scope = ?",
@@ -197,7 +233,8 @@ class SqliteVectorStore:
             sim = _cosine(q, json.loads(emb_json))
             scored.append((sim, StoredFact(scope=s, key=k, content=content, valid_at=valid)))
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [fact for _, fact in scored[:limit]]
+        threshold = sim_threshold if sim_threshold is not None else self.sim_threshold
+        return [fact for sim, fact in scored[:limit] if sim >= threshold]
 
     def close(self) -> None:
         """关闭 SQLite 连接。"""
