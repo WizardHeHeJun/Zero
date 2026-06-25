@@ -11,12 +11,16 @@
 未注入则用占位 `_TemplateLanguageModel`（torch-free / API-free）。
 真模型（如 OpenAI 兼容 adapter）走网络 I/O，故 generate 为 async；节点 __call__ 亦 async。
 节点契约：(state) -> dict，只返回增量。
+
+职责分离：`LanguageModel` 是图内节点（StateGraph 编排路径）的生成协议；`ConversationModel`
+是图外 REPL（--chat 交互对话）的对话协议——两者均可由同一实现类（如 OpenAILanguageModel）
+结构上同时满足，无需显式声明继承。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from src.agents.affect_math import (
     LANG_BASE_PRECISION,
@@ -48,6 +52,26 @@ class LanguageModel(Protocol):
         feedback: str | None,
         appraisal: str = "",
     ) -> LanguageDraft: ...
+
+
+@runtime_checkable
+class ConversationModel(Protocol):
+    """对话路径协议（图外 REPL）：带历史的自然对话 + 用户输入情感评价。
+
+    与 LanguageModel（图内节点 generate）职责分离——converse 接对话历史(OpenAI messages 格式)
+    + 当前情绪坐标返回回应文本；appraise_text 把文本评价成 (valence, arousal) 作评价桥。
+    实现者 OpenAILanguageModel 同时满足两协议（结构匹配即可，无需显式声明）。
+    """
+
+    async def converse(
+        self,
+        history: list[dict[str, str]],
+        affect: tuple[float, float],
+        *,
+        push: bool = False,
+    ) -> str: ...
+
+    async def appraise_text(self, text: str) -> tuple[float, float]: ...
 
 
 class _TemplateLanguageModel:

@@ -3,6 +3,13 @@
 只做协调 + 任务完成判定，**不含业务逻辑**（业务在各 Worker）。记忆写入
 **只在此处**发生（节流，见 memory-rules.md #1）：当前情绪事件写 session 作用域，
 长期情绪倾向写 user 作用域，均显式 scope。注入 MemoryClient，不直连图谱。
+
+存储边界（与 main.py ConversationLog 并行、职责不重叠）：
+- SupervisorAgent 只写情感事件（write，session scope）、长期 episode（write_episode，
+  user scope）、disposition（write，user scope）至 MemoryClient。
+- 对话 transcript 与 attitude 短期态属运行态，由 main.py ConversationLog 管理
+  （turns 表 + meta 表，SQLite，无需 MemoryClient）。
+- 两套存储并行运行——不在此处读写对话历史，不在 ConversationLog 写情感记忆。
 """
 
 from __future__ import annotations
