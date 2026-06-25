@@ -12,28 +12,6 @@
 
 ---
 
-## 项目运作流程：LLM ⊗ 情感引擎
-
-**LLM 只在「输入」「输出」两端与情感引擎结合**（图中两个蓝框）：输入端把你的话**读成情绪**，输出端**被情绪调制着说话**；夹在中间产生情绪的是一套**确定性引擎**（红框，无 LLM），LLM 既不进情绪计算热路径、也不替仿生人"编造"记忆。
-
-![项目运作流程图](docs/runtime-flow.png)
-
-### 关键接口各自的作用（LLM ⊗ 情感接点已标注）
-
-| 接口 / 节点 | 作用 |
-| --- | --- |
-| `ConversationModel.appraise_text(text) → (v,a)` | **评价桥 · LLM 输入接点**：把你的话读成情绪坐标，作为刺激喂给引擎 |
-| `ConversationModel.converse(history, affect, *, retrieved, push)` | **自然对话 · LLM 输出接点**：按当前情绪 + 召回背景生成回应，情绪经用词倾向自然漏进措辞 |
-| `LanguageModel.generate → LanguageDraft` | 图内 `language` 节点协议：研究模式的 affect↔language 双向收敛回路（`python main.py --llm`） |
-| `ChannelDecoder`（鸭子类型注入） | 表达通道解码器：`(v,a)` → 韵律 / 生理 / 表情，可换成训练好的网络，编排层不依赖 torch |
-| `MemoryClient`：`write_episode` / `recall` · `write` / `query` | 记忆读写 API：语义情景记忆（显著性写入 / 选择性召回）+ 确定性长期倾向（图谱·时序失效）；**上层不直连图谱**、写入只在任务完成节点（节流） |
-| 图节点链 `perception → appraisal → value → affect_core → mood → expression → supervisor`（+ `memory_recall`） | 情感引擎各环：感知 → 评价先验(含长期态度/召回偏置) → 价值学习 → 显著度门控融合采样 `e*` → 慢心境 → 多通道表达 → 任务完成节流写记忆 |
-| 入口 `build_graph` · `runner.ConversationSession` · `main.py` | 装配并编译图 · 多轮会话基元（mood/价值/记忆跨轮持久）· CLI（`python main.py` 即进对话） |
-
-> 各接口均**协议化、可注入**（真 LLM / 占位模板 / steering 后端、真网络解码器、记忆后端都按协议替换），编排层不绑定具体 SDK——这是"先把对话做扎实、再逐步接多模态"而不动内核契约的底座。
-
----
-
 ## 情感引擎是怎么做的
 
 把"人产生并表达情绪"的过程，建模成一条**贝叶斯流水线**——感知一句话、推断出此刻的情绪、让它随时间演化、再分两路外化为语言和表情。
@@ -87,6 +65,28 @@
 - **确定性图谱**（带时序失效，新事实使旧失效）+ 语义召回侧信道并存；语义侧信道失败绝不拖垮主对话。
 
 > 记忆写什么/何时写/怎么召回，都经跨学科评审定调，且**全程确定性、不让 LLM 替仿生人"编造"记忆**。一键恢复出厂：`python -m tools.reset_db --yes`。
+
+---
+
+## 项目运作流程：LLM ⊗ 情感引擎
+
+把上面的情感引擎接进一次完整对话——**LLM 只在「输入」「输出」两端与它结合**（图中两个蓝框）：输入端把你的话**读成情绪**，输出端**被情绪调制着说话**；夹在中间产生情绪的是那套**确定性引擎**（红框，无 LLM），LLM 既不进情绪计算热路径、也不替仿生人"编造"记忆。
+
+![项目运作流程图](docs/runtime-flow.png)
+
+### 关键接口各自的作用（LLM ⊗ 情感接点已标注）
+
+| 接口 / 节点 | 作用 |
+| --- | --- |
+| `ConversationModel.appraise_text(text) → (v,a)` | **评价桥 · LLM 输入接点**：把你的话读成情绪坐标，作为刺激喂给引擎 |
+| `ConversationModel.converse(history, affect, *, retrieved, push)` | **自然对话 · LLM 输出接点**：按当前情绪 + 召回背景生成回应，情绪经用词倾向自然漏进措辞 |
+| `LanguageModel.generate → LanguageDraft` | 图内 `language` 节点协议：研究模式的 affect↔language 双向收敛回路（`python main.py --llm`） |
+| `ChannelDecoder`（鸭子类型注入） | 表达通道解码器：`(v,a)` → 韵律 / 生理 / 表情，可换成训练好的网络，编排层不依赖 torch |
+| `MemoryClient`：`write_episode` / `recall` · `write` / `query` | 记忆读写 API：语义情景记忆（显著性写入 / 选择性召回）+ 确定性长期倾向（图谱·时序失效）；**上层不直连图谱**、写入只在任务完成节点（节流） |
+| 图节点链 `perception → appraisal → value → affect_core → mood → expression → supervisor`（+ `memory_recall`） | 情感引擎各环：感知 → 评价先验(含长期态度/召回偏置) → 价值学习 → 显著度门控融合采样 `e*` → 慢心境 → 多通道表达 → 任务完成节流写记忆 |
+| 入口 `build_graph` · `runner.ConversationSession` · `main.py` | 装配并编译图 · 多轮会话基元（mood/价值/记忆跨轮持久）· CLI（`python main.py` 即进对话） |
+
+> 各接口均**协议化、可注入**（真 LLM / 占位模板 / steering 后端、真网络解码器、记忆后端都按协议替换），编排层不绑定具体 SDK——这是"先把对话做扎实、再逐步接多模态"而不动内核契约的底座。
 
 ---
 
