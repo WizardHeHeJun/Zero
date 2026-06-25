@@ -19,7 +19,7 @@ import random
 from typing import Any
 
 from src.agents.affect_math import clamp
-from src.agents.emotion_lexicon import affect_label, suggest_affect_words
+from src.agents.emotion_lexicon import affect_label, affect_logit_bias, suggest_affect_words
 from src.agents.language import LanguageDraft
 
 _COMPOSE_SYS = (
@@ -41,6 +41,12 @@ _CONVERSE_SYS = (
     "你有自尊，不是出气筒。你是一个**有脾气、有情绪起伏**的人，情绪慢慢累积、不因一句话突然大起大落。"
     "别夸张表演、别长篇大论、别程式化安慰。只输出你要说的话，简短、像真人。"
 )
+# push 通路（皮层下/不随意）：情绪经用词倾向自然漏进输出，而非"演情绪的指令"。
+_PUSH_ADDENDUM = (
+    "\n（此刻你不自觉地，用词会偏向这类词的色彩：{words}——是状态的自然流露，"
+    "别刻意堆砌、别点破、别表演，只是语气与遣词自然带上而已。）"
+)
+PUSH_LOGIT_SCALE = 3.0  # affect-congruent 词 Δlogit → OpenAI logit_bias 缩放（温和，避免伤语法）
 
 
 class OpenAILanguageModel:
@@ -94,23 +100,69 @@ class OpenAILanguageModel:
         """
         return await self._appraise(text)
 
-    async def converse(self, history: list[dict[str, str]], affect: tuple[float, float]) -> str:
-        """自然多轮对话：带完整历史，当前心境 (v,a) 只作**淡淡的语气底色**（非表演目标）。
+    async def converse(
+        self,
+        history: list[dict[str, str]],
+        affect: tuple[float, float],
+        *,
+        push: bool = False,
+    ) -> str:
+        """自然多轮对话：带完整历史。`generate`(强制 VAD+双向回路) 之外的连贯不戏剧化路径。
 
-        与 `generate`（按目标情绪生成 + 独立 VAD 反推 + 双向回路）不同：converse 不强制文本命中
-        某 VAD，故连贯、不戏剧化——适合 `main.py --chat` 的真实交流。history = [{role, content}…]，
-        末条应为用户最新发言。情绪由调用方（慢变 mood 主导）给出，实现循序渐进。
+        `push`（皮层下/不随意通路）开启时：情绪经 **affect-congruent 用词倾向**（emotion_lexicon，
+        "自然流露不表演"）漏进输出，而非"演情绪的指令"——对应神经科学 push 效应（见
+        notes/2026-06-25-dual-route-language-push-pull.md）；可选叠加 OpenAI `logit_bias`
+        （env `ZERO_PUSH_LOGIT_BIAS=1`，需兼容 tokenizer，graceful 回退）。关闭=纯 prompt(pull)。
+        history 末条应为用户最新发言。
         """
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": _CONVERSE_SYS.format(feeling=affect_label(*affect))}
-        ]
+        sys = _CONVERSE_SYS.format(feeling=affect_label(*affect))
+        bias_kwargs: dict[str, Any] = {}
+        if push:
+            words = suggest_affect_words(affect[0], affect[1], k=6)
+            if words:
+                sys += _PUSH_ADDENDUM.format(words="、".join(words))
+                logit_bias = self._build_logit_bias(affect, words)
+                if logit_bias:
+                    bias_kwargs["logit_bias"] = logit_bias
+        messages: list[dict[str, str]] = [{"role": "system", "content": sys}]
         messages.extend(history)
-        resp = await self.client.chat.completions.create(
-            model=self.model,
-            temperature=max(0.0, self.temperature + random.uniform(-0.1, 0.15)),  # 措辞部分随机
-            messages=messages,
-        )
+        temperature = max(0.0, self.temperature + random.uniform(-0.1, 0.15))  # 措辞部分随机
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model, temperature=temperature, messages=messages, **bias_kwargs
+            )
+        except Exception:
+            # 某些代理/模型不支持 logit_bias（或 token id 不匹配）→ 退回不带 bias；
+            # push 仍经 prompt 用词倾向生效，不致命。
+            resp = await self.client.chat.completions.create(
+                model=self.model, temperature=temperature, messages=messages
+            )
         return (resp.choices[0].message.content or "").strip()
+
+    def _build_logit_bias(self, affect: tuple[float, float], words: list[str]) -> dict[int, float]:
+        """解码期 push：affect-congruent 词 → OpenAI `logit_bias`（{token_id: 偏置}）。
+
+        env `ZERO_PUSH_LOGIT_BIAS=1` 才启用（默认关——须与模型 tokenizer 匹配，否则偏到错 token）；
+        缺 tiktoken / encode 失败 → 返回空（graceful，push 退到纯 prompt 用词倾向）。
+        """
+        if os.getenv("ZERO_PUSH_LOGIT_BIAS", "").lower() not in ("1", "true", "yes"):
+            return {}
+        try:
+            import tiktoken
+
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return {}
+        out: dict[int, float] = {}
+        for word, delta in affect_logit_bias(words, affect).items():
+            if abs(delta) < 1e-6:
+                continue
+            try:
+                for tid in enc.encode(word):
+                    out[tid] = clamp(PUSH_LOGIT_SCALE * delta, -6.0, 6.0)
+            except Exception:
+                continue
+        return out
 
     async def _compose(
         self,

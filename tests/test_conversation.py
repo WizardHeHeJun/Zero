@@ -120,25 +120,74 @@ async def test_converse_passes_history_and_returns_reply() -> None:
     assert messages[1:] == history  # 完整历史原样带入（连贯性）
 
 
-def test_leaky_feeling_responds_not_latches() -> None:
-    """chat 情绪积累用泄漏积分（mood_step self_gain=0）：持续负面 → 逐步变负（响应输入），
-    而非 A.7 双稳从正盆自锁、被骂也不动（后者正是 chat 不能用它的原因）。
+async def test_converse_push_injects_word_tendency_not_pull() -> None:
+    """push（皮层下/不随意）：affect-congruent 用词倾向注入系统提示——情绪经用词漏出，非'演情绪'。
+    关闭 push（pull）则不注入。
     """
-    from src.agents.affect_math import mood_step
+    captured: dict[str, object] = {}
 
-    feeling = (0.2, 0.1)  # 起步略正（开场寒暄）
-    neg = (-0.6, 0.5)
-    one = mood_step(feeling, neg, inertia=0.7, self_gain=0.0, drive=0.3)
-    assert one[0] < feeling[0]  # 单步即向负移动（响应），但渐进
-    leaky = feeling
-    for _ in range(8):
-        leaky = mood_step(leaky, neg, inertia=0.7, self_gain=0.0, drive=0.3)
-    assert leaky[0] < -0.4  # 持续负面累积到明显负（会动怒/受伤）
+    class _Cap:
+        async def create(self, **kwargs: object) -> _Resp:
+            captured.update(kwargs)
+            return _Resp("嗯。")
 
-    bistable = (0.5, 0.1)
-    for _ in range(8):
-        bistable = mood_step(bistable, neg)  # 默认双稳（A.7）
-    assert bistable[0] > leaky[0]  # 双稳黏正盆、不响应 → 实证 chat 改用泄漏积分的必要
+    class _Chat2:
+        def __init__(self) -> None:
+            self.completions = _Cap()
+
+    class _Client2:
+        def __init__(self) -> None:
+            self.chat = _Chat2()
+
+    lm = OpenAILanguageModel(client=_Client2(), model="x")
+    hist = [{"role": "user", "content": "hi"}]
+    await lm.converse(hist, (-0.6, 0.5), push=True)
+    assert "用词会偏向" in captured["messages"][0]["content"]  # push 词倾向注入
+    await lm.converse(hist, (-0.6, 0.5), push=False)
+    assert "用词会偏向" not in captured["messages"][0]["content"]  # pull 不注入
+
+
+def test_build_logit_bias_gated_off_by_default(monkeypatch) -> None:
+    """解码期 logit_bias 默认关（需 env + 兼容 tokenizer）；不设 env → 空（graceful）。"""
+    monkeypatch.delenv("ZERO_PUSH_LOGIT_BIAS", raising=False)
+    lm = OpenAILanguageModel(client=_FakeClient("x"), model="x")
+    assert lm._build_logit_bias((-0.6, 0.5), ["愤怒", "烦躁"]) == {}
+
+
+def test_emotion_is_short_lived_decays_to_baseline() -> None:
+    """快变情绪：单刺激飙起，刺激停止后几轮内衰退回基线（情绪短时、不长期累积）。"""
+    from src.agents.affect_math import emotion_decay_step
+
+    base = (0.0, 0.0)
+    spike = emotion_decay_step(base, base, (-0.7, 0.5))
+    assert spike[0] < -0.2  # 单刺激即飙起（情绪反应）
+    emotion = spike
+    for _ in range(4):
+        emotion = emotion_decay_step(emotion, base, (0.0, 0.0))  # 刺激停止
+    assert abs(emotion[0]) < 0.1 and abs(emotion[1]) < 0.1  # 回到基线附近（短时）
+
+
+def test_emotion_recovers_to_attitude_not_absolute_neutral() -> None:
+    """怒火退去后回到「对此人的态度」基线，而非绝对中性（态度=情绪衰退的落点）。"""
+    from src.agents.affect_math import emotion_decay_step
+
+    soured = (-0.4, 0.0)  # 对此人态度已变冷
+    emotion = (-0.7, 0.3)  # 当前怒火
+    for _ in range(6):
+        emotion = emotion_decay_step(emotion, soured, (0.0, 0.0))
+    assert abs(emotion[0] - soured[0]) < 0.08  # 收敛到态度基线，不是 0
+
+
+def test_attitude_accumulates_slowly_object_bound() -> None:
+    """慢变态度：单步几乎不动（长期印象不因一句话定型）；持续负面多轮才慢慢变冷。"""
+    from src.agents.affect_math import attitude_step
+
+    one = attitude_step((0.0, 0.0), (-0.8, 0.0))
+    assert one[0] > -0.15  # 单步只挪一点点
+    attitude = (0.0, 0.0)
+    for _ in range(20):
+        attitude = attitude_step(attitude, (-0.8, 0.0))
+    assert attitude[0] < -0.5  # 多轮持续负面 → 态度才成形变冷
 
 
 def test_conversation_log_roundtrip_and_feeling() -> None:

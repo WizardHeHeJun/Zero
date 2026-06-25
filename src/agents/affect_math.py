@@ -33,6 +33,12 @@ SALIENCE_THRESHOLD = 0.18  # ignition 阈值：salience 低于此的流不点燃
 AROUSAL_GAIN = 1.0  # NE/唤醒对评价·价值流精度的增益系数（唤醒越高投票权越大）
 LANG_BASE_PRECISION = 1.0  # 精度加权再入里语言侧的基准精度（与内核后验精度竞争）
 
+# 情绪时间尺度分层（affective chronometry + ALMA/WASABI）：快变情绪向「态度基线」衰退、被刺激冲击；
+# 慢变态度对「对象/人」长期累积（evaluative conditioning）。情绪是短时的——不长期累积。
+EMOTION_RECOVERY = 0.4  # 情绪向基线的残留比例（小=恢复快；过大=emotional inertia 病理）
+EMOTION_REACTIVITY = 0.6  # 对当前刺激的即时反应增益
+ATTITUDE_RATE = 0.08  # 态度对刺激的慢累积率（多轮才成形；越小越稳）
+
 # Regulation 重评（Gross 过程模型）：reappraisal 改「构念/意义」而非末端压制
 REAPPRAISAL_ANCHOR = 0.1  # 重评把负/低效价重新解释、向其拉拢的「积极锚」
 REAPPRAISAL_LIFT = 0.7  # 向积极锚拉拢的比例（重评改变体验，不只是表达）
@@ -323,6 +329,53 @@ def ignite(
     terms = [(mu, prec) for _, mu, prec in fired]
     names = [name for name, _, _ in fired]
     return terms, names
+
+
+def attitude_step(
+    attitude: tuple[float, float],
+    stimulus: tuple[float, float],
+    *,
+    rate: float = ATTITUDE_RATE,
+) -> tuple[float, float]:
+    """慢变态度/印象（对某对象/人）：按 stimulus 缓慢累积（evaluative conditioning）。
+
+    `a' = (1-rate)·a + rate·stimulus`，rate 小（多轮才成形）→ 长期、稳定、对象指向的评价
+    （Scherer/Frijda 的 sentiment/attitude 层）。与短时情绪不同：这是「长期印象」的累积，
+    应持久化（按对象/会话）。逐维钳制 [-1,1]，纯函数。
+    """
+    return (
+        clamp((1.0 - rate) * attitude[0] + rate * stimulus[0], -1.0, 1.0),
+        clamp((1.0 - rate) * attitude[1] + rate * stimulus[1], -1.0, 1.0),
+    )
+
+
+def emotion_decay_step(
+    emotion: tuple[float, float],
+    baseline: tuple[float, float],
+    stimulus: tuple[float, float],
+    *,
+    recovery: float = EMOTION_RECOVERY,
+    reactivity: float = EMOTION_REACTIVITY,
+) -> tuple[float, float]:
+    """快变情绪：向 baseline(=当前态度) 衰退恢复 + 被当前 stimulus 冲击（affective chronometry）。
+
+    `e' = baseline + recovery·(e - baseline) + reactivity·stimulus`。情绪是**短时**的：
+    刺激停了（stimulus≈0）则 deviation 每轮 ×recovery 衰减、几轮内回到 baseline（情绪不长期累积，
+    过慢衰退=emotional inertia 病理）；持续 stimulus 则稳态 = baseline + reactivity·s/(1-recovery)。
+    baseline 由慢变 attitude 给出 → 怒火退去后回到「对此人的态度」而非绝对中性。逐维钳制，纯函数。
+    """
+    return (
+        clamp(
+            baseline[0] + recovery * (emotion[0] - baseline[0]) + reactivity * stimulus[0],
+            -1.0,
+            1.0,
+        ),
+        clamp(
+            baseline[1] + recovery * (emotion[1] - baseline[1]) + reactivity * stimulus[1],
+            -1.0,
+            1.0,
+        ),
+    )
 
 
 def precision_reconcile(
