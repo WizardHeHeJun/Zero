@@ -27,6 +27,7 @@ class FakeConversationModel:
         self,
         history: list[dict[str, str]],
         affect: tuple[float, float],
+        retrieved: str = "",
         *,
         push: bool = False,
     ) -> str:
@@ -50,6 +51,14 @@ async def test_fake_converse_push_kwarg_accepted() -> None:
     lm = FakeConversationModel()
     result = await lm.converse([{"role": "user", "content": "hi"}], (0.0, 0.0), push=True)
     assert isinstance(result, str)
+
+
+async def test_fake_converse_retrieved_kwarg_accepted() -> None:
+    """retrieved 位置参数可选传入（协议签名兼容性，阶段15新增）。"""
+    lm = FakeConversationModel()
+    result = await lm.converse([{"role": "user", "content": "hi"}], (0.0, 0.0), "背景X")
+    assert isinstance(result, str)
+    assert result == "fake-reply"
 
 
 async def test_fake_appraise_text_returns_float_tuple() -> None:
@@ -276,13 +285,16 @@ def test_language_model_generate_signature_unchanged() -> None:
 
 
 def test_conversation_model_converse_signature() -> None:
-    """ConversationModel.converse 签名：history, affect, *, push=False。"""
+    """ConversationModel.converse 签名：history, affect, retrieved="", *, push=False。"""
     sig = inspect.signature(ConversationModel.converse)
     params = sig.parameters
     assert "self" in params
     assert "history" in params
     assert "affect" in params
+    assert "retrieved" in params
     assert "push" in params
+    # retrieved 默认值空串
+    assert params["retrieved"].default == ""
     # push 有默认值 False
     assert params["push"].default is False
 

@@ -193,9 +193,36 @@
 - **落点**：`language_openai.py`(`converse(push=)`/`_build_logit_bias`/`_PUSH_ADDENDUM`)、`main.py`(`--chat` push=True)。`test_conversation.py`(+2：push 词倾向注入/logit_bias 默认关 graceful)。
 - **验证**：`pytest` **169 passed, 5 skipped**（+2）；`ruff`/`mypy`(45 源) 干净。
 
+### 阶段 18 — 文本输入侧情感经独立低精度流接入内核（受约束方案 c·科学家议会三选一）
+
+阶段 10/11 训出了输入侧 `STTextAffectRegressor`（文本→(v,a)），但一直没接进运行时。本步把它接进感知/内核，并经**科学家议会**（数学/心理/神经/CS 四席）评审"文本测得情感该接到哪一环"，否决 (a)只进 features/(b)替换 prior_mu，定**受约束方案 c**。决策+跨学科引文见 `notes/2026-06-25-text-affect-prior-routing-council.md`。
+
+- **第一步（接入 PerceptionAgent，默认关）**：`ZERO_TEXT_AFFECT_BACKEND=st`+权重路径门控；`STTextAffectRegressor` 冻结 MiniLM+MLP 在 PerceptionAgent 出口展平为标量 (v,a)。sentence-transformers 延迟 import、默认路径零引入。
+- **议会裁决（风险 3→受约束 c）**：语义/测得情感是**高阶皮层 top-down prior**（非 OCC 评价输入、非早期感知特征）。落地为：`AffectState.text_affect` 专用通道（感知产、核心消费）；`AffectCore` workspace 分支把它作**独立低精度流**（`TEXT_AFFECT_PRECISION=0.3` < SURVIVAL 0.4 < occ_prior 动态精度）进 `fuse_terms` 精度加权，**不进 occ_prior 入口、不污染 `fast_survival_prior` features**（顺带修了文本路径下 features 布局错位的休眠 BUG）。无 double counting（C/E 组测试坐实）。
+- **落点**：`state.py`(text_affect)、`perception.py`(文本路径+BUG 修)、`affect_math.py`(TEXT_AFFECT_PRECISION)、`affect_core.py`(独立流)、`scripts/demo_text_input.py`、`.env.example`。
+- **验证**：`pytest` **197 passed, 5 skipped**；ruff/mypy 干净；实跑正向 valence +0.67/负向 −0.63、`"text"` 流点燃、e\* 温和拉动（精度低、demo OCC 为 0）。**PR #27 已合并 main。**
+
+### 阶段 19 — 对话模块前置债：ConversationModel 协议 + 双存储边界（hybrid 架构定调）
+
+排查发现对话的 LLM I/O 与记忆其实跑在 LangGraph 图**外**（main.py 缝合），`converse`/`appraise_text` 不在 `LanguageModel` 协议里。经**科学家议会**评审"先对话后多模态可行吗/走哪条架构"，四席共识：**可行、走 hybrid**（感知侧图内 + 对话 LLM I/O 图外 REPL；否决纯图原生 A——history 进 state 撞红线、interrupt 做逐轮聊天过重）。决策见 `notes/2026-06-25-conversation-module-and-multimodal-roadmap-council.md`。
+
+- **协议边界**：新增 `ConversationModel` 协议（`converse`+`appraise_text`，`@runtime_checkable`），签名对齐 `OpenAILanguageModel`（零改实现即满足）；`main.py` 改走协议注入；`SteeringLanguageModel` 顺势实现 converse（孤岛半接、可作对话后端注入）。
+- **双存储边界文档化**：`ConversationLog`(对话运行态 transcript) vs supervisor 的 `MemoryClient`(长期情感事实/episode) 职责 docstring 固化（仅澄清不合并）。
+- **落点**：`language.py`(协议)、`language_openai.py`/`language_steering.py`、`main.py`、`supervisor.py`(docstring)。新测 `test_conversation_protocol.py`。
+- **验证**：`pytest` **191 passed, 5 skipped**（基线 172 净增 19，纯重构零回归）；ruff/mypy 干净。**PR #28 已合并 main。**
+
+### 阶段 20 — 记忆层服务对话（recall 回灌）+ 长期 attitude 进 AppraisalAgent 先验
+
+承接议会 hybrid 路线，补两个缺口（均经架构师判定纯工程、不需回议会）：
+
+- **recall 回灌（补"写了不读"）**：`converse` 加 `retrieved` 参数（默认 ""、向后兼容）；`_run_chat` 开 `recall_enabled=True`，图内产的 `recalled_context` 经 retrieved 注入对话 → 闭合读↔写回路。传 `user_id=thread` 让长期 disposition/episode 的 user scope 按对话 thread 隔离（防串味，对齐 ConversationLog）；recalled 每条截断 120 字符防 prompt 膨胀。
+- **attitude 进先验（修心理席指出的构念断层）**：`attitude_appeal` 从当前句即时 valence(0.5\*v) 改为长期累积 `attitude[0]`（当前句仍走 goal_congruence、长期态度走 attitude_appeal，补齐 OCC 对象维度）。与 `recalled_disposition` 不 double-counting：前者走 occ_prior 内部(0.2 权重)、后者走 occ_prior 输出后加法偏置，线性可分离（精确数学测试坐实）。
+- **落点**：`language.py`/`language_openai.py`/`language_steering.py`(retrieved)、`main.py`(recall_enabled+user_id+attitude_appeal)。新测 `test_chat_memory_integration.py`(17)+`test_attitude_prior.py`(13)。
+- **验证**：`pytest` **222 passed, 5 skipped**（基线 209 净增 13）；rebase 到含 #27/#28 的最新 main 后全仓库 **247 passed, 5 skipped**；ruff/mypy 干净。**PR #29 待合并。**
+
 ## 成果与验证
 
-- **测试**：`pytest` 169 passed, 5 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1 + steering 实机 smoke 缺 ZERO_STEER_MODEL 跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(45 源文件) 干净。
+- **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
@@ -229,6 +256,9 @@ DATASETS.md                                   数据集清单
 - 分支 `chore/temp-main-launcher`（阶段 10）：文本输入侧句向量升级——`STTextAffectRegressor`（冻结 MiniLM + MLP 头）+ `emobank_st`/`train_text_affect_st` + `test_emobank_st`，词袋版零回归并存作基线；实测 loss 降 64% + 跨域口语/商业体裁判对；新 `nlp` extra（`sentence-transformers`）。
 - 分支 `docs/ravdess-prosody-done`（阶段 11，PR #16 已合 main）：RAVDESS 韵律 + WESAD 生理真实数据实跑记录（PROGRESS 待办标 3/3）。
 - 分支 `docs/readme-weights-v0.2`（阶段 11，PR #17 已合 main）：README 同步三通道实跑 + 句向量升级 + `weights-v0.2`（real-data trained）release 发布；ai-docs 本地知识层同步。
+- PR #27（阶段 18，已合并 main）：文本输入侧情感经独立低精度流接入内核（受约束方案 c），科学家议会四席评审 + 落库引文。
+- PR #28（阶段 19，已合并 main）：对话模块前置债——`ConversationModel` 协议 + 双存储边界文档化（hybrid 架构定调）。
+- PR #29（阶段 20，待合并）：记忆层服务对话（recall 回灌）+ 长期 attitude 进 AppraisalAgent 先验；含本次 PROGRESS/README/知识层文档同步。
 
 ## 待办（需外部介入或独立轨道）
 
@@ -240,14 +270,16 @@ DATASETS.md                                   数据集清单
 
 > 详见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)（定位确认 + 现状缺口 + 本地落库设计 + 学术依据）。**已定**：chat 默认翻为**本地落盘**（SQLite 三件套：运行态 + 确定性图谱 + 语义经历），零依赖内存档保留为 opt-in。
 
+> ⚠ 编号说明：本路线图为**规划标签**，与上方"已完成阶段"序列（现已到**阶段 20**）是两套并行编号、历史遗留。下面按主线给出状态，已实现项标 ✅。
+
 **记忆主线（近期，逐级依赖）**
-- **阶段 15 — 本地持久化转正 + 对话经历入库 + chat 记忆闭环**：具身默认档（运行态 SQLite + `SqliteGraphStore` + `SqliteVectorStore`）；Supervisor 任务完成节点把「用户原话 + 仿生人回应 + e\*/mood/点燃流 + 时间」写成情景记忆（`SESSION` + 自传 `USER`）；chat 默认 `recall_enabled` → 仿生人「记得过去交流」。
-- **阶段 16 — 自我模型 + 关系记忆**：稳定人格（大五 / PAD）偏置先验 + mood 盆深；对每个交流对象的关系 / 熟悉度记忆（回灌已有 `recalled_disposition` 通路）。
-- **阶段 17 — 记忆巩固与遗忘**：情绪加权巩固（McGaugh）+ 遗忘曲线（Ebbinghaus），离线「睡眠」批处理 —— 绝不每条消息触发（守记忆节流红线）。
+- ✅ **chat 记忆闭环 / recall 回灌**（已由阶段 18–20 实现）：text_affect 接内核（阶段 18，受约束 c）、ConversationModel 协议 + 双存储边界（阶段 19）、recall 默认开回灌对话 + user scope 按 thread 隔离（阶段 20）。supervisor 任务完成节点已写情感事件/disposition/episode。
+- ✅ **关系记忆（部分）**：`recalled_disposition` 回灌先验 + 长期 attitude 进 AppraisalAgent 先验（阶段 20）已落；**待补**：稳定人格（大五 / PAD）偏置 + mood 盆深、把对话 transcript/摘要写进语义记忆（涉记忆语义/节流，**需回议会**）。
+- **记忆巩固与遗忘**：情绪加权巩固（McGaugh）+ 遗忘曲线（Ebbinghaus），离线「睡眠」批处理 —— 绝不每条消息触发（守记忆节流红线）。**待做**。
 
 **多模态主线（中远期，独立轨道）**
-- **阶段 18 — 多通道输入感知**：FER / SER / HRV / 文本编码器并行 → `fuse_terms` 精度融合（对称补全输入侧；「多网络并行」在此成形）。
-- **阶段 19 — Live2D 适配器**（FACS AU → Cubism 参数）· **阶段 20 — 情感 TTS**（文本 + 韵律 → 表达性 TTS）。
-- **阶段 21（可选）— 具身闭环 + 编排并行化**。
+- ⛔ **多通道输入感知（门槛在前）**：FER / SER / HRV / 文本编码器并行 → `fuse_terms` 精度融合。议会明定：扩到 **N>2 模态前，融合算子必须先开一次 `/science-council` 专评**（多模态相关 → double counting 超线性放大；语言 top-down 调制；模态冲突仲裁 + 各模态差异化/动态精度），**不可直接 /engineer**。见 `notes/2026-06-25-conversation-module-and-multimodal-roadmap-council.md`。
+- **Live2D 适配器**（FACS AU → Cubism 参数）· **情感 TTS**（文本 + 韵律 → 表达性 TTS）。
+- **（可选）具身闭环 + 编排并行化**。
 
 > 全程纪律：纯加法 / 鸭子类型注入 / torch·LLM·SDK 隔离 / env 门控 / 默认关 / 零回归 / 落地前固化 WebSearch 核验文献。

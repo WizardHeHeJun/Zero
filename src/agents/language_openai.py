@@ -104,6 +104,7 @@ class OpenAILanguageModel:
         self,
         history: list[dict[str, str]],
         affect: tuple[float, float],
+        retrieved: str = "",
         *,
         push: bool = False,
     ) -> str:
@@ -113,9 +114,12 @@ class OpenAILanguageModel:
         "自然流露不表演"）漏进输出，而非"演情绪的指令"——对应神经科学 push 效应（见
         notes/2026-06-25-dual-route-language-push-pull.md）；可选叠加 OpenAI `logit_bias`
         （env `ZERO_PUSH_LOGIT_BIAS=1`，需兼容 tokenizer，graceful 回退）。关闭=纯 prompt(pull)。
+        retrieved: 记忆召回的背景上下文（空串时不注入，prompt 与改前逐字一致 → 零回归）。
         history 末条应为用户最新发言。
         """
         sys = _CONVERSE_SYS.format(feeling=affect_label(*affect))
+        if retrieved:
+            sys += f"\n你还记得以下背景：{retrieved}"
         bias_kwargs: dict[str, Any] = {}
         if push:
             words = suggest_affect_words(affect[0], affect[1], k=6)
