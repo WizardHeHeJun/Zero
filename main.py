@@ -234,11 +234,16 @@ async def _run_chat() -> None:
             break
         # 评价桥：读这句话情绪（真 LLM 或词典回退）
         v, a = await lm.appraise_text(user) if lm is not None else lexicon_appraise(user)
-        # 轻阻尼喂引擎（保留方向与强度；渐进性交给下面的泄漏积分，而非阉割单句输入）
+        # attitude_appeal 承载对此人的长期累积态度（OCC 对象维度），用进入本轮时的 attitude[0]
+        # 作为 AppraisalAgent occ_prior 的先验（0.2 权重通路）；当前句即时情感走
+        # goal_congruence（不变）；recalled_disposition（TD 价值偏置）走独立加法通路，
+        # 三者来源不同、作用点不同，不重复计入。
+        # 快照：stim 喂入的先验值（attitude_step 在 step 之后才更新，此处为本轮进入时的态度）
+        attitude_for_trace = attitude[0]
         stim = Stimulus(
             name=user[:40],
             goal_congruence=v,
-            attitude_appeal=0.5 * v,
+            attitude_appeal=attitude[0],
             intensity=min(1.0, max(0.2, abs(a))),
         )
         step = await session.step(stim)
@@ -268,7 +273,8 @@ async def _run_chat() -> None:
         log.save_feeling(thread, attitude)  # 只持久化「态度」（情绪短时、重启归基线）
         print(f"\n{reply}")
         print(
-            f"  └─ 你这句≈({v:+.2f},{a:+.2f}) | 情绪={word} ({emotion[0]:+.2f},{emotion[1]:+.2f})"
+            f"  └─ 你这句≈({v:+.2f},{a:+.2f}) | attitude_appeal先验={attitude_for_trace:+.2f}"
+            f" | 情绪={word} ({emotion[0]:+.2f},{emotion[1]:+.2f})"
             f" | 对你的态度=({attitude[0]:+.2f},{attitude[1]:+.2f})\n"
         )
 
