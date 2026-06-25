@@ -4,13 +4,13 @@
 >
 > **前瞻路线图**见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)：本地长期记忆/经历落库（已定默认落盘）→ 多通道输入（视觉图像 / 心电 / 语气 / 表情）→ 多模态输出（Live2D 形象 / 情感 TTS）。
 
-三层运行架构：
+三层运行架构（依赖单向：编排 → 记忆 → 存储；技术栈 Python 为主、TS 为辅）：
 
-- **编排层** — LangGraph（Supervisor / Worker、StateGraph、Checkpointer）
-- **记忆层** — Zep / Mem0 / Graphiti（长期记忆、知识图谱）
-- **存储层** — Postgres / Neo4j / Redis
+- **编排层** — LangGraph（Supervisor / Worker、StateGraph、Checkpointer）+ `ConversationSession`（多轮对话、运行态跨轮持久）
+- **记忆层** — `MemoryClient`：确定性 `GraphStore`（时序失效）+ 语义 `SemanticStore`（富 episode/向量召回）；任务完成节流、显式 scope；接口对齐 Zep / Graphiti
+- **存储层** — 运行态 `Checkpointer` + 长期记忆图谱，env 选后端：**默认本地落盘**（InMemory / SQLite）→ 容器化 Postgres / Neo4j；对话记忆另走 `ConversationLog`（SQLite）
 
-技术栈以 Python 为主、TypeScript 为辅。
+> 当前主体 = **情感表达子系统**（affective-expression）；目标产物 `src/{orchestration,agents,memory,storage}/` + `tests/`。
 
 ## 已实现：情感表达子系统
 
@@ -139,6 +139,7 @@ python -m scripts.verify_graphiti_local   # 同一 user 跑两次，看 recalled
 
 ```text
 Zero/
+├── main.py                      # 官方 CLI 入口：--chat 情感对话 / --workspace 工作空间 / --llm 文本情绪 / --mood/--language（含 ConversationLog 对话+情绪落盘）
 ├── src/                         # 核心系统（三层架构，依赖单向：编排 → 记忆 → 存储）
 │   ├── orchestration/           # 编排层：StateGraph 装配 + 运行入口
 │   │   ├── graph.py             #   build_graph：10 节点装配 + 条件边路由（含 language 双向回路）
@@ -153,7 +154,7 @@ Zero/
 │   │   ├── mood.py              #   MoodAgent：慢变心境双稳更新（A.7 滞后）
 │   │   ├── regulation.py · expression.py   # 掩饰 + 双通路·4 通道输出
 │   │   ├── language.py          #   LanguageAgent：语言生成 + affect↔language 双向回路（gated）
-│   │   ├── language_openai.py   #   OpenAILanguageModel：OpenAI 兼容接口 adapter（生成 + 独立 VAD 反推）
+│   │   ├── language_openai.py   #   OpenAILanguageModel：生成+独立VAD反推 / appraise_text 评价桥 / converse 自然对话(带历史·抗讨好)
 │   │   ├── emotion_lexicon.py   #   情绪词典层：细粒度词 / Panksepp 动机 / VAD 词典桥 / ECM 时间包络
 │   │   ├── language_steering.py #   SteeringLanguageModel：VA steering 适配器（开放权重·steer extra）
 │   │   ├── models/              #   真网络化 torch 解码器（expression/prosody/physiology/facs/text/composite）
@@ -170,11 +171,11 @@ Zero/
 ├── pyproject.toml               # 依赖（core / ml / db / llm extra）+ ruff / mypy / pytest 配置
 ├── environment.yml · environment.lock.yml · uv.lock                 # conda / uv 环境
 ├── README.md · PROGRESS.md · DATASETS.md                            # 总览 / 工程记录 / 数据集清单
-├── notes/                       # 研究笔记（情感数学 / LLM 表达·A.7 / 文本输出情绪 / 并行脑路·全局工作空间）
+├── notes/                       # 研究笔记（情感数学·A.7 / 文本输出情绪 / 并行脑路·工作空间 / 仿生人路线图）
 └── diagrams/                    # 架构设计图
 ```
 
-> **本地 harness / 知识层**（gitignore，不入版本库）：`.claude/`（rules · skills · hooks · commands · agents）· `ai-docs/`（模块三件套 · catalog · pitfalls）· `ai-shared/` · `evals/` · `PRP/`（PRP 工作区）· `artifacts/` · `data/`（训练权重 / 数据集）。
+> **本地 harness / 知识层**（gitignore，不入版本库）：`.claude/`（rules · skills · hooks · commands · agents）· `ai-docs/`（模块三件套 · catalog · pitfalls）· `ai-shared/` · `evals/` · `PRP/`（PRP 工作区）· `artifacts/`（训练权重）· `data/`（数据集 + 本地记忆库 `chat_history.sqlite3` 对话/情绪 · `graph.sqlite3` 长期倾向）。
 
 ## 环境准备（conda）
 
@@ -238,6 +239,6 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + **文本输出情绪补足**（词工程细粒度词典 / VA steering / 重评 / 评价条件化）+ **并行预测编码流 + 显著度门控全局工作空间**（v3：并行流竞争 + ignition + 精度加权再入，默认关、零回归）+ **交互对话耦合入口**（`main.py --chat`：评价桥 + ConversationSession 多轮 mood 持久，情感引擎 ⊗ LLM 输出耦合）+ 端到端集成已完成，测试全绿（`pytest` 162 passed / `ruff` / `mypy`），**真 LLM 端到端已验证**（`main.py --llm` 批处理 + `main.py --chat` 对话耦合），**工作空间本地可验**（`main.py --workspace`）。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + **文本输出情绪补足**（词工程细粒度词典 / VA steering / 重评 / 评价条件化）+ **并行预测编码流 + 显著度门控全局工作空间**（v3：并行流竞争 + ignition + 精度加权再入，默认关、零回归）+ **交互对话耦合入口**（`main.py --chat`：评价桥 + 泄漏积分情绪（响应/积累/多样/部分随机、有边界不讨好）+ 本地记忆落盘，情感引擎 ⊗ LLM 输出耦合）+ 端到端集成已完成，测试全绿（`pytest` 165 passed / `ruff` / `mypy`），**真 LLM 端到端已验证**（`main.py --llm` 批处理 + `main.py --chat` 对话耦合），**工作空间本地可验**（`main.py --workspace`）。
 - 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。
 - **语义记忆侧信道**（`SemanticStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索，`recall_enabled` 门控、默认关）：轻量 `SqliteVectorStore`（`sqlite_vec`，无图库/无服务）**已本地端到端验证闭环通过** ✅；`GraphitiGraphStore`（`graphiti`，实体/关系知识图谱）为需要图谱时的重型选项，走 Neo4j（⚠ kuzu 后端 Graphiti 有 FTS bug，不可用）。更多 Worker 角色按需接入。
