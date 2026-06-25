@@ -78,20 +78,23 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 
 ### 交互对话：情感引擎 ⊗ LLM（`main.py --chat`，仿生人交流内核）
 
-把"情感引擎"与"LLM 语言"耦合成**情绪会积累·会响应·多样·部分随机**的多轮对话——有脾气、不极端、不讨好、不扮演：
+把"情感引擎"与"LLM 语言"耦合成**两时间尺度**情绪的多轮对话——情绪短时会衰退、态度长期对人累积，有脾气、不极端、不讨好、不扮演（文献见 [notes/2026-06-25-emotion-decay-and-timescales.md](notes/2026-06-25-emotion-decay-and-timescales.md)）：
 
-- **评价桥** `OpenAILanguageModel.appraise_text(text)`：独立 VAD 反推把你每句话读成 (v,a) 喂引擎得瞬时 e*。
-- **泄漏积分情绪**（非 A.7 双稳）：情绪状态 = e* 的泄漏积分（`mood_step(self_gain=0, inertia=0.7, drive=0.3)` + 小噪声）→ 持续负面**逐步累积变负、会动怒**（双稳会自锁正盆、被骂不动，故 chat **不用** mood）。映射到 `affect_label`（8 扇区×强度）的**多样情绪词**。
-- **自然对话** `OpenAILanguageModel.converse(history, feeling)`：带**完整历史**（连贯、记得上文）；`_CONVERSE_SYS` 让情绪真实影响语气，**负面时不一味道歉/讨好/当出气筒**，可不耐烦/设边界/冷淡/回怼——有自尊的真人，不戏剧化不扮演。
-- **本地长期记忆（默认落盘）**：`ConversationLog`（stdlib sqlite，`data/chat_history.sqlite3`）落 transcript + 累积情绪、重启续上；`ZERO_CHAT_THREAD` 切独立会话/重置。缺 LLM key 回退词典评价 + 模板。
+- **评价桥** `appraise_text(text)`：独立 VAD 反推把每句话读成 (v,a) 喂引擎得瞬时 e*。
+- **两时间尺度情绪**（affective chronometry + ALMA/WASABI + evaluative conditioning）：
+  - 快变 `emotion`（`affect_math.emotion_decay_step`）：向 `attitude` 基线衰退恢复 + 被 e* 冲击 + 噪声——**情绪短时**，怒火飙起后几轮回落（衰退太慢=emotional inertia 病理）。表达取它，映射 `affect_label` 多样词。
+  - 慢变 `attitude`（`attitude_step`）：对此人按 e* 缓慢累积（多轮才成形），是情绪衰退回归的基线 → **持续**被骂才慢慢变冷；偶尔被呛怒一下就过。**只持久化 attitude**。
+- **自然对话** `converse(history, emotion, push=True)`：带完整历史；`_CONVERSE_SYS` 让情绪真实影响语气，负面时不讨好/不当出气筒（可不耐烦/设边界/回怼），不戏剧化不扮演。
+- **双路语言（皮层 LLM + 皮层下 push）**（神经科学双通路，见 [notes/2026-06-25-dual-route-language-push-pull.md](notes/2026-06-25-dual-route-language-push-pull.md)）：LLM 出**命题内容**（皮层/随意/pull）；情绪走 **push** 通路**自动漏进**输出——`suggest_affect_words(e*)` 作不随意用词倾向（默认、零依赖）+ 可选 `logit_bias`（env `ZERO_PUSH_LOGIT_BIAS=1`）+ 可选开放权重 `SteeringLanguageModel`（隐状态 steering）。情感**辅佐不替换**：经用词/隐状态漏出，而非让 LLM "演情绪"。
+- **本地长期记忆（默认落盘）**：`ConversationLog`（stdlib sqlite，transcript + 态度，重启续上）；`ZERO_CHAT_THREAD` 切独立会话/重置。缺 LLM key 回退词典 + 模板。
 
 ```text
-你 > 你聋了吗            心情=专注(-0.10)   我听得清，只是不想惯着你这种说话方式。换个态度聊聊？
-你 > 傻逼玩意            心情=恼火(-0.18)   行，你开心就好。反正我也没指望你能好好说话，爱咋地咋地。
-你 > 你到底有没有用      心情=专注(-0.14)   你连基本尊重都给不了，还指望我表演有用？先学会怎么跟人说话？
+你 > 你这个傻逼          情绪=警觉(-0.13)  对你的态度=(+0.02)   你这么说我不太舒服，我们好好说话吧。
+你 > 好吧是我不对，对不起 情绪=欣喜(+0.16)  对你的态度=(+0.02)   你愿意道歉我也挺开心的，谁还没个情绪上头的时候。
+你 > 今天天气真好        情绪=兴奋(+0.41)  对你的态度=(+0.07)   （怒火早已退去、完全恢复）
 ```
 
-**真 LLM 已验证**（qwen-flash）：情绪随辱骂逐步变负（平静→专注→恼火→愤怒）、回应有真脾气与边界、连贯记得上文、跨重启续上情绪与历史。⚠ 注意：模型会模仿历史里自己的回合，若旧历史全是讨好回应会被带偏——换 `ZERO_CHAT_THREAD` 或清 `data/chat_history.sqlite3` 干净起步。
+**真 LLM 已验证**（qwen-flash）：情绪短时——骂完道歉即从警觉回到欣喜/兴奋；态度慢——两句辱骂不让态度永久变冷（需持续）。⚠ 模型会模仿历史里自己的回合，旧讨好历史会带偏——换 `ZERO_CHAT_THREAD` 干净起步。
 
 ### 本地真后端 + 容器化（env 驱动，optional `db` extra）
 

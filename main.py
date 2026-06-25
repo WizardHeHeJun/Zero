@@ -1,13 +1,12 @@
 """情感表达多 Agent 系统 · 本地启动 / 验证入口（官方 CLI）。
 
-跑情感表达管线打印 (v,a) 轨迹与关键中间量；或进入**交互对话**验证「情感引擎 ⊗ LLM 输出」耦合。
-默认零可选依赖（不需要 ml/graphiti），总能起。用法：
-  python main.py                       # 跑一组示例刺激（纯核心管线）
-  python main.py --mood --language     # 开启慢变心境 / 语言层双向回路
-  python main.py --recall              # 开启长期倾向记忆回灌（多轮才显效）
+**直接 `python main.py` 即进交互对话**，验证整条系统流程（评价→引擎→两时间尺度→双路输出）。
+默认零可选依赖（缺 LLM key 自动回退词典+模板）。用法：
+  python main.py                       # 【默认】交互对话：情感引擎 ⊗ LLM（直接验证整条流程）
   python main.py --workspace           # 并行流 + 显著度门控全局工作空间（看哪些流点燃）
-  python main.py --chat                # 交互对话：你说一句→引擎评价演化 e*/mood→LLM 生成带情绪回应
   python main.py --llm                 # 接真模型跑固定情绪场景的文本输出验证（批处理）
+  python main.py --trace               # 跑核心管线打印 (v,a) 轨迹 JSON（旧默认）
+  python main.py --trace --mood --language --recall   # 轨迹模式叠加门控
 
 --chat / --llm 接真 LLM 需 `.[llm]`（已装 openai 即可）+ 在 .env 配（库代码不读 .env，本脚本读）：
   ZERO_OPENAI_API_KEY=sk-...                       # 必填
@@ -162,12 +161,15 @@ class ConversationLog:
 
 
 async def _run_chat() -> None:
-    """交互对话：情感引擎 ⊗ LLM，情绪**真积累·响应·多样·部分随机**，不表演不扮演。
+    """交互对话：情感引擎 ⊗ LLM，**两时间尺度**情绪（快变情绪 + 慢变态度），不表演不扮演。
 
-    每句话评价成 (v,a) 喂引擎得瞬时 e*；情绪状态 = e* 的**泄漏积分**（`mood_step` 的 self_gain=0
-    退化版，非 A.7 双稳——双稳会自锁、被骂也不动）+ 小噪声 → 慢慢累积、被持续输入推动（被骂逐步
-    变负、动怒）。映射到**多样情绪词**（affect_label）喂 converse，回应带真脾气、渐进、不戏剧化、
-    能记起上文。transcript 与累积情绪都落本地 SQLite、重启续上。输入 exit/quit 退出。
+    每句话评价成 (v,a) 喂引擎得瞬时 e*，分两路（affective chronometry + ALMA/WASABI 文献，
+    见 notes/2026-06-25-emotion-decay-…）：
+    - 快变 `emotion`（短时）：向 `attitude` 基线衰退恢复 + 被 e* 冲击 + 噪声——怒火飙起后几轮回落，
+      情绪**不长期累积**（衰退太慢=emotional inertia 病理）。表达取它。
+    - 慢变 `attitude`（对此人的长期印象）：按 e* 缓慢累积（evaluative conditioning），多轮才成形，
+      是 emotion 衰退回归的基线 → 持续被骂才变冷。**只持久化 attitude**（情绪短时、重启归基线）。
+    transcript + attitude 落本地 SQLite、重启续上。输入 exit/quit 退出。
     """
     _load_dotenv()
     # 本地持久：长期倾向 → sqlite（stdlib 即落盘）；运行态走 sqlite（缺 .[db] 自动回退内存）
@@ -176,7 +178,7 @@ async def _run_chat() -> None:
     for noisy in ("httpx", "openai", "src.memory.client"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger("src.storage").setLevel(logging.ERROR)  # 隐藏 sqlite 缺驱动的回退告警
-    from src.agents.affect_math import clamp, mood_step
+    from src.agents.affect_math import attitude_step, clamp, emotion_decay_step
     from src.agents.emotion_lexicon import affect_label
     from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 
@@ -194,13 +196,12 @@ async def _run_chat() -> None:
     thread = os.getenv("ZERO_CHAT_THREAD", "chat")  # 可切独立会话/重置（默认 chat）
     log = ConversationLog()
     history = log.recent(thread, 20)  # 重载历史 → 跨重启记忆
-    feeling = log.load_feeling(thread)  # 续上累积情绪（跨重启）
-    # mood 关：A.7 双稳会自锁、不响应输入；改用 chat 侧泄漏积分（响应 + 渐进 + 不锁死）
+    attitude = log.load_feeling(thread)  # 续上对此人的长期态度（持久化的慢变量）
+    emotion = attitude  # 情绪是短时的：启动即回到「对此人的态度」基线，不带旧情绪
+    # mood 关：A.7 双稳会自锁；chat 侧用 emotion(快衰退)+attitude(慢累积) 两时间尺度
     session = ConversationSession(thread_id=thread, mood_enabled=False, workspace_enabled=True)
-    print(
-        f"情感对话｜{mode}｜情绪积累·响应·部分随机｜历史已载 {len(history) // 2} 轮｜exit/quit 退出"
-    )
-    print(f"当前心情：{affect_label(*feeling)}｜记忆落 data/chat_history.sqlite3\n")
+    print(f"情感对话｜{mode}｜情绪快衰退·态度慢积累｜历史 {len(history) // 2} 轮｜exit/quit 退出")
+    print(f"对你的态度：{affect_label(*attitude)}｜记忆落 data/chat_history.sqlite3\n")
     while True:
         try:
             user = input("你 > ").strip()
@@ -222,25 +223,29 @@ async def _run_chat() -> None:
         )
         step = await session.step(stim)
         e = step["valence_arousal"] or (0.0, 0.0)
-        # 泄漏积分（self_gain=0 不自锁；inertia=0.7 渐进、drive=0.3 响应）+ 噪声 → 累积·部分随机
-        feeling = mood_step(feeling, e, inertia=0.7, self_gain=0.0, drive=0.3)
-        feeling = (
-            clamp(feeling[0] + random.gauss(0.0, 0.07), -1.0, 1.0),
-            clamp(feeling[1] + random.gauss(0.0, 0.07), -1.0, 1.0),
+        # 慢：对此人的态度按 e* 缓慢累积（evaluative conditioning，长期印象）
+        attitude = attitude_step(attitude, e)
+        # 快：情绪向 attitude 基线衰退恢复 + 当前 e* 冲击 + 噪声（短时——刺激停几轮就回落）
+        emotion = emotion_decay_step(emotion, attitude, e)
+        emotion = (
+            clamp(emotion[0] + random.gauss(0.0, 0.05), -1.0, 1.0),
+            clamp(emotion[1] + random.gauss(0.0, 0.05), -1.0, 1.0),
         )
-        word = affect_label(*feeling)
+        word = affect_label(*emotion)
         history.append({"role": "user", "content": user})
         if lm is not None:
-            reply = await lm.converse(history[-20:], feeling)
+            # push 通路：情绪经用词倾向自然漏进输出（不靠"演情绪"指令）
+            reply = await lm.converse(history[-20:], emotion, push=True)
         else:
             reply = f"（{word}）嗯，我在听，你接着说。"
         history.append({"role": "assistant", "content": reply})
         log.append(thread, "user", user)
         log.append(thread, "assistant", reply)
-        log.save_feeling(thread, feeling)
+        log.save_feeling(thread, attitude)  # 只持久化「态度」（情绪短时、重启归基线）
         print(f"\n{reply}")
         print(
-            f"  └─ 你这句≈({v:+.2f},{a:+.2f}) | 心情={word} ({feeling[0]:+.2f},{feeling[1]:+.2f})\n"
+            f"  └─ 你这句≈({v:+.2f},{a:+.2f}) | 情绪={word} ({emotion[0]:+.2f},{emotion[1]:+.2f})"
+            f" | 对你的态度=({attitude[0]:+.2f},{attitude[1]:+.2f})\n"
         )
 
 
@@ -286,19 +291,26 @@ async def _run_llm() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="情感表达多 Agent 系统 — 直接启动")
-    parser.add_argument("--mood", action="store_true", help="开启慢变心境（A.7 滞后）")
-    parser.add_argument("--language", action="store_true", help="开启语言层 affect↔language 回路")
-    parser.add_argument("--recall", action="store_true", help="开启长期倾向记忆回灌")
+    parser = argparse.ArgumentParser(
+        description="情感表达多 Agent 系统 — 直接启动即进对话，验证整条系统流程"
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="跑核心管线打印 (v,a) 轨迹 JSON（旧默认；可配 --mood/--language/--recall）",
+    )
+    parser.add_argument("--mood", action="store_true", help="[--trace] 慢变心境（A.7 滞后）")
+    parser.add_argument("--language", action="store_true", help="[--trace] 语言层双向回路")
+    parser.add_argument("--recall", action="store_true", help="[--trace] 长期倾向记忆回灌")
     parser.add_argument(
         "--workspace",
         action="store_true",
-        help="开启并行流 + 显著度门控全局工作空间（打印每刺激点燃的流）",
+        help="并行流 + 显著度门控全局工作空间（打印每刺激点燃的流）",
     )
     parser.add_argument(
         "--chat",
         action="store_true",
-        help="交互对话：情感引擎 ⊗ LLM 输出耦合（缺 key 自动回退词典+模板）",
+        help="交互对话（**默认**，可省略）：情感引擎 ⊗ LLM，缺 key 回退词典+模板",
     )
     parser.add_argument(
         "--llm",
@@ -307,14 +319,15 @@ def main() -> None:
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    if args.chat:
-        asyncio.run(_run_chat())
+    # 默认（无 flag 或 --chat）：直接进对话，验证整条系统流程；其它模式用显式 flag。
+    if args.trace:
+        asyncio.run(_run_core(args))
     elif args.llm:
         asyncio.run(_run_llm())
     elif args.workspace:
         asyncio.run(_run_workspace())
     else:
-        asyncio.run(_run_core(args))
+        asyncio.run(_run_chat())
 
 
 if __name__ == "__main__":

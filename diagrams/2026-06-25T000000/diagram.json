@@ -1,0 +1,80 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "type": "frame",
+      "id": "root",
+      "x": 20,
+      "y": 20,
+      "layout": "dagre",
+      "width": "fit-content",
+      "height": "fit-content",
+      "padding": 56,
+      "fillColor": "#FFFFFF",
+      "borderColor": "#DEE0E3",
+      "borderWidth": 1,
+      "borderRadius": 16,
+      "layoutOptions": {
+        "rankdir": "LR",
+        "nodesep": 42,
+        "ranksep": 120,
+        "edges": [
+          ["user", "appraise", "感知输入"],
+          ["appraise", "engine", "刺激(v,a)"],
+          ["engine", "timescales", "瞬时 e*"],
+          ["timescales", "language", "当前情绪"],
+          ["timescales", "expression", "当前情绪"],
+          ["language", "output", "命题内容+情绪泄漏"],
+          ["expression", "output", "表情/韵律"],
+          ["engine", "memory", "读写"],
+          ["timescales", "memory", "态度落盘"]
+        ]
+      },
+      "children": [
+        { "type": "ellipse", "id": "user", "width": 120, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "👤 用户输入", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        {
+          "type": "frame", "id": "appraise", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 180, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🔍 评价桥", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "appraise_text：文本 → (v,a)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "engine", "layout": "vertical", "gap": 5, "padding": 16, "alignItems": "center", "width": 235, "height": "fit-content",
+          "fillColor": "#FEE3E2", "borderColor": "#D25D5A", "borderWidth": 3, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🧠 情感引擎 · 贝叶斯主动推断", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "OCC评价 → TD价值/精度 → 显著度门控\n工作空间(并行流 ignite) → 后验采样 e*", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "timescales", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 220, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "⏱️ 三时间尺度", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "瞬时 e*（每刺激采样）\n快变 emotion（衰退~2-3轮）\n慢变 attitude（对人累积~10轮，落盘）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "language", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 215, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🗣️ 双路语言", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "LLM 命题内容（皮层 · pull）\n+ 情绪 push 泄漏（用词/steering · 皮层下）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "expression", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 210, "height": "fit-content",
+          "fillColor": "#FEF1CE", "borderColor": "#D4B45B", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎭 表达双通路", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "自发/随意 × 4 通道\n(FACS/文本/生理/韵律，可注入训练解码器)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "ellipse", "id": "output", "width": 130, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "💬 最终表现", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        { "type": "cylinder", "id": "memory", "width": 195, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆 / 持久\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "图谱+语义 · ConversationLog\n(对话+态度落 SQLite)", "fontSize": 10, "color": "#646A73" } ] }
+      ]
+    }
+  ]
+}

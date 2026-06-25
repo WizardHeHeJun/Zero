@@ -171,9 +171,31 @@
 - **落点**：`language_openai.py`(`converse`/`affect_label` 多样词/温度抖动/`_CONVERSE_SYS` 抗讨好)、`main.py`(`_run_chat` 泄漏积分 + `ConversationLog`(transcript+情绪) + `ZERO_CHAT_THREAD` + 日志静音)、`checkpointer.py`(`setup()`)。新测 `test_conversation.py`(+3：converse 带历史/泄漏积分响应不锁死/transcript+情绪落库)。
 - **验证**：`pytest` **165 passed, 5 skipped**（+3）；`ruff`/`mypy`(45 源) 干净。
 
+### 阶段 16 — 情绪衰退机制 + 两时间尺度（情绪短时·态度长期，按文献+反馈迭代）
+
+阶段 15 的泄漏积分把"情绪"建成**单一慢积分器**——被骂累积对了，但用户转缓后怒气数轮不散。用户指出"一种情绪不应该是长期积累的结果，除非是长期印象积累成对某人/某事的态度"。查文献（`notes/2026-06-25-emotion-decay-and-timescales.md`，11 篇）证实并落成**两时间尺度**：
+
+- **理论**：affective chronometry（Davidson）——情绪有 rise/peak/**recovery**，"所有情绪状态自然衰退回基线"，衰退太慢=emotional inertia 病理；Scherer/Frijda——情绪(短)<心境(中)<**态度/sentiment(对特定对象、最久)**；ALMA/WASABI——情绪自然衰退 + 累积成心境；evaluative conditioning——重复情感经验累积成对象态度。
+- **`affect_math`（纯新增）**：`emotion_decay_step`（快变：`e' = baseline + recovery·(e-baseline) + reactivity·e*`，向 attitude 基线衰退恢复 + 刺激冲击；recovery=0.4 → ~2-3 轮回基线）+ `attitude_step`（慢变：`a' = (1-rate)·a + rate·e*`，rate=0.08 多轮才成形）+ 常量。
+- **`main.py --chat`**：单一 `feeling` → 快变 `emotion`（表达取它、映射多样词）+ 慢变 `attitude`（对此人、**只持久化它**、情绪重启归基线）；情绪衰退回归的基线 = 态度（持续被骂才变冷，偶尔被呛怒一下就过）。
+- **真机验证**（qwen-flash）：辱骂→怒火飙（警觉）→道歉即回正（欣喜/兴奋），情绪短时；两句辱骂不让态度永久变冷（需持续）。
+- **落点**：`affect_math.py`(`emotion_decay_step`/`attitude_step`/常量)、`main.py`(`_run_chat` 两量 + 持久化态度)。`test_conversation.py`(+3：情绪衰退到基线/回态度非中性/态度慢累积；移除旧泄漏积分测试)。
+- **验证**：`pytest` **167 passed, 5 skipped**（+2 净）；`ruff`/`mypy`(45 源) 干净。
+
+### 阶段 17 — 双路语言：皮层 LLM 出内容 + 皮层下 push 漏情绪（辅佐不替换）
+
+用户洞察：情感网络是**辅佐**内容产生、不替换 LLM；神经科学里语言由皮层随意控制、很多情绪由皮层下自动产生。查文献证实（`notes/2026-06-25-dual-route-language-push-pull.md`，双通路硬结论）：
+
+- **理论**：发声双通路（Jürgens：喉皮层随意 vs ACC/PAG 边缘不随意）+ 面部双通路（锥体随意 vs 锥体外系自发，双重分离）+ Zajonc 情感优先 + Scherer **push**(不随意生理泄漏)/**pull**(随意社会规则)。→ LLM=皮层/pull/命题；情感引擎+steering/韵律/自发表情=皮层下/push/泄漏；**辅佐不替换**。
+- **关键洞察**：让 LLM "你愤怒请表达" = 把情绪塞进随意/pull 通路 → "扮演"（早先踩的坑）；忠实做法走 push——情绪**自动调制**输出而非"演的指令"。
+- **`OpenAILanguageModel.converse(push=True)`**：① prompt 级（默认、零依赖）把 `suggest_affect_words(e*)` 作**不随意用词倾向**注入（"自然流露不表演"）；② 可选 `logit_bias`（`_build_logit_bias`：`affect_logit_bias`+tiktoken→token bias，env `ZERO_PUSH_LOGIT_BIAS=1` 才开、不兼容则 graceful 回退）；③ 开放权重 `SteeringLanguageModel`(隐状态 push) 作最强可选。`main.py --chat` 默认走 push。
+- **真机验证**（qwen-flash）：开心→"跟着开心起来了"暖词；被耍→"呵，又来这套？冷笑…受不了这种阴阳怪气"——愤怒经用词自然漏出，非"我很生气"式表演。
+- **落点**：`language_openai.py`(`converse(push=)`/`_build_logit_bias`/`_PUSH_ADDENDUM`)、`main.py`(`--chat` push=True)。`test_conversation.py`(+2：push 词倾向注入/logit_bias 默认关 graceful)。
+- **验证**：`pytest` **169 passed, 5 skipped**（+2）；`ruff`/`mypy`(45 源) 干净。
+
 ## 成果与验证
 
-- **测试**：`pytest` 165 passed, 5 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1 + steering 实机 smoke 缺 ZERO_STEER_MODEL 跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(45 源文件) 干净。
+- **测试**：`pytest` 169 passed, 5 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1 + steering 实机 smoke 缺 ZERO_STEER_MODEL 跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(45 源文件) 干净。
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
