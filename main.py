@@ -210,7 +210,16 @@ async def _run_chat() -> None:
     attitude = log.load_feeling(thread)  # 续上对此人的长期态度（持久化的慢变量）
     emotion = attitude  # 情绪是短时的：启动即回到「对此人的态度」基线，不带旧情绪
     # mood 关：A.7 双稳会自锁；chat 侧用 emotion(快衰退)+attitude(慢累积) 两时间尺度
-    session = ConversationSession(thread_id=thread, mood_enabled=False, workspace_enabled=True)
+    # recall_enabled=True：开语义记忆召回，把 recalled_context 回灌 converse retrieved 参数
+    # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
+    # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
+    session = ConversationSession(
+        thread_id=thread,
+        user_id=thread,
+        mood_enabled=False,
+        workspace_enabled=True,
+        recall_enabled=True,
+    )
     print(f"情感对话｜{mode}｜情绪快衰退·态度慢积累｜历史 {len(history) // 2} 轮｜exit/quit 退出")
     print(f"对你的态度：{affect_label(*attitude)}｜记忆落 data/chat_history.sqlite3\n")
     while True:
@@ -234,6 +243,10 @@ async def _run_chat() -> None:
         )
         step = await session.step(stim)
         e = step["valence_arousal"] or (0.0, 0.0)
+        # 取语义召回上下文（recall_enabled=True 时图内 memory_recall 节点填充；无语义后端则空列表）
+        recalled: list[str] = step.get("recalled_context") or []
+        # 每条截断至 120 字符，防 system prompt 膨胀
+        recalled_str = " | ".join(r[:120] for r in recalled) if recalled else ""
         # 慢：对此人的态度按 e* 缓慢累积（evaluative conditioning，长期印象）
         attitude = attitude_step(attitude, e)
         # 快：情绪向 attitude 基线衰退恢复 + 当前 e* 冲击 + 噪声（短时——刺激停几轮就回落）
@@ -245,8 +258,8 @@ async def _run_chat() -> None:
         word = affect_label(*emotion)
         history.append({"role": "user", "content": user})
         if lm is not None:
-            # push 通路：情绪经用词倾向自然漏进输出（不靠"演情绪"指令）
-            reply = await lm.converse(history[-20:], emotion, push=True)
+            # push 通路：情绪经用词倾向自然漏进输出（不靠"演情绪"指令）；retrieved 回灌召回背景
+            reply = await lm.converse(history[-20:], emotion, recalled_str, push=True)
         else:
             reply = f"（{word}）嗯，我在听，你接着说。"
         history.append({"role": "assistant", "content": reply})

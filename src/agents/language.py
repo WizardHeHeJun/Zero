@@ -67,9 +67,18 @@ class ConversationModel(Protocol):
         self,
         history: list[dict[str, str]],
         affect: tuple[float, float],
+        retrieved: str = "",
         *,
         push: bool = False,
-    ) -> str: ...
+    ) -> str:
+        """生成一轮对话回应。
+
+        history: OpenAI messages 格式的对话历史（末条应为用户最新发言）。
+        affect: 当前情绪坐标 (valence, arousal)。
+        retrieved: 召回的背景上下文（空串时不注入，行为与改前一致）。
+        push: 皮层下不随意通路——情绪经用词倾向漏进输出而非显式指令。
+        """
+        ...
 
     async def appraise_text(self, text: str) -> tuple[float, float]: ...
 
