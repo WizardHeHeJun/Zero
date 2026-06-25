@@ -115,7 +115,7 @@ Zero/
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py
 ├── tools/                   # 运维脚本（reset_db.py 清库）
-├── docs/                    # 对外框架图（飞书画板渲染）
+├── docs/                    # 对外框架图（whiteboard-cli 渲染）
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
 ├── Dockerfile · docker-compose.yml · .env.example   # 容器化部署
@@ -169,6 +169,6 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 ## 文档
 
-- **[docs/](docs/README.md)** — 对外框架图（飞书画板渲染）
+- **[docs/](docs/README.md)** — 对外框架图（whiteboard-cli 渲染）
 - **[DATASETS.md](DATASETS.md)** — 真网络化所需数据集清单（获取方式 / 许可）
 - **[notes/](notes/)** — 研究笔记：情感数学、文本输出情绪、并行脑路与工作空间、仿生人路线图
