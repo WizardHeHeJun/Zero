@@ -107,7 +107,17 @@ async def _run_workspace() -> None:
 
 
 class ConversationLog:
-    """对话 transcript 落本地 SQLite（stdlib，无额外依赖）：逐轮存、重启重载近 N 轮 → 长期记忆。"""
+    """对话 transcript 落本地 SQLite（stdlib，无额外依赖）：逐轮存、重启重载近 N 轮 → 长期记忆。
+
+    存储边界（与 supervisor 并行、职责不重叠）：
+    - 本类管对话运行态：transcript turns 表（每轮 user/assistant 消息）+
+      跨重启 attitude meta 表（持久化的慢变情绪基线）。
+    - 情感事件/长期 episode/disposition 属长期情感记忆，由 SupervisorAgent 经
+      MemoryClient 写入（user/session scope，见 supervisor.py）。
+    - 两套存储并行运行——不在此处调用 MemoryClient，不在 supervisor 读写 transcript。
+    - 本类仅在 --chat REPL 路径使用；图内 StateGraph 路径（--llm 等）不经此类、走
+      SupervisorAgent→MemoryClient，两条路径互斥，attitude 不双写。
+    """
 
     def __init__(self, path: str = "data/chat_history.sqlite3") -> None:
         import sqlite3
@@ -181,10 +191,11 @@ async def _run_chat() -> None:
     from src.agents.affect_math import attitude_step, clamp, emotion_decay_step
     from src.agents.emotion_lexicon import affect_label
     from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
+    from src.agents.language import ConversationModel
 
     api_key = os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     model_name = os.getenv("ZERO_OPENAI_MODEL")
-    lm = None
+    lm: ConversationModel | None = None
     if api_key and model_name:
         from src.agents.language_openai import OpenAILanguageModel
 

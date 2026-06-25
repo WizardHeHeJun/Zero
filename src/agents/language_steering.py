@@ -141,6 +141,35 @@ class SteeringLanguageModel:
         text = self._ensure_backend().generate_steered(prompt, delta)
         return LanguageDraft(text=text, affect=self.appraiser(text))
 
+    async def converse(
+        self,
+        history: list[dict[str, str]],
+        affect: tuple[float, float],
+        *,
+        push: bool = False,
+    ) -> str:
+        """满足 ConversationModel 协议；与 generate 同路径，需注入 backend 或提供 model_name，
+        否则同样抛 ValueError；当前主路径无调用、供未来对话注入。
+
+        情感经隐状态 steering 注入（VA 子空间 delta），而非 prompt-level push 指令；
+        push 参数被忽略（steering 路径天然经隐状态传情感，无需 prompt 层再推）。
+        history 取最后一条 user 内容作 context（best-effort），delta 由当前情绪坐标算。
+        """
+        context = ""
+        for msg in reversed(history):
+            if msg.get("role") == "user":
+                context = msg.get("content", "")
+                break
+        delta = steering_delta(
+            affect[0], affect[1], self.w_valence, self.w_arousal, alpha=self.alpha
+        )
+        prompt = _build_prompt(context, retrieved="", feedback=None, appraisal="")
+        return self._ensure_backend().generate_steered(prompt, delta)
+
+    async def appraise_text(self, text: str) -> tuple[float, float]:
+        """满足 ConversationModel 协议：用词典法把文本评价成 (valence, arousal)。"""
+        return self.appraiser(text)
+
 
 class _TransformersSteerBackend:
     """默认后端：延迟 import torch/transformers，前向 hook 把 delta 加到目标层隐状态。"""
