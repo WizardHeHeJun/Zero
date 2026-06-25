@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
 from src.orchestration.state import AffectState
@@ -50,7 +51,12 @@ class MemoryRecallAgent:
 
         # 语义召回（语义记忆侧信道）→ recalled_context 喂语言层检索；
         # 无语义后端时 recall 返回 []，整段自动 no-op（严格零回归）。
-        query = state.stimulus.name if state.stimulus is not None else "disposition"
+        # B-7：mood 非 None 时拼情绪线索，提升召回相关性；否则退化为 stimulus.name（零回归）。
+        stim_name = state.stimulus.name if state.stimulus is not None else "disposition"
+        if state.mood is not None:
+            query = f"{stim_name} {text_label(state.mood[0], state.mood[1])}"
+        else:
+            query = stim_name
         recalled = await self.memory.recall(query, scope=Scope.USER, key=state.user_id)
         if recalled:
             out["recalled_context"] = [f.content for f in recalled]

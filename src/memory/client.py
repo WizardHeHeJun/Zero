@@ -81,8 +81,14 @@ class MemoryClient:
         if self.semantic is None:
             return
         when = valid_at if valid_at is not None else datetime.now(UTC)
-        await self.semantic.add_episode(scope=scope.value, key=key, content=content, valid_at=when)
-        logger.info("memory.write_episode scope=%s key=%s", scope.value, key)
+        try:
+            await self.semantic.add_episode(
+                scope=scope.value, key=key, content=content, valid_at=when
+            )
+            logger.info("memory.write_episode scope=%s key=%s", scope.value, key)
+        except Exception as exc:
+            logger.warning("write_episode failed scope=%s key=%s: %s", scope.value, key, exc)
+            return
 
     async def recall(
         self,
@@ -102,10 +108,16 @@ class MemoryClient:
             raise ValueError("memory.recall 必须显式指定 Scope，禁止默认作用域")
         if self.semantic is None:
             return []
-        stored = await self.semantic.search(query, scope=scope.value, key=key, at=at, limit=limit)
-        logger.debug(
-            "memory.recall scope=%s key=%s q=%s n=%d", scope.value, key, query, len(stored)
-        )
-        return [
-            Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
-        ]
+        try:
+            stored = await self.semantic.search(
+                query, scope=scope.value, key=key, at=at, limit=limit
+            )
+            logger.debug(
+                "memory.recall scope=%s key=%s q=%s n=%d", scope.value, key, query, len(stored)
+            )
+            return [
+                Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
+            ]
+        except Exception as exc:
+            logger.warning("recall failed scope=%s key=%s: %s", scope.value, key, exc)
+            return []

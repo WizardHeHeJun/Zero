@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import os
+
 from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Scope
@@ -43,14 +45,38 @@ class SupervisorAgent:
                 scope=Scope.USER,
                 key=state.user_id,
             )
-            # 富 episode：自然语言情感事件 → 语义记忆（Graphiti 抽实体/关系入图）。
-            # 无语义后端时 no-op（零回归）；仍只在本任务完成节点写（节流，memory-rules #1）。
-            label = text_label(affect[0], affect[1])
-            await self.memory.write_episode(
-                f"用户对刺激「{stim_name}」表现出 {label} 情绪"
-                f"（valence={affect[0]:.2f}, arousal={affect[1]:.2f}），价值估计 {value:.3f}。",
-                scope=Scope.USER,
-                key=state.user_id,
+            # 富 episode：B-3 门控（salience 低于阈值跳过写入）
+            # salience = precision * |rpe|（rpe=None 时用 0.5 保守估计）
+            salience = (state.affect_precision or 0.0) * (
+                abs(state.rpe) if state.rpe is not None else 0.5
             )
+            ep_threshold = float(os.getenv("ZERO_EPISODE_SALIENCE_MIN", "0.15"))
+            if salience >= ep_threshold:
+                # B-1 gist：用户原话（stimulus.text）优先，退化到 name[:40]
+                user_text = (state.stimulus.text or "") if state.stimulus is not None else ""
+                gist = f"你说：{user_text[:200]}" if user_text else f"话题：{stim_name[:40]}"
+
+                # B-2 language 段：language_text 非空才拼，否则省略（language_enabled=False 干净）
+                lang_seg = ""
+                if state.language_text:
+                    lang_seg = f" / 我说：{(state.language_text or '')[:200]}"
+
+                # 情绪标签 + 坐标
+                label = text_label(affect[0], affect[1])
+                streams = state.ignited_streams or []
+
+                episode_content = (
+                    f"{gist}{lang_seg}"
+                    f" | 情绪={label}({affect[0]:.2f},{affect[1]:.2f})"
+                    f" | precision={state.affect_precision or 0.0:.2f}"
+                    f" | streams={streams}"
+                    f" | value={value:.3f}"
+                )
+                # 无语义后端时 no-op（零回归）；仍只在本任务完成节点写（节流，memory-rules #1）
+                await self.memory.write_episode(
+                    episode_content,
+                    scope=Scope.USER,
+                    key=state.user_id,
+                )
         entry = {"node": "supervisor", "task_complete": True}
         return {"task_complete": True, "trace": [entry]}

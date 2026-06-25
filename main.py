@@ -185,6 +185,7 @@ async def _run_chat() -> None:
     # 本地持久：长期倾向 → sqlite（stdlib 即落盘）；运行态走 sqlite（缺 .[db] 自动回退内存）
     os.environ.setdefault("ZERO_CHECKPOINT_BACKEND", "sqlite")
     os.environ.setdefault("ZERO_MEMORY_BACKEND", "sqlite")
+    os.environ.setdefault("ZERO_SEMANTIC_BACKEND", "sqlite_vec")
     for noisy in ("httpx", "openai", "src.memory.client"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger("src.storage").setLevel(logging.ERROR)  # 隐藏 sqlite 缺驱动的回退告警
@@ -242,6 +243,7 @@ async def _run_chat() -> None:
         attitude_for_trace = attitude[0]
         stim = Stimulus(
             name=user[:40],
+            text=user,
             goal_congruence=v,
             attitude_appeal=attitude[0],
             intensity=min(1.0, max(0.2, abs(a))),
