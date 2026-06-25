@@ -18,7 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from src.agents.affect_math import affect_distance, reconcile_affect
+from src.agents.affect_math import (
+    LANG_BASE_PRECISION,
+    affect_distance,
+    precision_reconcile,
+    reconcile_affect,
+)
 from src.agents.emotion_lexicon import affect_descriptor, motivational_system, suggest_affect_words
 from src.orchestration.state import AffectState
 
@@ -103,9 +108,18 @@ class LanguageAgent:
             return {}
         affect = state.affect_sample
         out: dict = {}
-        # 回路重写：先把内核 e* 向上一轮语言情感拉拢（双向互调落点，写回增量）
+        # 回路重写：先把内核 e* 向上一轮语言情感拉拢（双向互调落点，写回增量）。
+        # workspace 开启时走精度加权再入（高精度内核抗拉拢）；否则固定中点拉拢（v1）。
         if state.language_iter > 0 and state.language_affect is not None:
-            affect = reconcile_affect(affect, state.language_affect)
+            if state.workspace_enabled:
+                e_prec = (
+                    state.affect_precision
+                    if state.affect_precision is not None
+                    else LANG_BASE_PRECISION
+                )
+                affect = precision_reconcile(affect, e_prec, state.language_affect)
+            else:
+                affect = reconcile_affect(affect, state.language_affect)
             out["affect_sample"] = affect
 
         context = state.stimulus.name if state.stimulus is not None else ""

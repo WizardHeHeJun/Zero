@@ -53,6 +53,8 @@ class AffectState(BaseModel):
     post_mu: tuple[float, float] | None = None
     post_sigma: tuple[float, float] | None = None
     affect_sample: tuple[float, float] | None = None  # e*（随机性来源）
+    affect_precision: float | None = None  # 后验精度（工作空间再入用：内核 vs 语言的投票权）
+    ignited_streams: list[str] = Field(default_factory=list)  # 工作空间点燃的并行流名（可观测）
 
     # Regulation / Expression（双通路·多通道）
     regulated_affect: tuple[float, float] | None = None
@@ -85,6 +87,7 @@ class AffectState(BaseModel):
     mood_enabled: bool = False  # 开启慢变心境的历史依赖/滞后（A.7）
     recall_enabled: bool = False  # 开启长期倾向回灌偏置 appraisal（记忆读闭环）
     language_enabled: bool = False  # 开启语言层 + affect↔language 双向收敛回路
+    workspace_enabled: bool = False  # 开启显著度门控全局工作空间（并行流竞争+ignition+精度再入）
     appraisal_conditioning_enabled: bool = False  # 把 OCC 评价结构并入语言生成（CPM/EMA）
     language_max_iters: int = 3  # 回路终止上限（防死循环）
     rng_seed: int | None = None  # 采样可控（测试用）

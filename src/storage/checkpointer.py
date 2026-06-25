@@ -67,7 +67,9 @@ def _sqlite_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | Non
     if path != ":memory:":
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
-    return SqliteSaver(conn, serde=serde) if serde is not None else SqliteSaver(conn)
+    saver = SqliteSaver(conn, serde=serde) if serde is not None else SqliteSaver(conn)
+    saver.setup()  # 幂等建表（CREATE TABLE IF NOT EXISTS）；缺此首次 ainvoke 会 no-such-table
+    return saver
 
 
 def _postgres_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | None:
