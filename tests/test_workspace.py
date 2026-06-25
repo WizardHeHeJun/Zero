@@ -129,3 +129,25 @@ async def test_pipeline_workspace_off_zero_regression() -> None:
     ref = await run([stim], thread_id="ws-b", rng_seed=7)
     assert on[0]["valence_arousal"] == ref[0]["valence_arousal"]
     assert on[0]["ignited_streams"] == []
+
+
+# ---------- Task 7：text_affect 流接入工作空间 ----------
+
+
+def test_workspace_with_text_affect_appended() -> None:
+    """workspace_enabled=True, text_affect=(0.7,0.5) → "text" 出现在 ignited_streams
+    或 affect_precision 合理（非 None 且正数），验证文本流路径接入工作空间分支。
+    """
+    state = _core_state(workspace_enabled=True, text_affect=(0.7, 0.5))
+    out = AffectCoreAgent()(state)
+
+    # 工作空间分支必须产出这两个键
+    assert "ignited_streams" in out
+    assert "affect_precision" in out
+    assert out["affect_precision"] > 0
+
+    # salience = sqrt(0.7^2+0.5^2) * mean(0.3,0.3) ≈ 0.26 > SALIENCE_THRESHOLD=0.18
+    # 0.3 = 两维精度 (TEXT_AFFECT_PRECISION) 均值；应当点燃文本流
+    assert "text" in out["ignited_streams"], (
+        f"text_affect=(0.7,0.5) 应点燃文本流，实际 ignited_streams={out['ignited_streams']}"
+    )
