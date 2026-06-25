@@ -1,14 +1,16 @@
 # Zero
 
-> 多 Agent 协作系统。当前已落地**情感表达子系统**（affective-expression）：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + 端到端集成。
+> **AI 仿生人**：以**情感引擎**（数学 × 心理学 × 生物学 × 神经科学 × 计算科学融合，多 Agent + 多网络并行）为内核、**LLM** 为语言外化，让人机交流带近似人类的情感动力学，更拟人。当前主体已落地**情感表达子系统**（affective-expression）：编排骨架 + 真网络化全通道脚手架 + 语言层 affect↔language 双向回路 + v3 并行工作空间 + 交互对话耦合（`main.py --chat`，真 LLM 已验证）。
+>
+> **前瞻路线图**见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)：本地长期记忆/经历落库（已定默认落盘）→ 多通道输入（视觉图像 / 心电 / 语气 / 表情）→ 多模态输出（Live2D 形象 / 情感 TTS）。
 
-三层运行架构：
+三层运行架构（依赖单向：编排 → 记忆 → 存储；技术栈 Python 为主、TS 为辅）：
 
-- **编排层** — LangGraph（Supervisor / Worker、StateGraph、Checkpointer）
-- **记忆层** — Zep / Mem0 / Graphiti（长期记忆、知识图谱）
-- **存储层** — Postgres / Neo4j / Redis
+- **编排层** — LangGraph（Supervisor / Worker、StateGraph、Checkpointer）+ `ConversationSession`（多轮对话、运行态跨轮持久）
+- **记忆层** — `MemoryClient`：确定性 `GraphStore`（时序失效）+ 语义 `SemanticStore`（富 episode/向量召回）；任务完成节流、显式 scope；接口对齐 Zep / Graphiti
+- **存储层** — 运行态 `Checkpointer` + 长期记忆图谱，env 选后端：**默认本地落盘**（InMemory / SQLite）→ 容器化 Postgres / Neo4j；对话记忆另走 `ConversationLog`（SQLite）
 
-技术栈以 Python 为主、TypeScript 为辅。
+> 当前主体 = **情感表达子系统**（affective-expression）；目标产物 `src/{orchestration,agents,memory,storage}/` + `tests/`。
 
 ## 已实现：情感表达子系统
 
@@ -63,6 +65,34 @@ Stimulus → MemoryRecall(读长期倾向·gated) → Perception → Appraisal(O
 - **情商探针回归** `tests/test_ei_probe.py`（EmoBench 式：场景→管线→效价方向/动机系统/粒度命中率）。
 - **真 LLM 端到端已验证** ✅：`python main.py --llm`（OpenAI 兼容代理 + qwen-flash）四情绪场景生成语言情绪对路、独立反推 VAD 与内核 e\* 同象限（狂喜↔狂喜、暴怒↔暴怒）、双向回路迭代 2–3 次收敛到 τ=0.15 以下。
 
+### 并行预测编码流 + 显著度门控全局工作空间（v3 · 默认关 · 零回归）
+
+诊断图 [`diagrams/2026-06-23T010000`](diagrams/) 画的"6 脑区并行 → Integrator 平均"和真实线性管线分叉了。据 30 篇神经科学文献（见 [notes/2026-06-25-…](notes/2026-06-25-parallel-brain-pathways-and-workspace.md)）把它修正为**生物学忠实版**——并行的是**功能流（时间尺度×精度）**而非解剖脑区，整合是**显著度门控的 ignition 广播**而非平均，快路是**亚符号生存信号**而非"恐惧"：
+
+- **裁决**：并行真实（杏仁核 many-roads、人类丘脑枕-杏仁核通路、三网络、并行预测编码、多巴胺并行广播），但"1:1 脑区=模块"被否（Pessoa 双重竞争 / Barrett 简并无指纹 / Scherer 评价检查其实序列），整合须 GNW ignition（Dehaene）+ 显著网络门控（Menon）。
+- **`affect_core` 工作空间**（`workspace_enabled` 门控）：并行流 `[survival(快·低精度) · appraisal(OCC) · value(RPE) · (mood)]` 各出 `(μ, 精度)` → `stream_salience` 算 SN 门控分数 → `ignite` 只让过阈流点燃进全局 e*（亚阈停留局部、永不空播）→ `fuse_terms` 精度加权融合 → 采样。唤醒增益（NE 精度调制）抬高评价/价值流投票权。输出 `ignited_streams`（可观测哪些流点燃）。
+- **精度加权再入**：`language` 回路重写用 `precision_reconcile`（Kalman 式）替代固定 0.5 中点——高精度内核抗语言拉拢、低精度让步，affect↔language 成为真变分再入。
+- **纯加法**：`affect_math.py` 新增 `fast_survival_prior`/`stream_salience`/`ignite`/`precision_reconcile`，**不动** `gaussian_fuse`/`fuse_terms`/`reconcile_affect`；`workspace_enabled=False` 时返回与 v1/v2 逐字一致。设计见 [PRP/affective-expression-v3-parallel-workspace/design.md](PRP/affective-expression-v3-parallel-workspace/design.md)。
+
+**本地验证**（零可选依赖）：`python main.py --workspace`——看每个刺激点燃哪些并行流（巨响→survival+appraisal、offer→三流齐燃、弱刺激 value 被门控）。
+
+### 交互对话：情感引擎 ⊗ LLM（`main.py --chat`，仿生人交流内核）
+
+把"情感引擎"与"LLM 语言"耦合成**情绪会积累·会响应·多样·部分随机**的多轮对话——有脾气、不极端、不讨好、不扮演：
+
+- **评价桥** `OpenAILanguageModel.appraise_text(text)`：独立 VAD 反推把你每句话读成 (v,a) 喂引擎得瞬时 e*。
+- **泄漏积分情绪**（非 A.7 双稳）：情绪状态 = e* 的泄漏积分（`mood_step(self_gain=0, inertia=0.7, drive=0.3)` + 小噪声）→ 持续负面**逐步累积变负、会动怒**（双稳会自锁正盆、被骂不动，故 chat **不用** mood）。映射到 `affect_label`（8 扇区×强度）的**多样情绪词**。
+- **自然对话** `OpenAILanguageModel.converse(history, feeling)`：带**完整历史**（连贯、记得上文）；`_CONVERSE_SYS` 让情绪真实影响语气，**负面时不一味道歉/讨好/当出气筒**，可不耐烦/设边界/冷淡/回怼——有自尊的真人，不戏剧化不扮演。
+- **本地长期记忆（默认落盘）**：`ConversationLog`（stdlib sqlite，`data/chat_history.sqlite3`）落 transcript + 累积情绪、重启续上；`ZERO_CHAT_THREAD` 切独立会话/重置。缺 LLM key 回退词典评价 + 模板。
+
+```text
+你 > 你聋了吗            心情=专注(-0.10)   我听得清，只是不想惯着你这种说话方式。换个态度聊聊？
+你 > 傻逼玩意            心情=恼火(-0.18)   行，你开心就好。反正我也没指望你能好好说话，爱咋地咋地。
+你 > 你到底有没有用      心情=专注(-0.14)   你连基本尊重都给不了，还指望我表演有用？先学会怎么跟人说话？
+```
+
+**真 LLM 已验证**（qwen-flash）：情绪随辱骂逐步变负（平静→专注→恼火→愤怒）、回应有真脾气与边界、连贯记得上文、跨重启续上情绪与历史。⚠ 注意：模型会模仿历史里自己的回合，若旧历史全是讨好回应会被带偏——换 `ZERO_CHAT_THREAD` 或清 `data/chat_history.sqlite3` 干净起步。
+
 ### 本地真后端 + 容器化（env 驱动，optional `db` extra）
 
 占位后端升级为**本地真持久化**，并为后续 Docker 部署铺好 env 开关——默认全内存、零依赖可跑，设 env 即切落盘/真后端：
@@ -109,21 +139,22 @@ python -m scripts.verify_graphiti_local   # 同一 user 跑两次，看 recalled
 
 ```text
 Zero/
+├── main.py                      # 官方 CLI 入口：--chat 情感对话 / --workspace 工作空间 / --llm 文本情绪 / --mood/--language（含 ConversationLog 对话+情绪落盘）
 ├── src/                         # 核心系统（三层架构，依赖单向：编排 → 记忆 → 存储）
 │   ├── orchestration/           # 编排层：StateGraph 装配 + 运行入口
 │   │   ├── graph.py             #   build_graph：10 节点装配 + 条件边路由（含 language 双向回路）
 │   │   ├── state.py             #   AffectState / Stimulus（pydantic 结构化 state）
 │   │   ├── supervisor.py        #   SupervisorAgent：协调 + 任务完成节流写记忆
 │   │   ├── memory_recall.py     #   MemoryRecallAgent：读 user 长期倾向回灌（记忆读闭环）
-│   │   └── runner.py            #   run()：跑刺激序列、收集 (v,a) 轨迹
+│   │   └── runner.py            #   run()：跑刺激序列 + ConversationSession：多轮对话、mood 跨轮持久
 │   ├── agents/                  # 编排层·各 Worker（节点契约 (state) -> dict 只回增量）
-│   │   ├── affect_math.py       #   纯数学内核：OCC / TD / 精度 / 高斯融合 / mood_step / 语言距离·互调
+│   │   ├── affect_math.py       #   纯数学内核：OCC / TD / 精度 / 高斯融合 / mood_step / 语言互调 / 工作空间(survival·salience·ignite·精度再入)
 │   │   ├── perception.py · appraisal.py · value.py
-│   │   ├── affect_core.py       #   主动推断·后验采样 e*（随机性来源）
+│   │   ├── affect_core.py       #   主动推断·后验采样 e*（随机性来源）；workspace 时并行流竞争+ignition
 │   │   ├── mood.py              #   MoodAgent：慢变心境双稳更新（A.7 滞后）
 │   │   ├── regulation.py · expression.py   # 掩饰 + 双通路·4 通道输出
 │   │   ├── language.py          #   LanguageAgent：语言生成 + affect↔language 双向回路（gated）
-│   │   ├── language_openai.py   #   OpenAILanguageModel：OpenAI 兼容接口 adapter（生成 + 独立 VAD 反推）
+│   │   ├── language_openai.py   #   OpenAILanguageModel：生成+独立VAD反推 / appraise_text 评价桥 / converse 自然对话(带历史·抗讨好)
 │   │   ├── emotion_lexicon.py   #   情绪词典层：细粒度词 / Panksepp 动机 / VAD 词典桥 / ECM 时间包络
 │   │   ├── language_steering.py #   SteeringLanguageModel：VA steering 适配器（开放权重·steer extra）
 │   │   ├── models/              #   真网络化 torch 解码器（expression/prosody/physiology/facs/text/composite）
@@ -132,18 +163,19 @@ Zero/
 │   │   └── client.py · types.py
 │   └── storage/                 # 存储层（最底层）：运行态 + 长期记忆，env 选后端
 │       ├── checkpointer.py      #   build_checkpointer：InMemory / SQLite / Postgres（gated）
-│       └── graph_store.py       #   InMemory / Sqlite / Neo4jGraphStore（裸 Cypher）+ build_graph_store
+│       ├── graph_store.py       #   门面：再导出 backends/ + 工厂 build_graph_store/build_semantic_store
+│       └── backends/            #   deterministic.py（InMemory/Sqlite/Neo4j）+ semantic.py（Graphiti/SqliteVector）
 ├── tests/                       # 核心 + ml + 真后端用例（ml 缺 torch / Neo4j 缺实例时自动 importorskip / 优雅跳过）
 ├── scripts/                     # 训练脚本 train_*.py + 端到端 demo_pipeline.py
 ├── Dockerfile · docker-compose.yml · .dockerignore · .env.example   # 容器化部署
 ├── pyproject.toml               # 依赖（core / ml / db / llm extra）+ ruff / mypy / pytest 配置
 ├── environment.yml · environment.lock.yml · uv.lock                 # conda / uv 环境
 ├── README.md · PROGRESS.md · DATASETS.md                            # 总览 / 工程记录 / 数据集清单
-├── notes/                       # 研究笔记（情感数学 / LLM 表达，含 A.7 推导）
+├── notes/                       # 研究笔记（情感数学·A.7 / 文本输出情绪 / 并行脑路·工作空间 / 仿生人路线图）
 └── diagrams/                    # 架构设计图
 ```
 
-> **本地 harness / 知识层**（gitignore，不入版本库）：`.claude/`（rules · skills · hooks · commands · agents）· `ai-docs/`（模块三件套 · catalog · pitfalls）· `ai-shared/` · `evals/` · `PRP/`（PRP 工作区）· `artifacts/` · `data/`（训练权重 / 数据集）。
+> **本地 harness / 知识层**（gitignore，不入版本库）：`.claude/`（rules · skills · hooks · commands · agents）· `ai-docs/`（模块三件套 · catalog · pitfalls）· `ai-shared/` · `evals/` · `PRP/`（PRP 工作区）· `artifacts/`（训练权重）· `data/`（数据集 + 本地记忆库 `chat_history.sqlite3` 对话/情绪 · `graph.sqlite3` 长期倾向）。
 
 ## 环境准备（conda）
 
@@ -175,6 +207,12 @@ pytest -q
 # 端到端 demo：合成训练 ExpressionDecoder → 注入管线 → 跑刺激序列（无需外部数据）
 python -m scripts.demo_pipeline
 
+# 并行流 + 显著度门控全局工作空间（零依赖）：看每个刺激点燃哪些流
+python main.py --workspace
+
+# 交互对话：情感引擎 ⊗ LLM 输出耦合（有 .env LLM key 走真模型，缺 key 回退词典+模板）
+python main.py --chat
+
 # 文本输出情绪验证（真 LLM，OpenAI 兼容接口）：内核情绪 → 生成语言 → 独立 VAD 反推 → 一致性
 #   需 .[llm] + 在 .env 配 ZERO_OPENAI_API_KEY / ZERO_OPENAI_MODEL（真实模型 id）/ 可选 ZERO_OPENAI_BASE_URL
 python main.py --llm
@@ -201,6 +239,6 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300
 
 ## 状态
 
-- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + **文本输出情绪补足**（词工程细粒度词典 / VA steering / 重评 / 评价条件化，默认关、零回归）+ 端到端集成已完成，测试全绿（`pytest` 149 passed / `ruff` / `mypy`），**真 LLM 端到端已验证**（`main.py --llm`，PR #19 已合并 main）。
+- **情感表达子系统**：编排骨架 + 真网络化全通道脚手架（文本/韵律/生理三通道已在真实公开数据上实跑验证，权重见 Release `weights-v0.2`）+ 语言层 affect↔language 双向回路 + **文本输出情绪补足**（词工程细粒度词典 / VA steering / 重评 / 评价条件化）+ **并行预测编码流 + 显著度门控全局工作空间**（v3：并行流竞争 + ignition + 精度加权再入，默认关、零回归）+ **交互对话耦合入口**（`main.py --chat`：评价桥 + 泄漏积分情绪（响应/积累/多样/部分随机、有边界不讨好）+ 本地记忆落盘，情感引擎 ⊗ LLM 输出耦合）+ 端到端集成已完成，测试全绿（`pytest` 165 passed / `ruff` / `mypy`），**真 LLM 端到端已验证**（`main.py --llm` 批处理 + `main.py --chat` 对话耦合），**工作空间本地可验**（`main.py --workspace`）。
 - 存储层已上真后端适配器（长期记忆 SQLite 落盘 + Neo4j 裸 Cypher；运行态 SQLite/Postgres saver），env 选后端、`db` extra 装驱动——代码就绪，待在有 Docker 的服务器真机验证。
 - **语义记忆侧信道**（`SemanticStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索，`recall_enabled` 门控、默认关）：轻量 `SqliteVectorStore`（`sqlite_vec`，无图库/无服务）**已本地端到端验证闭环通过** ✅；`GraphitiGraphStore`（`graphiti`，实体/关系知识图谱）为需要图谱时的重型选项，走 Neo4j（⚠ kuzu 后端 Graphiti 有 FTS bug，不可用）。更多 Worker 角色按需接入。

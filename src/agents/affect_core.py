@@ -12,11 +12,14 @@ from __future__ import annotations
 import random
 
 from src.agents.affect_math import (
+    AROUSAL_GAIN,
     MIN_SIGMA,
     MOOD_PRECISION,
     evidence_from_value,
+    fast_survival_prior,
     fuse_terms,
     gaussian_fuse,
+    ignite,
     sample_affect,
 )
 from src.orchestration.state import AffectState
@@ -31,7 +34,26 @@ class AffectCoreAgent:
         delta = state.rpe if state.rpe is not None else 0.0
         pi = state.precision if state.precision is not None else 1.0
         evidence = evidence_from_value(state.reward, delta)
-        if state.mood_enabled:
+        ignited: list[str] = []
+        if state.workspace_enabled:
+            # 显著度门控全局工作空间（v3）：并行流 (name, μ, Π) 竞争 → ignition 广播。
+            # NE/唤醒增益：唤醒越高，评价·价值流的精度（投票权）越大（精度=神经调质增益）。
+            arousal_gain = 1.0 + AROUSAL_GAIN * max(0.0, state.prior_mu[1])
+            prior_prec = (
+                arousal_gain / max(MIN_SIGMA, state.prior_sigma[0]) ** 2,
+                arousal_gain / max(MIN_SIGMA, state.prior_sigma[1]) ** 2,
+            )
+            surv_mu, surv_prec = fast_survival_prior(state.features)
+            streams: list[tuple[str, tuple[float, float], tuple[float, float]]] = [
+                ("survival", surv_mu, surv_prec),  # 快生存流（低精度、可单独点燃）
+                ("appraisal", state.prior_mu, prior_prec),  # 慢评价流（OCC）
+                ("value", evidence, (pi * arousal_gain, pi * arousal_gain)),  # 价值流（RPE）
+            ]
+            if state.mood_enabled and state.mood is not None:
+                streams.append(("mood", state.mood, (MOOD_PRECISION, MOOD_PRECISION)))
+            terms, ignited = ignite(streams)
+            post_mu, post_sigma = fuse_terms(terms)
+        elif state.mood_enabled:
             # 把「已在的心境」作为第三个精度加权先验并入融合（当前被过去弯折）
             prev_mood = state.mood if state.mood is not None else (0.0, 0.0)
             prior_prec = (
@@ -51,15 +73,22 @@ class AffectCoreAgent:
         # 非漏传 seed；测试需可复现时显式传 rng_seed。
         rng = random.Random(state.rng_seed) if state.rng_seed is not None else None
         e_star = sample_affect(post_mu, post_sigma, rng=rng)
-        entry = {
+        entry: dict = {
             "node": "affect_core",
             "post_mu": post_mu,
             "post_sigma": post_sigma,
             "affect_sample": e_star,
         }
-        return {
+        out: dict = {
             "post_mu": post_mu,
             "post_sigma": post_sigma,
             "affect_sample": e_star,
             "trace": [entry],
         }
+        # 工作空间额外产出：点燃的流名 + 后验精度（供语言层精度加权再入）。
+        # 默认关时返回 dict 与 trace 与 v1/v2 逐字一致（零回归）。
+        if state.workspace_enabled:
+            entry["ignited_streams"] = ignited
+            out["ignited_streams"] = ignited
+            out["affect_precision"] = 0.5 * (1.0 / post_sigma[0] ** 2 + 1.0 / post_sigma[1] ** 2)
+        return out

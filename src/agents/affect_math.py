@@ -27,6 +27,12 @@ MOOD_PRECISION = 0.8
 LANGUAGE_TOLERANCE = 0.15  # 语言情感与内核 e* 的一致阈值 τ
 RECONCILE_WEIGHT = 0.5  # 双向互调：e* 向语言情感拉拢的权重
 
+# Workspace（v3 显著度门控全局工作空间，默认关）：并行流竞争 → ignition 广播
+SURVIVAL_PRECISION = 0.4  # 快生存流（上丘-枕-杏仁核捷径）：低固定精度（粗、快）
+SALIENCE_THRESHOLD = 0.18  # ignition 阈值：salience 低于此的流不点燃（停留局部）
+AROUSAL_GAIN = 1.0  # NE/唤醒对评价·价值流精度的增益系数（唤醒越高投票权越大）
+LANG_BASE_PRECISION = 1.0  # 精度加权再入里语言侧的基准精度（与内核后验精度竞争）
+
 # Regulation 重评（Gross 过程模型）：reappraisal 改「构念/意义」而非末端压制
 REAPPRAISAL_ANCHOR = 0.1  # 重评把负/低效价重新解释、向其拉拢的「积极锚」
 REAPPRAISAL_LIFT = 0.7  # 向积极锚拉拢的比例（重评改变体验，不只是表达）
@@ -270,3 +276,68 @@ def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
         "physiology": physiology,
         "prosody": prosody,
     }
+
+
+def fast_survival_prior(
+    features: list[float],
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """快生存流（上丘-丘脑枕-杏仁核捷径 / LeDoux 生存回路）：从原始特征出粗 (μ, Π)。
+
+    亚符号、低精度、最快：只用目标一致性符号定效价方向、强度定唤醒，不做 OCC 多维细评
+    （那是慢评价流的事）。features = [goal, standard, attitude, intensity]（PerceptionAgent）。
+    精度固定为 SURVIVAL_PRECISION（粗快=不确定），逐维返回。纯函数、无副作用。
+    """
+    goal = features[0] if features else 0.0
+    intensity = features[3] if len(features) > 3 else 1.0
+    valence = clamp(0.6 * goal, -1.0, 1.0)  # 粗：只取目标符号
+    arousal = clamp(0.5 + 0.5 * abs(intensity), 0.0, 1.0)  # 威胁/显著 → 高唤醒
+    return (valence, arousal), (SURVIVAL_PRECISION, SURVIVAL_PRECISION)
+
+
+def stream_salience(mu: tuple[float, float], precision: tuple[float, float]) -> float:
+    """显著网络（前岛叶+dACC）的门控分数：精度加权的偏离中性幅度 |μ|·Π̄。
+
+    偏离中性越远、精度越高 → 越显著、越该进入全局广播。纯函数。
+    """
+    deviation = math.hypot(mu[0], mu[1])
+    mean_precision = 0.5 * (precision[0] + precision[1])
+    return deviation * mean_precision
+
+
+def ignite(
+    streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
+    *,
+    threshold: float = SALIENCE_THRESHOLD,
+) -> tuple[list[tuple[tuple[float, float], tuple[float, float]]], list[str]]:
+    """GNW ignition：salience ≥ threshold 的流点燃进入全局广播，亚阈流停留局部。
+
+    若无流过阈（全弱刺激）则保留 salience 最高者，保证总有输出（不空播）。
+    streams = [(name, μ, Π), ...]；返回 (点燃流的 [(μ, Π)] 供 fuse_terms, 点燃流名列表)。
+    纯函数、无副作用。
+    """
+    scored = [(name, mu, prec, stream_salience(mu, prec)) for name, mu, prec in streams]
+    fired = [(name, mu, prec) for name, mu, prec, s in scored if s >= threshold]
+    if not fired:
+        top = max(scored, key=lambda item: item[3])
+        fired = [(top[0], top[1], top[2])]
+    terms = [(mu, prec) for _, mu, prec in fired]
+    names = [name for name, _, _ in fired]
+    return terms, names
+
+
+def precision_reconcile(
+    e_star: tuple[float, float],
+    e_precision: float,
+    lang_affect: tuple[float, float],
+    *,
+    lang_precision: float = LANG_BASE_PRECISION,
+) -> tuple[float, float]:
+    """精度加权再入（替代固定 RECONCILE_WEIGHT 的中点拉拢）：内核 e* 与语言反推情感
+    按各自精度融合——高精度内核抗语言拉拢、低精度内核让步。逐维钳制 [-1, 1]，纯函数。
+
+    e_precision=语言侧精度时退化为中点（≡ reconcile_affect weight=0.5）。
+    """
+    den = max(MIN_PRECISION, e_precision + lang_precision)
+    v = clamp((e_precision * e_star[0] + lang_precision * lang_affect[0]) / den, -1.0, 1.0)
+    a = clamp((e_precision * e_star[1] + lang_precision * lang_affect[1]) / den, -1.0, 1.0)
+    return (v, a)

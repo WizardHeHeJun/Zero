@@ -1,6 +1,6 @@
 # 工程进度与成果记录
 
-> 情感表达子系统（affective-expression）的建设记录。更新于 2026-06-24。
+> **AI 仿生人**（情感引擎 ⊗ LLM，拟人情感交流）的建设记录；当前主体为情感表达子系统（affective-expression）。更新于 2026-06-25。前瞻路线图见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)。
 
 ## 缘起
 
@@ -135,9 +135,45 @@
 - **验证**：`pytest` **149 passed, 5 skipped**（+32；新增 steering smoke skip 1）；`ruff check`/`ruff format`/`mypy`(41 源) 干净。
 - **真 LLM 端到端已验证**（`main.py --llm`，OpenAI 兼容代理 + qwen-flash）：四情绪场景（喜/怒×强弱）生成语言情绪对路、独立反推 VAD 与内核 e* 同象限（狂喜↔狂喜、暴怒↔暴怒）、双向回路迭代 2–3 次将一致性收敛到 τ=0.15 以下（0.12–0.14）。模型经 `.env` 的 `ZERO_OPENAI_MODEL` 配（注意代理的 `limited` 是权限标签非模型名，需填真实 id 如 qwen-flash/deepseek-v4-flash/gpt-5.5）。
 
+### 阶段 13 — v3：并行预测编码流 + 显著度门控全局工作空间（默认关、零回归）
+
+诊断图 `diagrams/2026-06-23T010000` 画了"6 脑区并行 → Integrator 平均"，但代码是线性串行链、`affect_core` 顺序平均。本步据 30 篇神经科学文献（`notes/2026-06-25-…`）把图修正为**生物学忠实版**：并行的是**功能流（时间尺度×精度）**非解剖脑区，整合是**显著度门控 ignition 广播**非平均，快路是**亚符号生存信号**非"恐惧"。设计见 `PRP/affective-expression-v3-parallel-workspace/design.md`。
+
+- **理论裁决**：并行真实（杏仁核 many-roads[Pessoa&Adolphs]、丘脑枕-杏仁核人类实证、三网络、并行预测编码、DA 并行广播），但"1:1 脑区=模块"被否（Pessoa 双重竞争 / Barrett 简并无指纹 / CPM 评价检查其实序列），整合须 GNW ignition（Dehaene）+ 显著网络门控（Menon）。
+- **`affect_math.py`（纯新增）**：`fast_survival_prior`（上丘-枕-杏仁核捷径/生存回路，粗效价+高唤醒、低固定精度）+ `stream_salience`（SN 门控分数 |μ|·Π̄）+ `ignite`（salience≥阈点燃、不空播）+ `precision_reconcile`（Kalman 式精度加权再入，替代固定 0.5）+ `SURVIVAL_PRECISION`/`SALIENCE_THRESHOLD`/`AROUSAL_GAIN`/`LANG_BASE_PRECISION`。**不动** `gaussian_fuse`/`fuse_terms`/`reconcile_affect`。
+- **`affect_core.py`**：`workspace_enabled` 分支——并行流 [survival, appraisal, value, (mood)] → `ignite` → `fuse_terms` → 采样，写 `ignited_streams`/`affect_precision`；唤醒增益（NE 精度调制）抬高评价/价值流投票权。默认关时返回 dict 与 trace 逐字同 v1/v2。
+- **`language.py`**：`workspace_enabled` 时回路重写用 `precision_reconcile`（高精度内核抗语言拉拢）；否则 `reconcile_affect` 不变。
+- **贯通**：`state.py` 加 `workspace_enabled`/`ignited_streams`/`affect_precision`；`runner.run` 形参贯通 + 轨迹输出点燃流；`main.py --workspace` 验证入口。
+- **验证**：`pytest` **158 passed, 5 skipped**（+9 新）；`ruff`/`mypy`(41 源) 干净；`python main.py --workspace` 实跑显示流差异化点燃（巨响→survival+appraisal、offer→三流齐燃、value 对无回报刺激被门控）；workspace+language 精度再入端到端不崩、高精度内核抵抗漂移。
+
+### 阶段 14 — 存储层后端拆分 + 交互对话入口（情感引擎 ⊗ LLM 耦合，真机验证）
+
+承接遍历观察（`graph_store.py` 556 行偏重）+ 用户现阶段目标「验证情感引擎与 LLM 输出耦合、需要能真正交流对话的入口」。两件事：
+
+- **`graph_store.py` 拆分（零破坏重构）**：556 行拆成 `src/storage/backends/deterministic.py`（InMemory/Sqlite/Neo4j + StoredFact + GraphStore 协议）+ `backends/semantic.py`（SemanticStore 协议 + Graphiti/SqliteVector + `_cosine`/`_build_graphiti`/`_coerce_dt`/`_group_id`）；`graph_store.py` 收为**门面**（再导出 + `__all__`）。**工厂 `build_graph_store`/`build_semantic_store` 及其探测 `_neo4j_store`/`_graphiti_store`/`_sqlite_vector_store` 刻意留在门面同模块**——测试 `monkeypatch.setattr(gs, "_neo4j_store", …)` 后调工厂须同命名空间方能命中（拆到子模块会令 monkeypatch 失效）。上层导入路径不变，零回归。
+- **交互对话耦合入口**（一直缺的环节）：情感引擎已成、LLM 已接，但只有批处理 demo、无对话循环。补两块——①**评价桥**：`OpenAILanguageModel.appraise_text(text)`（复用与生成解耦的独立 VAD 反推，把用户每句话读成 (v,a)）；②**多轮会话基元** `runner.ConversationSession`（建图/checkpointer 一次、逐轮 `step`，运行态 mood/value_table **跨轮持久** → 情绪连续/A.7 滞后在对话里显现）。`main.py --chat`：你说一句 → 评价桥读情绪 → 喂引擎演化 e*/mood → 语言层生成带情绪回应；有 LLM key 走真模型，缺 key 回退词典评价+模板语言。`main.py` docstring 从「临时脚本」**转正**为官方入口。
+- **真 LLM 端到端已验证** ✅（qwen-flash，`main.py --chat`）：升职→狂喜·seeking、被羞辱→暴怒·rage 情绪对路；连续负面后 mood valence 累积下行（+0.12→-0.29），末轮仅轻微负面输入(-0.30) 仍因负盆 mood 维持暴躁回应——**滞后/历史依赖在真实对话里显现**，坐实情感引擎 ⊗ LLM 耦合。
+- **落点**：`runner.py`（抽 `_state_to_entry` 共用 + `ConversationSession`）、`language_openai.py`（`appraise_text`）、`main.py`（`--chat` + 日志静音 + docstring 转正）、`storage/backends/`（新子包）、`graph_store.py`（门面）。新测 `test_conversation.py`（会话 mood/value 跨轮持久 + appraise_text fake-client）。
+- **验证**：`pytest` **162 passed, 5 skipped**（+4 对话测试；拆分零回归）；`ruff`/`mypy`(45 源) 干净。
+
+### 阶段 15 — 对话情绪重做（响应·积累·多样·部分随机·有边界，按真机反馈两轮迭代）
+
+阶段 14 的 chat 真机暴露问题，两轮迭代修到位：
+
+- **第一轮（连贯+落库+不极端）**：补 `converse(history, …)`（带完整对话历史 → 连贯、能答"我刚说了什么"）+ `ConversationLog`（stdlib sqlite，transcript 落盘、重启重载 → 跨重启记忆）+ `_sqlite_saver().setup()` 幂等建表（修 sqlite checkpointer 首用 no-such-table）。表达先试**慢变 mood 主导 + 阻尼**。
+- **第二轮（情绪要真积累且响应）**：真机发现 mood 主导**反而锁死**——A.7 双稳从正盆自锁、单调爬到 +1，被持续辱骂也不变负（情绪不响应、一成不变、回应只能维持"好好先生"）。根因：双稳 `gain·tanh(k·m)` 自放大 + 过度阻尼。改为：
+  - **泄漏积分情绪**：`mood_step(self_gain=0, inertia=0.7, drive=0.3)` + 小噪声（chat 关 `mood_enabled`，不用双稳）→ 持续负面**逐步累积变负、会动怒**，响应输入、不锁死、部分随机。减阻尼（`goal=v`、intensity 不再压到 0.6）。
+  - **多样情绪词**：映射 `affect_label`（8 扇区×强度，恼火/愤怒/低落/愉悦…）非单一 v/a。
+  - **有脾气不讨好**：`_CONVERSE_SYS` 强化「负面时绝不一味道歉/自责/讨好/当出气筒，可不耐烦/设边界/冷淡/回怼，有自尊」+ converse 温度抖动。
+  - **`ZERO_CHAT_THREAD`** 切独立会话/重置；累积情绪也落 `ConversationLog` meta、重启续上。
+- **关键教训**：LLM 会**模仿历史里自己的回合**——旧历史若全是讨好回应，新回合继续讨好；干净历史下强化提示词才生效。
+- **真机验证**（qwen-flash，干净历史）：辱骂升级时情绪逐步变负（平静→专注→恼火→愤怒）、回应有真脾气与边界（"不想惯着你这种说话方式"/"先学会怎么跟人说话"），连贯、跨重启续上。
+- **落点**：`language_openai.py`(`converse`/`affect_label` 多样词/温度抖动/`_CONVERSE_SYS` 抗讨好)、`main.py`(`_run_chat` 泄漏积分 + `ConversationLog`(transcript+情绪) + `ZERO_CHAT_THREAD` + 日志静音)、`checkpointer.py`(`setup()`)。新测 `test_conversation.py`(+3：converse 带历史/泄漏积分响应不锁死/transcript+情绪落库)。
+- **验证**：`pytest` **165 passed, 5 skipped**（+3）；`ruff`/`mypy`(45 源) 干净。
+
 ## 成果与验证
 
-- **测试**：`pytest` 149 passed, 5 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1 + steering 实机 smoke 缺 ZERO_STEER_MODEL 跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(41 源文件) 干净。
+- **测试**：`pytest` 165 passed, 5 skipped（含 ml 缺 torch 跳过 2 + Graphiti 实机 smoke neo4j/kuzu 各跳过 1 + steering 实机 smoke 缺 ZERO_STEER_MODEL 跳过 1；本机有 sentence-transformers 故句向量 6 测全跑）；`ruff check`/`ruff format`/`mypy`(45 源文件) 干净。
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
@@ -177,3 +213,19 @@ DATASETS.md                                   数据集清单
 - **放数据跑真实训练（三通道全部实跑 3/3）**：**EmoBank 文本**（词袋 loss 0.016 / 句向量升级 0.0056、跨域更稳，见阶段 10）、**RAVDESS 韵律**（Zenodo 免登录、全量 1440 条，loss 0.126→0.026，pitch 随 arousal 单调上升的真实声学映射）、**WESAD 生理**（uni-siegen sciebo 全量 15 受试者 1474 窗，loss 0.053→0.024，stress 心率 92.7bpm/皮电最高 vs meditation 67.5 的应激→自主神经激活映射）均已实跑；脚手架（loader + `train_*`）在三类真实数据上验证可用。各通道 speech_rate/energy、体温等弱区分项属 loader 特征代理的尺度问题，非模型问题。
 - **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。**Graphiti 已深度集成（阶段 8）**：作为与确定性 GraphStore 并存的语义记忆侧信道接入（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND=graphiti` 门控、默认关。**本地验证路径已就绪（阶段 9）**：`ZERO_GRAPHITI_DB=kuzu`（嵌入式、无 Docker/无服务）+ OpenAI 兼容 key，跑 `python -m scripts.verify_graphiti_local` 即可在本机验证闭环；**待用户带 LLM key 实跑确认**（本机无 key）。
 - **扩 Worker 角色**：已加 MemoryRecall / Mood；可继续按 `/new-agent` 增加。
+
+## 下一步路线图（阶段 15+ · AI 仿生人）
+
+> 详见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)（定位确认 + 现状缺口 + 本地落库设计 + 学术依据）。**已定**：chat 默认翻为**本地落盘**（SQLite 三件套：运行态 + 确定性图谱 + 语义经历），零依赖内存档保留为 opt-in。
+
+**记忆主线（近期，逐级依赖）**
+- **阶段 15 — 本地持久化转正 + 对话经历入库 + chat 记忆闭环**：具身默认档（运行态 SQLite + `SqliteGraphStore` + `SqliteVectorStore`）；Supervisor 任务完成节点把「用户原话 + 仿生人回应 + e\*/mood/点燃流 + 时间」写成情景记忆（`SESSION` + 自传 `USER`）；chat 默认 `recall_enabled` → 仿生人「记得过去交流」。
+- **阶段 16 — 自我模型 + 关系记忆**：稳定人格（大五 / PAD）偏置先验 + mood 盆深；对每个交流对象的关系 / 熟悉度记忆（回灌已有 `recalled_disposition` 通路）。
+- **阶段 17 — 记忆巩固与遗忘**：情绪加权巩固（McGaugh）+ 遗忘曲线（Ebbinghaus），离线「睡眠」批处理 —— 绝不每条消息触发（守记忆节流红线）。
+
+**多模态主线（中远期，独立轨道）**
+- **阶段 18 — 多通道输入感知**：FER / SER / HRV / 文本编码器并行 → `fuse_terms` 精度融合（对称补全输入侧；「多网络并行」在此成形）。
+- **阶段 19 — Live2D 适配器**（FACS AU → Cubism 参数）· **阶段 20 — 情感 TTS**（文本 + 韵律 → 表达性 TTS）。
+- **阶段 21（可选）— 具身闭环 + 编排并行化**。
+
+> 全程纪律：纯加法 / 鸭子类型注入 / torch·LLM·SDK 隔离 / env 门控 / 默认关 / 零回归 / 落地前固化 WebSearch 核验文献。
