@@ -29,6 +29,9 @@ RECONCILE_WEIGHT = 0.5  # 双向互调：e* 向语言情感拉拢的权重
 
 # Workspace（v3 显著度门控全局工作空间，默认关）：并行流竞争 → ignition 广播
 SURVIVAL_PRECISION = 0.4  # 快生存流（上丘-枕-杏仁核捷径）：低固定精度（粗、快）
+TEXT_AFFECT_PRECISION = 0.3  # 文本语义流精度（固定低值，显式低于 occ_prior 动态精度）
+# 初版固定：类比 SURVIVAL_PRECISION 的工程近似（Friston 2005 允许初始固定精度）；
+# 未来可从回归器残差动态估计（议会悬而未决 #1）。
 SALIENCE_THRESHOLD = 0.18  # ignition 阈值：salience 低于此的流不点燃（停留局部）
 AROUSAL_GAIN = 1.0  # NE/唤醒对评价·价值流精度的增益系数（唤醒越高投票权越大）
 LANG_BASE_PRECISION = 1.0  # 精度加权再入里语言侧的基准精度（与内核后验精度竞争）

@@ -20,6 +20,7 @@ class Stimulus(BaseModel):
     """
 
     name: str
+    text: str | None = None  # 文本型 stimulus 原始文本；文本路径用，OCC 路径忽略
     goal_congruence: float = 0.0  # 与目标的一致性（事件维度）
     standard_compliance: float = 0.0  # 与标准的契合（行为维度）
     attitude_appeal: float = 0.0  # 对象的喜好（吸引力维度）
@@ -36,6 +37,7 @@ class AffectState(BaseModel):
 
     # Perception
     features: list[float] = Field(default_factory=list)
+    text_affect: tuple[float, float] | None = None  # 文本(v,a)；PerceptionAgent写、AffectCore读
 
     # Appraisal（OCC 理性先验）
     appraisal: dict[str, float] = Field(default_factory=dict)

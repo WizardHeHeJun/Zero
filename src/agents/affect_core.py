@@ -15,6 +15,7 @@ from src.agents.affect_math import (
     AROUSAL_GAIN,
     MIN_SIGMA,
     MOOD_PRECISION,
+    TEXT_AFFECT_PRECISION,
     evidence_from_value,
     fast_survival_prior,
     fuse_terms,
@@ -51,6 +52,10 @@ class AffectCoreAgent:
             ]
             if state.mood_enabled and state.mood is not None:
                 streams.append(("mood", state.mood, (MOOD_PRECISION, MOOD_PRECISION)))
+            if state.text_affect is not None:
+                streams.append(
+                    ("text", state.text_affect, (TEXT_AFFECT_PRECISION, TEXT_AFFECT_PRECISION))
+                )
             terms, ignited = ignite(streams)
             post_mu, post_sigma = fuse_terms(terms)
         elif state.mood_enabled:
