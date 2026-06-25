@@ -18,8 +18,6 @@
 
 ![现阶段框架图](docs/framework-current.png)
 
-> 在线可编辑版（飞书画板）：<https://www.feishu.cn/docx/DrEydWZzXoW893x9jGKcQRZEnmc>　·　图源与重渲染命令见 [docs/](docs/README.md)
-
 ### 1. 评价桥：把话读成情绪
 
 每一句输入先经**评价桥**反推出效价-唤醒坐标 `(v, a)`——一句夸奖是正效价、一句挑衅是负效价高唤醒——作为刺激喂给引擎。
@@ -109,6 +107,7 @@ Zero/
 │       └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py
+├── tools/                   # 运维脚本（reset_db.py 清库）
 ├── docs/                    # 对外框架图（飞书画板渲染）
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记（情感数学 / 文本输出情绪 / 并行脑路·工作空间 / 路线图）
