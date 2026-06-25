@@ -68,6 +68,51 @@
 
 ---
 
+## 一次对话是怎么跑的：LLM ⊗ 情感引擎
+
+**LLM 不替代情感，只在「输入」「输出」两端与情感引擎结合**：输入端 LLM 把你的话**读成情绪**（评价桥），输出端 LLM **被情绪调制着说话**（push 漏情绪）；夹在中间、真正产生情绪的是一套**确定性引擎**——LLM 绝不进入这条情绪计算热路径，也不替仿生人"编造"记忆。于是情绪是真实演化、可复现的，而不是让模型"扮演"。
+
+```mermaid
+flowchart TD
+    U["你说一句话"] -->|"① appraise_text 评价桥 · LLM"| VA["情绪坐标 (v,a)"]
+    VA --> STIM["Stimulus 刺激<br/>v→目标契合度 · 长期 attitude→对象吸引"]
+    STIM --> ENGINE
+
+    subgraph ENGINE["② 情感引擎 · LangGraph 图内 · 确定性 · 无 LLM"]
+        direction TB
+        PER["perception 感知<br/>+ 文本语义独立流"]
+        APP["appraisal 评价先验<br/>OCC + 长期态度 + 记忆召回偏置"]
+        VAL["value 价值<br/>TD 奖赏预测误差"]
+        CORE["affect_core 主动推断<br/>多流显著度门控融合 → 瞬时情绪 e*"]
+        PER --> APP --> VAL --> CORE
+    end
+
+    ENGINE --> EMO["③ 两时间尺度<br/>emotion 快衰退 · attitude 慢累积（持久化）"]
+    ENGINE -->|"显著性门控"| MEM[("④ 情景记忆<br/>择要写 episode")]
+    MEM -. "选择性召回（相关性+当下情绪）" .-> CONV
+    EMO --> CONV["⑤ converse push · LLM<br/>情绪经用词倾向漏进措辞"]
+    CONV --> REPLY["仿生人回应"]
+    REPLY -. "下一轮（mood/态度/记忆跨轮持久）" .-> U
+```
+
+> 对话主循环（人在环 REPL）在**图外**（`main.py`），逐句把"评价→引擎演化→生成"缝起来；情感引擎在 **LangGraph 图内**，每句话跑一遍六节点管线。研究模式 `--llm` 则改走图内 `language` 节点的 affect↔language 双向收敛回路。
+
+### 关键接口各自的作用
+
+| 接口 / 节点 | 作用（LLM⊗情感的接点已标注） |
+| --- | --- |
+| `ConversationModel.appraise_text(text)→(v,a)` | **评价桥（输入端接点）**：任意文本读成情绪坐标，喂给引擎当刺激 |
+| `ConversationModel.converse(history, affect, *, retrieved, push)` | **自然对话（输出端接点）**：按当前情绪 + 召回背景生成回应，情绪经用词倾向自然漏进措辞 |
+| `LanguageModel.generate → LanguageDraft` | 图内 `language` 节点协议：研究用 affect↔language 双向收敛回路（`--llm`） |
+| `ChannelDecoder`（鸭子类型注入） | 表达通道解码器：`(v,a)` → 韵律 / 生理 / 表情，可换训练好的网络，编排层不依赖 torch |
+| `MemoryClient`：`write`/`query` · `write_episode`/`recall` | 记忆读写 API：确定性长期倾向（图谱，时序失效）+ 语义情景 episode；**上层不直连图谱**、写入只在任务完成节点（节流） |
+| 图节点 `perception→appraisal→value→affect_core→mood→expression→supervisor`（+ `memory_recall`） | 情感引擎各环：感知 → 评价先验 → 价值学习 → 显著度门控融合采样 `e*` → 慢心境 → 多通道表达 → 任务完成节流写记忆；开头 `memory_recall` 召回长期倾向/情景回灌评价 |
+| 入口 `build_graph` · `runner.ConversationSession` · `main.py` | 装配并编译图 · 多轮会话基元（mood/价值/记忆跨轮持久）· CLI（`python main.py` 即进对话） |
+
+> 各接口均**协议化、可注入**（真 LLM / 占位模板 / steering 后端、真网络解码器、记忆后端都按协议替换），编排层不绑定具体 SDK——这正是"先把对话做扎实、再逐步接多模态"而不动内核契约的底座。
+
+---
+
 ## 预留给未来的通道
 
 现阶段以**文本输入、情绪化文本输出**跑通整条回路，同时把若干扩展点的**接口先留好**，未来逐步接入而不动内核契约：
