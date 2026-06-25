@@ -102,7 +102,7 @@ Zero/
 │   │   ├── affect_core.py   #   主动推断·后验采样 e*（并行流竞争 + ignition）
 │   │   ├── mood.py          #   慢变心境双稳动力学
 │   │   ├── regulation.py · expression.py   # 掩饰 + 双通路·多通道输出
-│   │   ├── language.py · language_openai.py   # 语言生成 + 双向回路 / 评价桥 / 自然对话
+│   │   ├── language.py · language_openai.py   # 语言生成+双向回路 / ConversationModel 协议 / 评价桥 / 自然对话
 │   │   ├── emotion_lexicon.py    #   细粒度情绪词 / 动机系统 / VAD 词典桥 / 时间包络
 │   │   ├── language_steering.py  #   VA steering 适配器（开放权重）
 │   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text）
@@ -117,7 +117,7 @@ Zero/
 ├── tools/                   # 运维脚本（reset_db.py 清库）
 ├── docs/                    # 对外框架图（飞书画板渲染）
 ├── diagrams/                # 架构设计图谱系
-├── notes/                   # 研究笔记（情感数学 / 文本输出情绪 / 并行脑路·工作空间 / 路线图）
+├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
 ├── Dockerfile · docker-compose.yml · .env.example   # 容器化部署
 └── pyproject.toml · environment.yml                 # 依赖与环境（core / ml / db / llm extra）
 ```
