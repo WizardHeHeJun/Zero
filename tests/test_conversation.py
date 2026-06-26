@@ -192,7 +192,7 @@ def test_attitude_accumulates_slowly_object_bound() -> None:
 
 def test_conversation_log_roundtrip_and_feeling() -> None:
     """对话 transcript + 累积情绪落库/重载（跨重启记忆 + 情绪续上的本地存储基元）。"""
-    from main import ConversationLog
+    from src.storage.conversation_log import ConversationLog
 
     log = ConversationLog(path=":memory:")
     log.append("t1", "user", "你好")
