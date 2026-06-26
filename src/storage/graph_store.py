@@ -98,7 +98,7 @@ def _graphiti_store() -> GraphitiGraphStore | None:
         password = os.getenv("ZERO_NEO4J_PASSWORD", "password")
         return GraphitiGraphStore(uri, user, password)
     except Exception as exc:
-        logger.warning("Graphiti 语义后端构造失败（%s），回退无语义记忆", exc)
+        logger.warning("Graphiti 语义后端构造失败（%s），回退无语义记忆", exc, exc_info=True)
         return None
 
 

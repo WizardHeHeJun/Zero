@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 from typing import Any
@@ -21,6 +22,8 @@ from typing import Any
 from src.agents.affect_math import clamp
 from src.agents.emotion_lexicon import affect_label, affect_logit_bias, suggest_affect_words
 from src.agents.language import LanguageDraft
+
+logger = logging.getLogger(__name__)
 
 _COMPOSE_SYS = (
     "你是一个情感表达体的语言生成器。根据给定的情绪坐标"
@@ -138,10 +141,19 @@ class OpenAILanguageModel:
         except Exception:
             # 某些代理/模型不支持 logit_bias（或 token id 不匹配）→ 退回不带 bias；
             # push 仍经 prompt 用词倾向生效，不致命。
+            logger.debug("converse 带 logit_bias 调用失败，退回无 bias 重试", exc_info=True)
             resp = await self.client.chat.completions.create(
                 model=self.model, temperature=temperature, messages=messages
             )
-        return (resp.choices[0].message.content or "").strip()
+        reply = (resp.choices[0].message.content or "").strip()
+        logger.debug(
+            "converse model=%s msgs=%d push=%s reply_len=%d",
+            self.model,
+            len(messages),
+            push,
+            len(reply),
+        )
+        return reply
 
     def _build_logit_bias(self, affect: tuple[float, float], words: list[str]) -> dict[int, float]:
         """解码期 push：affect-congruent 词 → OpenAI `logit_bias`（{token_id: 偏置}）。
@@ -209,7 +221,10 @@ class OpenAILanguageModel:
                 {"role": "user", "content": text},
             ],
         )
-        return self._parse_vad((resp.choices[0].message.content or "").strip())
+        raw = (resp.choices[0].message.content or "").strip()
+        result = self._parse_vad(raw)
+        logger.debug("appraise raw=%.80s → vad=%s", raw, result)
+        return result
 
     @staticmethod
     def _parse_vad(raw: str) -> tuple[float, float]:
@@ -221,5 +236,6 @@ class OpenAILanguageModel:
             v = clamp(float(data.get("valence", 0.0)), -1.0, 1.0)
             a = clamp(float(data.get("arousal", 0.0)), -1.0, 1.0)
         except (ValueError, TypeError, json.JSONDecodeError):
+            logger.warning("VAD 解析失败，回退中性 (0,0)；raw=%.80s", raw)
             return (0.0, 0.0)
         return (v, a)

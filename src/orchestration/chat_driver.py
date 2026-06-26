@@ -113,6 +113,14 @@ class ChatDriver:
         self.log.append(self.thread, "user", user_text)
         self.log.append(self.thread, "assistant", reply)
         self.log.save_feeling(self.thread, self.attitude)  # 只持久化「态度」
+        logger.debug(
+            "chat step thread=%s appraise=%s e*=%s emotion=%s attitude=%s",
+            self.thread,
+            (v, a),
+            e,
+            self.emotion,
+            self.attitude,
+        )
         return ChatTurn(
             reply=reply,
             appraised=(v, a),

@@ -169,6 +169,7 @@ class SqliteVectorStore:
             resp = await self.client.embeddings.create(model=self.model, input=[text])
             return list(resp.data[0].embedding)
         except Exception:
+            logger.debug("embedding 调用失败 model=%s", self.model, exc_info=True)
             raise
 
     async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
@@ -193,7 +194,11 @@ class SqliteVectorStore:
         except Exception as exc:
             # dedup 失败保守退化：正常写入，宁多写不崩
             logger.warning(
-                "dedup probe failed scope=%s key=%s: %s, writing anyway", scope, key, exc
+                "dedup probe failed scope=%s key=%s: %s, writing anyway",
+                scope,
+                key,
+                exc,
+                exc_info=True,
             )
         self.conn.execute(
             "INSERT INTO episodes (scope, key, content, valid_at, embedding) "
@@ -286,7 +291,9 @@ def _build_graphiti(uri: str, user: str, password: str) -> Any:
                 "cross_encoder": OpenAIRerankerClient(config=llm_config),
             }
         except Exception:
-            logger.warning("自定义 Graphiti LLM/embedder 构造失败，回退默认 OpenAI 配置")
+            logger.warning(
+                "自定义 Graphiti LLM/embedder 构造失败，回退默认 OpenAI 配置", exc_info=True
+            )
 
     if (os.getenv("ZERO_GRAPHITI_DB") or "neo4j").lower() == "kuzu":
         from graphiti_core.driver.kuzu_driver import KuzuDriver  # 嵌入式：缺 kuzu 由工厂回退

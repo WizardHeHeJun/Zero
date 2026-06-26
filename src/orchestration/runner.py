@@ -114,6 +114,12 @@ async def run(
         # 本 langgraph 版本对 pydantic schema 的 ainvoke 返回 dict；AffectState(**result)
         # 会触发 pydantic 校验（字段缺失/类型不符即报错），不会静默掩盖问题。
         state = result if isinstance(result, AffectState) else AffectState(**result)
+        logger.debug(
+            "runner stim=%s e*=%s precision=%s",
+            stim.name,
+            state.affect_sample,
+            getattr(state, "affect_precision", None),
+        )
         trajectory.append(_state_to_entry(stim.name, state))
     return trajectory
 
