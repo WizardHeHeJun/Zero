@@ -9,10 +9,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
 from src.orchestration.state import AffectState
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_disposition(facts: list[Fact]) -> float | None:
@@ -27,6 +31,7 @@ def _parse_disposition(facts: list[Fact]) -> float | None:
     try:
         return float(content[idx + len(marker) :].split()[0])
     except ValueError:
+        logger.debug("disposition value 解析失败，content=%.80s", content)
         return None
 
 

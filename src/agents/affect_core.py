@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 
 from src.agents.affect_math import (
@@ -24,6 +25,8 @@ from src.agents.affect_math import (
     sample_affect,
 )
 from src.orchestration.state import AffectState
+
+logger = logging.getLogger(__name__)
 
 
 class AffectCoreAgent:
@@ -96,4 +99,11 @@ class AffectCoreAgent:
             entry["ignited_streams"] = ignited
             out["ignited_streams"] = ignited
             out["affect_precision"] = 0.5 * (1.0 / post_sigma[0] ** 2 + 1.0 / post_sigma[1] ** 2)
+        logger.debug(
+            "affect_core e*=%s post_mu=%s post_sigma=%s ignited=%s",
+            e_star,
+            post_mu,
+            post_sigma,
+            ignited,
+        )
         return out

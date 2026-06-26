@@ -49,7 +49,7 @@ def _build_text_affect_regressor() -> STTextAffectRegressor | None:
         logger.info("已加载 STTextAffectRegressor，权重路径=%s", model_path)
         return regressor
     except Exception as exc:  # noqa: BLE001
-        logger.warning("加载 STTextAffectRegressor 失败（%s），回退 OCC 路径", exc)
+        logger.warning("加载 STTextAffectRegressor 失败（%s），回退 OCC 路径", exc, exc_info=True)
         return None
 
 

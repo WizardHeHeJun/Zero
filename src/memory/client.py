@@ -87,7 +87,9 @@ class MemoryClient:
             )
             logger.info("memory.write_episode scope=%s key=%s", scope.value, key)
         except Exception as exc:
-            logger.warning("write_episode failed scope=%s key=%s: %s", scope.value, key, exc)
+            logger.warning(
+                "write_episode failed scope=%s key=%s: %s", scope.value, key, exc, exc_info=True
+            )
             return
 
     async def recall(
@@ -119,5 +121,7 @@ class MemoryClient:
                 Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
             ]
         except Exception as exc:
-            logger.warning("recall failed scope=%s key=%s: %s", scope.value, key, exc)
+            logger.warning(
+                "recall failed scope=%s key=%s: %s", scope.value, key, exc, exc_info=True
+            )
             return []

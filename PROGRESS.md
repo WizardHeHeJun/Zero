@@ -249,6 +249,14 @@
 - **新测**：`test_conversation_log.py`(5) + `test_chat_driver.py`(3：一轮 step 串联 / 两时间尺度 / attitude_prior 快照)；`test_conversation.py` 的 `from main import ConversationLog` 改指存储层，supervisor docstring 同步。
 - **验证**：`pytest` **295 passed, 5 skipped**（基线 276 净增 19：observability 11 + 本阶段 8）；ruff/format/mypy 干净；`--trace` 与默认对话装配（含文本通道加载）冒烟 exit 0、行为不变；code-reviewer **PASS**（W1-3 已修：build_chat_driver 去全局副作用、env/logger 策略回入口、ConversationLog `try/finally` 关连接）。
 
+### 阶段 24 — 可观测性埋点（让「出问题能查」：异常带堆栈 + 关键路径 DEBUG）
+
+阶段 22 建了日志框架（统一落盘/级别可配），但「埋点」太薄——全项目 0 处 error/exception 日志、17 处 except 多为静默或仅 warning 一句，出问题难定位。本阶段补足：
+
+- **L1 异常可观测**：fail-soft 的 except 补堆栈（`exc_info=True`）与上下文（scope/key/model/raw 摘要）；静默回退补日志——`language_openai` VAD 解析失败升 warning（曾静默回退 (0,0) 掩盖问题）、logit_bias 退回记 debug；`memory_recall` disposition 解析、`semantic` embedding 失败补痕迹；`language_openai`/`memory_recall` 补模块 logger。ImportError 缺依赖类保持简短 warning。
+- **L2 关键路径 DEBUG 埋点**（平时 INFO 不显示，`ZERO_LOG_LEVEL=DEBUG` 才出）：`affect_core` 每轮 e*+post_mu/sigma+ignited、`runner` 每刺激 e*+precision、`chat_driver` 每轮 appraise/e*/emotion/attitude、`language_openai` converse/appraise 请求响应摘要。埋点用 `%` 惰性格式、不进 affect 确定性计算（守热路径红线）。
+- **验证**：`pytest` 295 passed（埋点只加日志、零回归）；ruff/format/mypy 干净；`ZERO_LOG_LEVEL=DEBUG python main.py --trace` 实测每轮 `affect_core e*=…` / `runner stim=…` DEBUG 如期输出，默认 INFO 仍干净。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
