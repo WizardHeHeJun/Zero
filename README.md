@@ -130,10 +130,11 @@ Zero/
 │   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text）
 │   │   └── datasets/        #   DataLoader：synthetic / ravdess / wesad / emobank / facs
 │   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流）
-│   └── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
-│       ├── checkpointer.py  #   InMemory / SQLite / Postgres
-│       ├── graph_store.py   #   门面 + 工厂
-│       └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
+│   ├── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
+│   │   ├── checkpointer.py  #   InMemory / SQLite / Postgres
+│   │   ├── graph_store.py   #   门面 + 工厂
+│   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
+│   └── observability/       # 横切：统一日志 setup_logging（每启动落 logs/、级别可配、入口无关）
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py
 ├── tools/                   # 运维脚本（reset_db.py 清库）
@@ -186,6 +187,8 @@ python -m scripts.demo_pipeline                                    # 端到端�
 ```
 
 > 预训练权重可从 Release [`weights-v0.2`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.2)（真实数据训练）下载，放入 `artifacts/` 即用。
+
+> **日志与排障**：每次启动落一份 `logs/zero-<时间戳>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。
 
 ---
 
