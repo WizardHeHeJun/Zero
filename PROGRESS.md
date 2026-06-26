@@ -229,6 +229,26 @@
 - **落点**：`main.py`、`storage/backends/semantic.py`(_embed/search/add_episode/__init__)、`memory/client.py`(隔离)、`orchestration/supervisor.py`(门控+三层拼接)、`memory_recall.py`(情绪线索)。新测 `test_episodic_memory.py`(29)。
 - **验证**：`pytest` **276 passed, 5 skipped**（基线 247 净增 29）；ruff/format/mypy 干净；code-reviewer PASS（无 BLOCK、红线全守）。**待合并。** 完整巩固/遗忘（睡眠/Ebbinghaus）留路线图后期。
 
+### 阶段 22 — 统一日志/可观测性设施（入口无关，每次启动落一份新日志）
+
+把散在各入口脚本的 `logging.basicConfig` 收敛成一个**入口无关**的统一日志初始化设施，为「临时入口 `main.py` 将来删除、迁移正式主入口」做准备——换入口零改动、import 即用。
+
+- **新模块 `src/observability/`**（横切叶子工具，**不 import 任何业务层** → 不引跨层依赖）：`setup_logging()` 每次启动新建 `logs/zero-<时间戳>-<pid>.log`（每启动一份），root 挂 FileHandler（详细格式 时间/级别/logger名/消息）+ 可选 console（走 stderr，不污染 `--trace` 的 stdout JSON）；幂等（重复调用不重复挂 handler）、压制第三方噪声（httpx/openai/…）。配置全走 env（`ZERO_LOG_{DIR,LEVEL,CONSOLE,CONSOLE_PLAIN}`，合理默认）。
+- **接入**：`main.py` 把 `logging.basicConfig(...)` 换成 `setup_logging()`（仅此一处依赖，注释标明临时入口/迁移零改动）。
+- **新测 `test_observability_logging.py`(11)**：落盘 / 幂等 / env 覆盖 + **「入口/层无关」回归断言**（源码不 import `main`、不 import 任何业务层 → 迁移零牵连）。
+- **验证**：新测 11 passed；ruff/format/mypy 干净；`python main.py --trace` 实跑 exit 0、两次启动各落一份日志、stdout JSON 未污染。
+
+### 阶段 23 — main.py 临时入口全面解绑（核心逻辑迁出，入口退成薄 CLI 壳）
+
+为「将来删除临时 main.py、迁移正式主入口」彻底松绑：把困在入口里的核心逻辑全迁到 src/scripts，main.py 退成只做参数解析 + 装配的薄壳（零算法 / 零场景数据 / 零存储）。
+
+- **ConversationLog → `src/storage/conversation_log.py`**：对话 transcript + 跨重启 attitude 的 SQLite 存储类，原定义在 main.py 内，归位存储层（stdlib，不上调、不碰图谱）。
+- **对话核心 → `src/orchestration/chat_driver.py`**：`_run_chat` 的「评价→引擎→两时间尺度情绪→生成→落盘」一轮逻辑抽成 `ChatDriver.step` + `build_chat_driver()` 工厂（env 默认 / lm·log·session 装配 / 历史·态度载入）。**IO 无关**——input/print/REPL 循环留入口，新入口换套 IO 即复用。
+- **demo 场景 → `scripts/demo_modes.py`**：`_run_core/_run_workspace/_run_llm` + 三组 STIMULI 移出，可 `python -m scripts.demo_modes` 单跑。
+- **main.py**：只剩 argparse + `setup_logging` + `_load_dotenv` + REPL IO + 分发（默认→chat_driver，demo→demo_modes）。CLI 接口与输出格式不变（`python main.py --trace/--workspace/--llm` 仍可用，内部转发）。
+- **新测**：`test_conversation_log.py`(5) + `test_chat_driver.py`(3：一轮 step 串联 / 两时间尺度 / attitude_prior 快照)；`test_conversation.py` 的 `from main import ConversationLog` 改指存储层，supervisor docstring 同步。
+- **验证**：`pytest` **295 passed, 5 skipped**（基线 276 净增 19：observability 11 + 本阶段 8）；ruff/format/mypy 干净；`--trace` 与默认对话装配（含文本通道加载）冒烟 exit 0、行为不变；code-reviewer **PASS**（W1-3 已修：build_chat_driver 去全局副作用、env/logger 策略回入口、ConversationLog `try/finally` 关连接）。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
