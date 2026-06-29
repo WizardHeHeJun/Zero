@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 ALLOWED_CHECKPOINT_TYPES = [
     ("src.orchestration.state", "Stimulus"),
     ("src.memory.types", "Fact"),
+    ("src.memory.types", "Scope"),  # Fact.scope 是 Scope 枚举，随 Fact 一同反序列化需白名单
 ]
 
 
