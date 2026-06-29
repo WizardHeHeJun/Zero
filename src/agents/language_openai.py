@@ -68,9 +68,14 @@ class OpenAILanguageModel:
         client: Any | None = None,
         temperature: float = 0.8,
         use_lexicon: bool = False,
+        persona: str = "",
     ) -> None:
         self.model = model
         self.temperature = temperature
+        # L1 人设卡：身份/背景/口吻/与用户关系，置于 _CONVERSE_SYS（情绪行为框架）之前。
+        # 空串 → converse 的 system prompt 与改前逐字一致（零回归）。仅作用于对话路径（converse），
+        # 不入研究用 generate（双向回路/VAD 反推保持纯净）。
+        self.persona = persona
         # 词典桥（NRC-VAD 加权解码的 API 侧近似）：开启时把与 e* 最对齐的情绪词注入 compose
         # 提示，二段式 VAD 反推充当 reranker。默认关 → 对既有路径零回归。
         self.use_lexicon = use_lexicon
@@ -125,6 +130,8 @@ class OpenAILanguageModel:
         history 末条应为用户最新发言。
         """
         sys = _CONVERSE_SYS.format(feeling=affect_label(*affect))
+        if self.persona:
+            sys = f"{self.persona}\n\n{sys}"  # L1：人设卡前置于情绪行为框架（空串时不变=零回归）
         if retrieved:
             sys += f"\n你还记得以下背景：{retrieved}"
         bias_kwargs: dict[str, Any] = {}

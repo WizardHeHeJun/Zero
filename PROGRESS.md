@@ -280,6 +280,16 @@
 - **治理**：code-reviewer 独立审 **PASS / 0 BLOCK**；5 WARN + 4 INFO 均为既有技术债或文档级，记为 follow-up（见 council notes 末「follow-up」段），不在本轮扩面。
 - **验证**：`pytest` **347 passed / 5 skipped**；ruff/format/mypy 干净；真后端 `--chat` 强制 eviction（window=4）实测：时刻被正确想起（承诺通道+gist 召回）、后勤问题平常心作答（不再对抗）、情绪在兴奋/欣喜带振荡回基线（不再单调爬至狂喜）。
 
+### 阶段 27 — 人格注入接口（L1 人设卡 + L2 气质底色 + L3 预置关系，默认中性零回归）
+
+用户指出框架缺「指定人格」接口——只能从零相处、无法预置一个人。分清两件被混淆的事：**人格/气质该预置**（阶段 26 的 setpoint/reversion 机制在，但 setpoint 写死 `(0,0)` 常量、不可注入），**关系该靠相处长**（attitude evaluative-conditioning 累积，设计如此）。补一个可注入 `Persona`（`src/agents/persona.py`，纯数据 + stdlib 加载、不 import 记忆/存储层），三层全程默认中性 == 逐字现有行为。
+
+- **L1 人设卡**：`Persona.card` 注入 `OpenAILanguageModel.converse` 的 system prompt（身份/背景/口吻/与用户关系前置于 `_CONVERSE_SYS` 情绪行为框架）；空卡 → system prompt 与改前**逐字相等**（单测强断言），且不入研究用 `generate`（双向回路/VAD 反推保持纯净）。
+- **L2 气质底色**：`setpoint/reactivity/recovery` 经 `chat_driver` 透传 `attitude_step(setpoint=)`/`emotion_decay_step(recovery=,reactivity=)`——引擎本就是关键字参数、**零改**；默认=引擎常量。**治理**：「大五→PAD 的具体数值映射 / 预设人格库」属科学决策，留 `/science-council` 设计门；本接口只提供**旋钮 + 中性默认**，不替算法拍板具体性格参数（守 [analysis-results-first 红线](.claude/rules/) / 不下场介入数据产生）。
+- **L3 预置关系**：首次接触（空 transcript）才以 `initial_attitude` 起步 + 幂等播种 `seed_memories`（镜像 supervisor 富 episode：USER scope / `user_id`=thread key / `embed_text` 喂纯文本 / `precision`+`first_contact` 元数据供召回三维重排与注入门；走 `write_episode` 失败隔离不崩对话）；`seeded` 守卫保二轮不重播。**一次性 init 写入、非每条消息**——不违 memory-rules#1 节流。
+- **装配**：`load_persona()` 读 `ZERO_PERSONA_FILE`（JSON 全字段、显式给路径却格式错则 fail-fast）/ `ZERO_PERSONA`（仅人设卡快捷入口）；`build_chat_driver` 显式构造共享 `MemoryClient` 注入 `ConversationSession`，使种子落在召回会查的同一 user/key 下。`main.py` 入口零改。
+- **验证**：`pytest` **358 passed / 5 skipped**（+11 新测：加载 4 / L1 注入 + 空卡逐字零回归 / L2 setpoint 抬高情绪基线 + 默认零回归 / L3 首轮 USER 幂等播种 + 二轮不重播 + 非首次接触不播）；ruff/format/mypy 干净。code-reviewer 独立审查门（项目级规则）作为可选 follow-up（本轮未触发，未涉算法语义改动、L2 数值映射已留议会门）。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
