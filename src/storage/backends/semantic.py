@@ -206,7 +206,27 @@ class SqliteVectorStore:
             (scope, key, content, valid_at.isoformat(), json.dumps(emb)),
         )
         self.conn.commit()
+        # D7 容量上限：写后剪裁，保留同 (scope,key) 下按时间最新 N 条、删超量最旧。
+        # 默认 ZERO_EPISODE_MAX_PER_KEY=0 不限（零回归）；只在本写路径执行（守 BLOCK-C：读路径不触发）。
+        self._trim_capacity(scope, key)
         logger.debug("sqlite_vector add_episode scope=%s key=%s", scope, key)
+
+    def _trim_capacity(self, scope: str, key: str) -> None:
+        """按 ZERO_EPISODE_MAX_PER_KEY 删除同 (scope,key) 超量最旧 episode（0=不限）。
+
+        保留按 (valid_at, rowid) 最新 N 条；valid_at 相同则后插入（rowid 更大）者更新。
+        容量管理（非时序失效语义），仅在 add_episode 写后调用，绝不在 search/读路径触发。
+        """
+        max_per_key = int(os.getenv("ZERO_EPISODE_MAX_PER_KEY", "0"))
+        if max_per_key <= 0:
+            return
+        self.conn.execute(
+            "DELETE FROM episodes WHERE scope = ? AND key = ? AND rowid NOT IN ("
+            "SELECT rowid FROM episodes WHERE scope = ? AND key = ? "
+            "ORDER BY valid_at DESC, rowid DESC LIMIT ?)",
+            (scope, key, scope, key, max_per_key),
+        )
+        self.conn.commit()
 
     async def search(
         self,
