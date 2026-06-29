@@ -41,6 +41,13 @@ LANG_BASE_PRECISION = 1.0  # 精度加权再入里语言侧的基准精度（与
 EMOTION_RECOVERY = 0.4  # 情绪向基线的残留比例（小=恢复快；过大=emotional inertia 病理）
 EMOTION_REACTIVITY = 0.6  # 对当前刺激的即时反应增益
 ATTITUDE_RATE = 0.08  # 态度对刺激的慢累积率（多轮才成形；越小越稳）
+# 态度向「个体习惯性基线 setpoint」的弱均值回归（议会 B-1 必改：缺此项则持续同向刺激下 attitude
+# 单调漂移到极端=affective homeostasis 缺失 + emotional inertia 病理 / 慢性应激无 HPA 负反馈）。
+# 量级远小于 ATTITUDE_RATE：可被条件化、但不无限累积。稳态 a*≈rate·s/(rate+reversion)（<|s|）。
+# 心理席建议 0.005–0.01、生物席 0.01–0.02 → 取交叠处 0.01。setpoint 默认中性，将来人格阶段由
+# 大五（Agreeableness/Neuroticism）PAD 偏置先验替换。文献见议会纪要 / Russell 2003 · Kuppens 2010。
+ATTITUDE_REVERSION = 0.01  # 态度向 setpoint 的每轮回归率（0=关，退化为纯 EWMA 累积=旧行为）
+ATTITUDE_SETPOINT = (0.0, 0.0)  # 个体习惯性情感基线（无偏人格；attitude/emotion 回归的锚）
 
 # Regulation 重评（Gross 过程模型）：reappraisal 改「构念/意义」而非末端压制
 REAPPRAISAL_ANCHOR = 0.1  # 重评把负/低效价重新解释、向其拉拢的「积极锚」
@@ -339,16 +346,32 @@ def attitude_step(
     stimulus: tuple[float, float],
     *,
     rate: float = ATTITUDE_RATE,
+    reversion: float = ATTITUDE_REVERSION,
+    setpoint: tuple[float, float] = ATTITUDE_SETPOINT,
 ) -> tuple[float, float]:
-    """慢变态度/印象（对某对象/人）：按 stimulus 缓慢累积（evaluative conditioning）。
+    """慢变态度/印象：按 stimulus 缓慢累积 + 向个体基线弱回归（evaluative conditioning）。
 
-    `a' = (1-rate)·a + rate·stimulus`，rate 小（多轮才成形）→ 长期、稳定、对象指向的评价
-    （Scherer/Frijda 的 sentiment/attitude 层）。与短时情绪不同：这是「长期印象」的累积，
-    应持久化（按对象/会话）。逐维钳制 [-1,1]，纯函数。
+    `a' = (1-rate)·a + rate·stimulus − reversion·(a − setpoint)`。rate 小（多轮才成形）→ 长期、
+    稳定、对象指向的评价（Scherer/Frijda 的 sentiment/attitude 层）。`reversion` 项是议会必改：
+    无它则持续同向 stimulus 把 attitude 单调推到极端（affective homeostasis 缺失 / 慢性应激无负
+    反馈，Russell 2003 · Kuppens 2010）；有它则恒定刺激下稳态 a*≈rate·s/(rate+reversion)、被钳在
+    |s| 内不无限漂移，刺激停歇时缓慢回基线。`reversion=0` 退化为旧纯 EWMA（零回归开关）。纯函数。
     """
     return (
-        clamp((1.0 - rate) * attitude[0] + rate * stimulus[0], -1.0, 1.0),
-        clamp((1.0 - rate) * attitude[1] + rate * stimulus[1], -1.0, 1.0),
+        clamp(
+            (1.0 - rate) * attitude[0]
+            + rate * stimulus[0]
+            - reversion * (attitude[0] - setpoint[0]),
+            -1.0,
+            1.0,
+        ),
+        clamp(
+            (1.0 - rate) * attitude[1]
+            + rate * stimulus[1]
+            - reversion * (attitude[1] - setpoint[1]),
+            -1.0,
+            1.0,
+        ),
     )
 
 

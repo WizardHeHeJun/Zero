@@ -57,6 +57,9 @@ async def _chat_repl() -> None:
     os.environ.setdefault("ZERO_CHECKPOINT_BACKEND", "sqlite")
     os.environ.setdefault("ZERO_MEMORY_BACKEND", "sqlite")
     os.environ.setdefault("ZERO_SEMANTIC_BACKEND", "sqlite_vec")
+    # 议会 C：chat 每轮即一次「任务完成」，长对话会持续写 episode。给语义库一个每-key 容量上限，
+    # 配合 salience 门 + dedup 收口长期增长（确定性 disposition 自带时序失效、不胀，无需另限）。
+    os.environ.setdefault("ZERO_EPISODE_MAX_PER_KEY", "300")
     logging.getLogger("src.memory.client").setLevel(logging.WARNING)
     logging.getLogger("src.storage").setLevel(logging.ERROR)  # 隐藏 sqlite 缺驱动的回退告警
     from src.agents.emotion_lexicon import affect_label

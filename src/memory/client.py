@@ -84,12 +84,14 @@ class MemoryClient:
         scope: Scope,
         key: str = "default",
         valid_at: datetime | None = None,
+        embed_text: str | None = None,
     ) -> None:
         """写一条自然语言 episode 到语义记忆（Graphiti 抽取实体/关系入图）。
 
         必须显式 scope；仅应在任务完成节点调用（节流，同 write）。无语义后端时 no-op
         （严格零回归）。与确定性 `write` 互补：write 存结构化标量事实，write_episode 存
-        供语义召回的富文本。
+        供语义召回的富文本。`embed_text`（可选）= 用于检索的语义 gist，与存储全文 `content`
+        分离以免元数据稀释向量（议会 A 召回桥根治）；缺省对全文嵌入（旧行为）。
         """
         if not isinstance(scope, Scope):
             raise ValueError("memory.write_episode 必须显式指定 Scope，禁止默认作用域")
@@ -98,7 +100,7 @@ class MemoryClient:
         when = valid_at if valid_at is not None else datetime.now(UTC)
         try:
             await self.semantic.add_episode(
-                scope=scope.value, key=key, content=content, valid_at=when
+                scope=scope.value, key=key, content=content, valid_at=when, embed_text=embed_text
             )
             logger.info("memory.write_episode scope=%s key=%s", scope.value, key)
         except Exception as exc:

@@ -21,7 +21,7 @@ import os
 import random
 from dataclasses import dataclass
 
-from src.agents.affect_math import attitude_step, clamp, emotion_decay_step
+from src.agents.affect_math import ATTITUDE_SETPOINT, attitude_step, clamp, emotion_decay_step
 from src.agents.emotion_lexicon import affect_label
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
@@ -130,10 +130,19 @@ class ChatDriver:
         recalled_str = " | ".join(r[:120] for r in recalled) if recalled else ""
         # D1：召回的原始 Fact（已三维重排），高 importance 者升入 history 注意力预算竞争
         recalled_facts: list[Fact] = step_out.get("recalled_facts") or []
-        # 慢：态度按 e* 缓慢累积（长期印象）
+        # 慢：态度按 e* 缓慢累积 + 向个体基线弱回归（attitude_step 内含 reversion，防单调棘轮）
         self.attitude = attitude_step(self.attitude, e)
-        # 快：情绪向 attitude 基线衰退恢复 + 当前 e* 冲击 + 噪声（短时）
-        self.emotion = emotion_decay_step(self.emotion, self.attitude, e)
+        # 快：情绪向「基线」衰退恢复 + 当前 e* 冲击 + 噪声（短时）。
+        # 议会 B（必改）：基线不是纯 attitude——它被持续正刺激推高后，纯 attitude 基线会让情绪
+        # 永远停在高位（emotion 的家随 attitude 上漂、无中性拉力）。改为 attitude 与中性 setpoint
+        # 的混合 `w·attitude + (1-w)·neutral`，给情绪指向中性的回归力（affective homeostasis；
+        # 生物席必改 #2 / Russell 2003）。w=1 退化为旧纯 attitude 基线（零回归开关）。
+        w = float(os.getenv("ZERO_EMOTION_BASELINE_ATTITUDE_W", "0.6"))
+        baseline = (
+            w * self.attitude[0] + (1.0 - w) * ATTITUDE_SETPOINT[0],
+            w * self.attitude[1] + (1.0 - w) * ATTITUDE_SETPOINT[1],
+        )
+        self.emotion = emotion_decay_step(self.emotion, baseline, e)
         self.emotion = (
             clamp(self.emotion[0] + random.gauss(0.0, 0.05), -1.0, 1.0),
             clamp(self.emotion[1] + random.gauss(0.0, 0.05), -1.0, 1.0),
@@ -142,8 +151,11 @@ class ChatDriver:
         self.history.append({"role": "user", "content": user_text})
         if self.lm is not None:
             # D2 U 形窗（首因+近因）→ D1 注入高 importance 召回为 system 条目，进同一注意力预算竞争
-            primacy_k = int(os.getenv("ZERO_HISTORY_PRIMACY_K", "3"))
-            window_n = int(os.getenv("ZERO_HISTORY_WINDOW", "20"))
+            # 议会 A：20 条(≈10 轮)对长对话保持率过低——本现场「下午两点」第 19 轮即被挤出尾窗、
+            # 第 22 轮追问时已不在上下文（Murdock 1962 中央位置遗忘）。提到 40(≈20 轮)、primacy 5
+            # （覆盖最初契约性陈述）。仍是 env 可调的纯切片，不改 U 形算法。
+            primacy_k = int(os.getenv("ZERO_HISTORY_PRIMACY_K", "5"))
+            window_n = int(os.getenv("ZERO_HISTORY_WINDOW", "40"))
             inject_min = float(os.getenv("ZERO_RECALL_INJECT_MIN", "0.5"))
             window = _u_shape_history(self.history, primacy_k, window_n)
             window = _inject_recalled_as_system(window, recalled_facts, inject_min)

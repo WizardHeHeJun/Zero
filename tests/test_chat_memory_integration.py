@@ -134,7 +134,15 @@ class _FakeSemanticStore:
     def __init__(self, episodes: list[str] | None = None) -> None:
         self.episodes: list[str] = episodes or []
 
-    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
+    async def add_episode(
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
+    ) -> None:
         self.episodes.append(content)
 
     async def search(
