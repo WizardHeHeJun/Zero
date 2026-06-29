@@ -27,6 +27,20 @@ class SupervisorAgent:
 
     def __init__(self, memory: MemoryClient) -> None:
         self.memory = memory
+        self.seen_episode_keys: set[str] = (
+            set()
+        )  # D5：已写过 episode 的 key，判 first_contact（primacy）
+
+    def _is_first_contact(self, key: str) -> bool:
+        """首次为该 key 写 episode 时返回 True（并登记），之后恒 False。
+
+        进程内 set 轻量记录、无额外 IO；重启重置=可接受（多标一次优于漏标）。对应系列位置效应
+        的首因端（D5）：「第一次见面说的话」获额外检索权重。仅在确认要写 episode 时调用一次。
+        """
+        if key in self.seen_episode_keys:
+            return False
+        self.seen_episode_keys.add(key)
+        return True
 
     async def __call__(self, state: AffectState) -> dict:
         affect = state.affect_sample
@@ -46,10 +60,19 @@ class SupervisorAgent:
                 key=state.user_id,
             )
             # 富 episode：B-3 门控（salience 低于阈值跳过写入）
-            # salience = precision * |rpe|（rpe=None 时用 0.5 保守估计）
+            # salience = precision * |rpe|（rpe=None 时用 0.5 保守估计；McGaugh 2004 唤醒×意外度）
             salience = (state.affect_precision or 0.0) * (
                 abs(state.rpe) if state.rpe is not None else 0.5
             )
+            # D6：低唤醒但高语义重要的内容（如用户平静自我披露「我在换工作」）precision 低、rpe≈0，
+            # salience 可能低于阈值被漏写。需保全此类内容可调低/置 0 ZERO_EPISODE_SALIENCE_MIN；
+            # 或开 ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD 让 value 量级补偿门控（默认 0=关，零回归）。
+            if os.getenv("ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD", "0").lower() not in (
+                "0",
+                "",
+                "false",
+            ):
+                salience += 0.3 * abs(value)
             ep_threshold = float(os.getenv("ZERO_EPISODE_SALIENCE_MIN", "0.15"))
             if salience >= ep_threshold:
                 # B-1 gist：用户原话（stimulus.text）优先，退化到 name[:40]
@@ -65,12 +88,16 @@ class SupervisorAgent:
                 label = text_label(affect[0], affect[1])
                 streams = state.ignited_streams or []
 
+                # D5 首因：首次为该 user 写 episode 时打 first_contact 标签（召回 _rank_episodes ×1.2）
+                fc_seg = " | first_contact=True" if self._is_first_contact(state.user_id) else ""
+
                 episode_content = (
                     f"{gist}{lang_seg}"
                     f" | 情绪={label}({affect[0]:.2f},{affect[1]:.2f})"
                     f" | precision={state.affect_precision or 0.0:.2f}"
                     f" | streams={streams}"
                     f" | value={value:.3f}"
+                    f"{fc_seg}"
                 )
                 # 无语义后端时 no-op（零回归）；仍只在本任务完成节点写（节流，memory-rules #1）
                 await self.memory.write_episode(
