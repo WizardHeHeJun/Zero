@@ -79,17 +79,17 @@ def test_inject_empty_returns_window_unchanged() -> None:
 
 
 def test_inject_below_threshold_skipped() -> None:
-    """importance < inject_min → 不生成 system 条目。"""
+    """归一 importance < inject_min → 不生成 system 条目（precision=5 → 0.14 < 0.5）。"""
     window = _msgs(2)
-    out = _inject_recalled_as_system(window, [_fact("旧 | precision=0.10")], 0.5)
+    out = _inject_recalled_as_system(window, [_fact("琐事 | precision=5.00")], 0.5)
     assert out == window
     assert all(m["role"] != "system" for m in out)
 
 
 def test_inject_above_threshold_front_system() -> None:
-    """importance >= inject_min → system 条目插 window 头部。"""
+    """归一 importance >= inject_min → system 条目插 window 头部（precision=90 → 0.75 >= 0.5）。"""
     window = _msgs(2)
-    out = _inject_recalled_as_system(window, [_fact("要事 | precision=0.90")], 0.5)
+    out = _inject_recalled_as_system(window, [_fact("要事 | precision=90.00")], 0.5)
     assert out[0]["role"] == "system"
     assert "要事" in out[0]["content"]
     assert out[1:] == window, "原 window 顺序不变，仅头部前插"
@@ -98,7 +98,7 @@ def test_inject_above_threshold_front_system() -> None:
 def test_inject_preserves_ranked_order() -> None:
     """多条达标 episode 按入参（已重排）顺序插入头部。"""
     window = _msgs(1)
-    facts = [_fact("第一 | precision=0.90"), _fact("第二 | precision=0.80")]
+    facts = [_fact("第一 | precision=90.00"), _fact("第二 | precision=80.00")]
     out = _inject_recalled_as_system(window, facts, 0.5)
     assert "第一" in out[0]["content"]
     assert "第二" in out[1]["content"]
@@ -161,12 +161,12 @@ async def test_step_injects_high_importance_system_entry(monkeypatch: pytest.Mon
     monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
     monkeypatch.delenv("ZERO_RECALL_INJECT_MIN", raising=False)  # 默认 0.5
     lm = _RecordingLM()
-    facts = [_fact("要事 | precision=0.90"), _fact("琐事 | precision=0.10")]
+    facts = [_fact("要事 | precision=90.00"), _fact("琐事 | precision=5.00")]
     driver = _driver(lm, _FactSession(facts))
     await driver.step("你好")
     assert lm.seen_history is not None
     system_msgs = [m for m in lm.seen_history if m["role"] == "system"]
-    assert len(system_msgs) == 1, "仅高 importance(0.90>=0.5) 进 system，低的(0.10)被挡"
+    assert len(system_msgs) == 1, "仅高 importance(90→0.75>=0.5) 进 system，低的(5→0.14)被挡"
     assert "要事" in system_msgs[0]["content"]
     driver.log.close()
 

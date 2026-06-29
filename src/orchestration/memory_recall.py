@@ -55,6 +55,20 @@ def parse_importance(content: str) -> float:
         return 0.5
 
 
+def normalized_importance(content: str) -> float:
+    """把无界的写入精度（affect_precision=方差倒数，实测 ~28–72）归一到 (0,1)，供三维打分/注入门。
+
+    用 Hill 饱和 `p/(p+C)`（与 Kalman 增益/逆方差加权同构、单调有界、边际递减；数学席 D8）：
+    与 `sim∈[0,1]`、`recency=Δt^(-d)∈(0,1]` 同量纲，α/β/γ 等权才恢复语义；否则原始 precision
+    几十倍碾压另两维（dogfood 实测）。C 走 env `ZERO_RECALL_IMPORTANCE_SCALE`（默认 30，匹配实测
+    量级使 INJECT_MIN=0.5 成为「高质量门」）。纯数值、无 LLM。C 固定（非自适应集合统计）以守
+    可复现/确定性（CS 席 D8 红线）。precision 字段缺失时 parse 返 0.5 → 归一后 ~低位（未知不优先）。
+    """
+    p = parse_importance(content)
+    c = float(os.getenv("ZERO_RECALL_IMPORTANCE_SCALE", "30"))
+    return p / (p + c) if (p + c) > 0 else 0.0
+
+
 def _rank_episodes(facts: list[Fact], now: datetime, *, arousal: float = 0.0) -> list[Fact]:
     """三维加权和重排（D3）：`score = α·Δt^(-d) + β·sim + γ_eff·importance`。
 
@@ -80,7 +94,7 @@ def _rank_episodes(facts: list[Fact], now: datetime, *, arousal: float = 0.0) ->
         valid_at = fact.valid_at if fact.valid_at.tzinfo else fact.valid_at.replace(tzinfo=UTC)
         delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
         recency = delta_days ** (-d)
-        importance = parse_importance(fact.content)
+        importance = normalized_importance(fact.content)  # D8：Hill 归一到 (0,1)，量纲对齐
         if "first_contact=True" in fact.content:
             importance *= 1.2
         return alpha * recency + beta * fact.sim + gamma * importance

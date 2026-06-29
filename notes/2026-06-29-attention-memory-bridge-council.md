@@ -106,6 +106,31 @@
 5. D6 低唤醒豁免是否工程化（注释级 vs 纳入 `salience_eff`）。
 6. 频率项补全时机（ACT-R 完整形式，建议下一期议会）。
 
+## D8 — importance 归一化（落地后真后端 dogfood 触发的数学席专评 · 2026-06-29）
+
+**触发**：PR #38 落地后跑真后端 smoke（qwen-flash + gemini embedding）暴露结构性问题：`importance` 源 = 写入的 `affect_precision`，而它是 `0.5·(1/σ²)`（方差倒数）**天然无界**（实测 28–72）。后果：三维 `score=α·Δt^(-d)+β·sim+γ·importance` 里 `γ·importance≈24` 碾压 `recency/sim`（≤0.34），退化为「只按 precision 排序」；`INJECT_MIN=0.5` 形同虚设。这是上面「悬而未决 #1/#2」实跑后的实证。
+
+**评审**：聚焦 mini-review，数学席（主）+ CS 席（红线必到），两席无张力、判定一致。
+
+| 子问题 | 判定 | 决策 |
+| --- | --- | --- |
+| 当前直接用无界 precision | **失真**（量纲失配，三维退化为单维） | 必改 |
+| 归一函数形式 | Hill 饱和 `p/(p+C)` 忠实（与 Kalman 增益/逆方差加权同构、有界单调、边际递减） | 采用，优于 min-max/softmax（集合依赖）、exp |
+| scale C | 固定 env 旋钮忠实；**自适应集合统计=BLOCK**（破坏可复现/确定性，CS 红线） | `ZERO_RECALL_IMPORTANCE_SCALE` 默认 30（匹配实测量级，使 INJECT_MIN=0.5 成「高质量门」） |
+| 落点 | 读侧 `_rank_episodes` + 注入门两处一致归一（不改 episode 写入，免版本迁移） | `normalized_importance()` 公开纯函数；`Fact.content` 不动 |
+| 归一后 α/β/γ 等权 | 简化（可接受，量纲对齐后等权是合理起点） | 维持 0.33/0.34/0.33 占位待 dogfood 校准 |
+| importance 源 precision vs salience(×\|rpe\|) | 规范偏差（D3 原文 salience，实现用 precision；二者均可辩护、都无界） | 维持 precision（已归一），记录偏差，未来可回议会统一 |
+
+**落地**：`normalized_importance(content)=p/(p+C)`（memory_recall.py），`_rank_episodes` 与 `chat_driver._inject_recalled_as_system` 一致调用；附 `ZERO_RECALL_IMPORTANCE_SCALE` env。另修 WARN-4 余漏：`Scope` 也入 `ALLOWED_CHECKPOINT_TYPES`（Fact.scope 反序列化）。复跑 smoke 确认：`precision=72.8→0.71`、`37.1→0.55` 均归一入 [0,1]、门控恢复区分；Scope 告警消失。新增测试：归一有界单调 + domination 修复（近+相关压过纯高精度）。`pytest` 333 passed / 5 skipped。
+
+### D8 引文（数学席现场核验）
+
+- ACT-R base-level activation：Anderson, J. R. (2021). Foundation of Base-Level Activation. [act-r.psy.cmu.edu PDF](http://act-r.psy.cmu.edu/wordpress/wp-content/uploads/2021/07/ACTR2021anderson.pdf) · [Anderson & Bothell et al. (2004) An Integrated Theory of the Mind PDF](http://act-r.psy.cmu.edu/wordpress/wp-content/uploads/2012/12/526FSQUERY.pdf) — importance↔源激活而非 BLA 频率项。
+- 逆方差加权 / Kalman 增益天然有界 [0,1]：[Inverse-variance weighting (Wikipedia)](https://en.wikipedia.org/wiki/Inverse-variance_weighting)。
+- 最优线索融合（精度加权权重归一总和=1）：Ernst, M. O. & Banks, M. S. (2002). *Nature* 415:429-431. [nature.com/articles/415429a](https://www.nature.com/articles/415429a)。
+- 三维归一后等权合并先例：Park et al. (2023). Generative Agents. [arXiv:2304.03442](https://ar5iv.labs.arxiv.org/html/2304.03442) — importance 先限 [1,10] 再 min-max；本项目 precision 无界故用 Hill 更鲁棒。
+- 精度作 softmax 温度（无界精度作权重须有归一分母）：Parr, T. & Friston, K. J. (2017). *Sci. Rep.* 7:14678. [DOI:10.1038/s41598-017-15249-0](https://doi.org/10.1038/s41598-017-15249-0)。
+
 ## 引文（各席现场核验）
 
 **神经科学席**

@@ -267,7 +267,8 @@
 - **PR-4 D1+D2 history 装配**：`_u_shape_history` 补首因（`history[:K]+history[-(N-K):]`，Murdock U 形，K=0 退化原尾窗）；`_inject_recalled_as_system` 把 importance≥`ZERO_RECALL_INJECT_MIN`(0.5) 的 episode 以 system 条目升入注意力预算竞争（reinstatement），空召回原样退化（守 BLOCK-2）。
 - **治理**：code-reviewer 独立审确认 4 条 BLOCK 全守住，4 个 WARN（正则注入/私有跨模块导入/checkpoint 白名单缺 Fact/多实例边界）已整改 + 回归测试。
 - **默认行为**：仅 `ZERO_HISTORY_PRIMACY_K=3`（修首因失真，用户批准）改变 --chat；其余默认关/不限，无语义后端时整条桥 no-op、逐字节零回归。
-- **验证**：`pytest` **331 passed / 5 skipped**（+16 新测：sim 透传 / 容量剪裁 / 三维重排各维 / 首因 / U 形窗 / 注入 / 注入回归）；ruff/format/mypy 干净。
+- **D8 真后端 dogfood + importance 归一**：合并后跑真后端 smoke（qwen-flash+gemini embedding）确认桥通电（召回→重排→注入→LLM 真用上记忆），并暴露 `importance`=写入 `affect_precision`（方差倒数、无界、实测 28–72）碾压三维公式、INJECT_MIN 失效。数学席+CS 席专评（无张力）：Hill 饱和 `p/(p+C)` 归一到 [0,1]（与 sim/recency 同量纲），固定 C=`ZERO_RECALL_IMPORTANCE_SCALE`(默认30)、读侧两处一致归一（自适应 C 撞确定性红线被 BLOCK）；另补 `Scope` 入 checkpoint 白名单。决策落库 notes 的 D8 段。
+- **验证**：`pytest` **333 passed / 5 skipped**（+18 新测：sim 透传 / 容量剪裁 / 三维重排各维 / 首因 / U 形窗 / 注入 / 归一有界单调 + domination 修复）；ruff/format/mypy 干净；真后端 smoke 复跑确认归一后门控恢复区分、Scope 告警消失。
 
 ## 成果与验证
 

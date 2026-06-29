@@ -22,6 +22,7 @@ from src.memory.types import Fact, Scope
 from src.orchestration.memory_recall import (
     MemoryRecallAgent,
     _rank_episodes,
+    normalized_importance,
     parse_importance,
 )
 from src.orchestration.state import AffectState, Stimulus
@@ -142,16 +143,51 @@ def test_rank_arousal_mod_off_by_default(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_rank_arousal_mod_on_boosts_importance(monkeypatch: pytest.MonkeyPatch) -> None:
     """开 AROUSAL_MOD + 高 arousal：放大 importance 维，可使高显著旧 episode 反超。"""
     monkeypatch.setenv("ZERO_RECALL_AROUSAL_MOD", "1")
-    monkeypatch.setenv("ZERO_RECALL_ALPHA", "0.34")
+    monkeypatch.setenv("ZERO_RECALL_IMPORTANCE_SCALE", "30")
+    monkeypatch.setenv("ZERO_RECALL_ALPHA", "0.35")
     monkeypatch.setenv("ZERO_RECALL_BETA", "0.0")
-    monkeypatch.setenv("ZERO_RECALL_GAMMA", "0.30")
-    # 旧但高显著（Δt=100 天 → recency≈0.1）vs 新但平淡（Δt clamp 1 → recency=1）
-    important_old = _fact("precision=0.95", days_ago=100)
-    fresh_dull = _fact("precision=0.10", days_ago=0)
+    monkeypatch.setenv("ZERO_RECALL_GAMMA", "0.40")
+    # 旧但高显著（Δt=100 天 → recency≈0.1，precision=72 → 归一 0.71）vs 新但平淡
+    # （Δt clamp 1 → recency=1，precision=1 → 归一 0.03）。用真实量级 precision（归一后才成立）。
+    important_old = _fact("precision=72.00", days_ago=100)
+    fresh_dull = _fact("precision=1.00", days_ago=0)
     off = _rank_episodes([important_old, fresh_dull], NOW, arousal=0.0)
     on = _rank_episodes([important_old, fresh_dull], NOW, arousal=1.0)
     assert off[0] is fresh_dull, "低唤醒下近因占优"
     assert on[0] is important_old, "高唤醒放大 importance，旧但显著者反超"
+
+
+# --------------------------------------------------------------------------- #
+# D8：importance 归一化（Hill 饱和，修 dogfood 暴露的量纲碾压）
+# --------------------------------------------------------------------------- #
+
+
+def test_normalized_importance_bounded_and_monotonic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hill 饱和 p/(p+C)：有界 (0,1) 且单调；C=30 时 5→0.143, 72→0.706。"""
+    monkeypatch.setenv("ZERO_RECALL_IMPORTANCE_SCALE", "30")
+    lo = normalized_importance("precision=5.00")
+    hi = normalized_importance("precision=72.00")
+    assert 0.0 < lo < hi < 1.0
+    assert abs(lo - 5 / 35) < 1e-9
+    assert abs(hi - 72 / 102) < 1e-9
+
+
+def test_rank_normalization_lets_recency_sim_matter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """归一后 importance 不再碾压：近且相关的中精度 episode 胜过 旧而无关的高精度（默认等权）。
+
+    未归一时 importance=72 的 γ·importance≈24 会独占评分（dogfood 暴露的失真）；归一后
+    三维同量纲，recency+sim 能压过单纯高 precision。
+    """
+    monkeypatch.setenv("ZERO_RECALL_IMPORTANCE_SCALE", "30")
+    monkeypatch.setenv("ZERO_RECALL_ALPHA", "0.33")
+    monkeypatch.setenv("ZERO_RECALL_BETA", "0.34")
+    monkeypatch.setenv("ZERO_RECALL_GAMMA", "0.33")
+    old_high_prec = _fact("precision=72.00", sim=0.1, days_ago=100)  # 旧·无关·高精度
+    recent_relevant = _fact("precision=40.00", sim=0.9, days_ago=0)  # 新·相关·中精度
+    ranked = _rank_episodes([old_high_prec, recent_relevant], NOW)
+    assert ranked[0] is recent_relevant, (
+        "归一后 recency+sim 能压过单纯高 precision（修 domination）"
+    )
 
 
 # --------------------------------------------------------------------------- #
