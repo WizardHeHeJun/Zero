@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 from collections.abc import Iterable
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -55,21 +54,27 @@ def build_checkpointer(
 
 
 def _sqlite_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | None:
-    """SQLite 运行态后端（本地落盘）；缺 langgraph-checkpoint-sqlite 时返回 None 触发回退。"""
+    """SQLite 运行态后端；缺 sqlite saver/aiosqlite 依赖时返回 None 触发回退。
+
+    用 **AsyncSqliteSaver**（非同步 `SqliteSaver`）——本系统全程 `ainvoke`，同步 saver 的
+    `aget_tuple` 会抛 `NotImplementedError`。`aiosqlite.connect(path)` 惰性连接、saver 首次
+    异步调用时 `await setup()` 懒建表（CREATE TABLE IF NOT EXISTS）。
+    ⚠ 须在**运行中的事件循环内**构造（`AsyncSqliteSaver.__init__` 调 `get_running_loop`）——
+    本项目均在 asyncio.run 内构造（ConversationSession / runner.run），满足。
+    """
     try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
+        import aiosqlite  # noqa: F401  AsyncSqliteSaver 的连接依赖（db extra 带）
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     except ImportError:
         logger.warning(
-            "ZERO_CHECKPOINT_BACKEND=sqlite 但缺 langgraph-checkpoint-sqlite，回退 InMemory"
+            "ZERO_CHECKPOINT_BACKEND=sqlite 但缺 sqlite saver/aiosqlite 依赖，回退 InMemory"
         )
         return None
     path = os.getenv("ZERO_CHECKPOINT_DB", "data/checkpoints.sqlite3")
     if path != ":memory:":
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
-    saver = SqliteSaver(conn, serde=serde) if serde is not None else SqliteSaver(conn)
-    saver.setup()  # 幂等建表（CREATE TABLE IF NOT EXISTS）；缺此首次 ainvoke 会 no-such-table
-    return saver
+    conn = aiosqlite.connect(path)  # 惰性连接；setup 懒建表，无需在此同步 setup()
+    return AsyncSqliteSaver(conn, serde=serde) if serde is not None else AsyncSqliteSaver(conn)
 
 
 def _postgres_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | None:
