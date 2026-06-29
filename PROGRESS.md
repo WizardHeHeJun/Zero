@@ -1,6 +1,6 @@
 # 工程进度与成果记录
 
-> **AI 仿生人**（情感引擎 ⊗ LLM，拟人情感交流）的建设记录；当前主体为情感表达子系统（affective-expression）。更新于 2026-06-25。前瞻路线图见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)。
+> **AI 仿生人**（情感引擎 ⊗ LLM，拟人情感交流）的建设记录；当前主体为情感表达子系统（affective-expression）。更新于 2026-06-29。前瞻路线图见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)。
 
 ## 缘起
 
@@ -257,6 +257,18 @@
 - **L2 关键路径 DEBUG 埋点**（平时 INFO 不显示，`ZERO_LOG_LEVEL=DEBUG` 才出）：`affect_core` 每轮 e*+post_mu/sigma+ignited、`runner` 每刺激 e*+precision、`chat_driver` 每轮 appraise/e*/emotion/attitude、`language_openai` converse/appraise 请求响应摘要。埋点用 `%` 惰性格式、不进 affect 确定性计算（守热路径红线）。
 - **验证**：`pytest` 295 passed（埋点只加日志、零回归）；ruff/format/mypy 干净；`ZERO_LOG_LEVEL=DEBUG python main.py --trace` 实测每轮 `affect_core e*=…` / `runner stim=…` DEBUG 如期输出，默认 INFO 仍干净。
 
+### 阶段 25 — 短时注意力↔长时记忆桥（议会 D1–D7：召回进注意力预算 + 三维重排 + 首因/遗忘）
+
+补齐「召回只拼字符串旁路、history 硬截断丢首因、召回打分单一」三处结构缺陷。科学家议会四席（神经/心理/数学/CS）+ 主持评审判 NEEDS-CHANGES，给 D1–D7 + 4 条 BLOCK，落库 [notes/2026-06-29-attention-memory-bridge-council.md](notes/2026-06-29-attention-memory-bridge-council.md)；架构师出文件级计划，用户敲定（首因默认开 K=3 / 注入阈值 0.5 / 4 顺序 PR）。
+
+- **PR-1 D4 sim 透传**：`StoredFact`/`Fact` 加 `sim` 标量（默认 0.0，零回归）；`SqliteVectorStore.search` 填余弦、`MemoryClient.recall` 透传——为重排 relevance 维铺前置。仅标量，向量不外泄（守 BLOCK-4）。
+- **PR-2 D7 容量剪裁**：`add_episode` 写后按 `ZERO_EPISODE_MAX_PER_KEY`（默认 0=不限）删同 (scope,key) 超量最旧；只写路径触发（守 BLOCK-3）。
+- **PR-3 D3+D5 三维重排 + 首因**：`parse_importance`/`_rank_episodes` 纯函数 `score=α·Δt^(-d)+β·sim+γ·importance`（加权和非乘积、幂律非指数、salience 不与 rpe 双计；arousal 调制默认关）；`SupervisorAgent` 内存 set 判 first_contact ×1.2；`AffectState.recalled_facts` 携带重排结果。无 LLM（守 BLOCK-1）。
+- **PR-4 D1+D2 history 装配**：`_u_shape_history` 补首因（`history[:K]+history[-(N-K):]`，Murdock U 形，K=0 退化原尾窗）；`_inject_recalled_as_system` 把 importance≥`ZERO_RECALL_INJECT_MIN`(0.5) 的 episode 以 system 条目升入注意力预算竞争（reinstatement），空召回原样退化（守 BLOCK-2）。
+- **治理**：code-reviewer 独立审确认 4 条 BLOCK 全守住，4 个 WARN（正则注入/私有跨模块导入/checkpoint 白名单缺 Fact/多实例边界）已整改 + 回归测试。
+- **默认行为**：仅 `ZERO_HISTORY_PRIMACY_K=3`（修首因失真，用户批准）改变 --chat；其余默认关/不限，无语义后端时整条桥 no-op、逐字节零回归。
+- **验证**：`pytest` **331 passed / 5 skipped**（+16 新测：sim 透传 / 容量剪裁 / 三维重排各维 / 首因 / U 形窗 / 注入 / 注入回归）；ruff/format/mypy 干净。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
@@ -297,6 +309,7 @@ DATASETS.md                                   数据集清单
 - PR #28（阶段 19，已合并 main）：对话模块前置债——`ConversationModel` 协议 + 双存储边界文档化（hybrid 架构定调）。
 - PR #29（阶段 20，待合并）：记忆层服务对话（recall 回灌）+ 长期 attitude 进 AppraisalAgent 先验；含本次 PROGRESS/README/知识层文档同步。
 - 分支 `feat/chat-episodic-memory`（阶段 21，栈在 #29 上）：对话情景记忆——语义召回通电(sqlite_vec 默认开)+显著性门控确定性 episode+选择性召回+侧信道失败隔离；科学家议会评记忆语义、守红线（gist 确定性拼接禁 LLM）。
+- 分支 `feat/attention-memory-bridge`（阶段 25）：短时注意力↔长时记忆桥（议会 D1–D7）——D4 sim 透传 / D7 容量剪裁 / D3+D5 三维重排+首因 / D1+D2 history U 形装配+召回注入；4 条 BLOCK 守住、code-review 整改齐（含正则注入 bug 修复），默认 K=3 修首因失真、其余零回归；331 passed/5 skip。
 
 ## 待办（需外部介入或独立轨道）
 
@@ -313,7 +326,7 @@ DATASETS.md                                   数据集清单
 **记忆主线（近期，逐级依赖）**
 - ✅ **chat 记忆闭环 / recall 回灌**（已由阶段 18–20 实现）：text_affect 接内核（阶段 18，受约束 c）、ConversationModel 协议 + 双存储边界（阶段 19）、recall 默认开回灌对话 + user scope 按 thread 隔离（阶段 20）。supervisor 任务完成节点已写情感事件/disposition/episode。
 - ✅ **关系记忆（部分）**：`recalled_disposition` 回灌先验 + 长期 attitude 进 AppraisalAgent 先验（阶段 20）已落；**待补**：稳定人格（大五 / PAD）偏置 + mood 盆深、把对话 transcript/摘要写进语义记忆（涉记忆语义/节流，**需回议会**）。
-- **记忆巩固与遗忘**：情绪加权巩固（McGaugh）+ 遗忘曲线（Ebbinghaus），离线「睡眠」批处理 —— 绝不每条消息触发（守记忆节流红线）。**待做**。
+- **记忆巩固与遗忘（部分）**：✅ 召回侧幂律时序衰减（Wixted&Ebbesen）+ 显著度加权三维重排 + episode 容量上限（阶段 25）已落；**待做**：离线「睡眠」批处理巩固（McGaugh）+ 完整 Ebbinghaus 遗忘曲线 + ACT-R 频率项，绝不每条消息触发（守记忆节流红线）。
 
 **多模态主线（中远期，独立轨道）**
 - ⛔ **多通道输入感知（门槛在前）**：FER / SER / HRV / 文本编码器并行 → `fuse_terms` 精度融合。议会明定：扩到 **N>2 模态前，融合算子必须先开一次 `/science-council` 专评**（多模态相关 → double counting 超线性放大；语言 top-down 调制；模态冲突仲裁 + 各模态差异化/动态精度），**不可直接 /engineer**。见 `notes/2026-06-25-conversation-module-and-multimodal-roadmap-council.md`。
