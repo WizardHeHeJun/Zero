@@ -88,7 +88,7 @@ class SupervisorAgent:
                 label = text_label(affect[0], affect[1])
                 streams = state.ignited_streams or []
 
-                # D5 首因：首次为该 user 写 episode 时打 first_contact 标签（召回 _rank_episodes ×1.2）
+                # D5 首因：该 user 首条 episode 打 first_contact 标签（召回重排 ×1.2）
                 fc_seg = " | first_contact=True" if self._is_first_contact(state.user_id) else ""
 
                 episode_content = (

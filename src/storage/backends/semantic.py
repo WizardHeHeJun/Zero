@@ -207,7 +207,7 @@ class SqliteVectorStore:
         )
         self.conn.commit()
         # D7 容量上限：写后剪裁，保留同 (scope,key) 下按时间最新 N 条、删超量最旧。
-        # 默认 ZERO_EPISODE_MAX_PER_KEY=0 不限（零回归）；只在本写路径执行（守 BLOCK-C：读路径不触发）。
+        # 默认 ZERO_EPISODE_MAX_PER_KEY=0 不限（零回归）；仅本写路径执行（守 BLOCK-C）。
         self._trim_capacity(scope, key)
         logger.debug("sqlite_vector add_episode scope=%s key=%s", scope, key)
 

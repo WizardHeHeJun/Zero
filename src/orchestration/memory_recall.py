@@ -116,7 +116,7 @@ class MemoryRecallAgent:
         recalled = await self.memory.recall(query, scope=Scope.USER, key=state.user_id)
         if recalled:
             # D3 三维重排：recency×sim×importance 加权和。arousal 取已携带的 mood 唤醒——
-            # 召回节点在 affect_core 之前，本轮 affect_sample 尚未算出，故用 mood[1] 作 NE 调制代理。
+            # 召回节点在 affect_core 之前，本轮 affect_sample 尚未算出，故用 mood[1] 作 NE 代理。
             arousal = state.mood[1] if state.mood is not None else 0.0
             ranked = _rank_episodes(recalled, datetime.now(UTC), arousal=arousal)
             out["recalled_context"] = [f.content for f in ranked]
