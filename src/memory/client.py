@@ -118,7 +118,8 @@ class MemoryClient:
                 "memory.recall scope=%s key=%s q=%s n=%d", scope.value, key, query, len(stored)
             )
             return [
-                Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
+                Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key, sim=s.sim)
+                for s in stored
             ]
         except Exception as exc:
             logger.warning(

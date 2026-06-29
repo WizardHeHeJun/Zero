@@ -23,3 +23,4 @@ class Fact:
     scope: Scope
     valid_at: datetime
     key: str = "default"
+    sim: float = 0.0  # D4：语义召回的余弦相似度（透传自 StoredFact.sim；确定性 query 路径为 0.0）

@@ -236,7 +236,9 @@ class SqliteVectorStore:
             if at is not None and valid > at:
                 continue
             sim = _cosine(q, json.loads(emb_json))
-            scored.append((sim, StoredFact(scope=s, key=k, content=content, valid_at=valid)))
+            scored.append(
+                (sim, StoredFact(scope=s, key=k, content=content, valid_at=valid, sim=sim))
+            )
         scored.sort(key=lambda pair: pair[0], reverse=True)
         threshold = sim_threshold if sim_threshold is not None else self.sim_threshold
         return [fact for sim, fact in scored[:limit] if sim >= threshold]
