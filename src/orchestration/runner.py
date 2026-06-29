@@ -40,6 +40,7 @@ def _state_to_entry(stim_name: str, state: AffectState) -> dict[str, Any]:
         "value_estimate": state.value_estimate,
         "mood": state.mood,
         "recalled_context": state.recalled_context,
+        "recalled_facts": state.recalled_facts,  # D1：供 ChatDriver 按 importance 注入 history
         "language_text": state.language_text,
         "language_affect": state.language_affect,
         "language_consistency": state.language_consistency,
