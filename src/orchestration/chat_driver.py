@@ -26,7 +26,7 @@ from src.agents.emotion_lexicon import affect_label
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
 from src.memory.types import Fact
-from src.orchestration.memory_recall import _parse_importance
+from src.orchestration.memory_recall import parse_importance
 from src.orchestration.runner import ConversationSession
 from src.orchestration.state import Stimulus
 from src.storage.conversation_log import ConversationLog
@@ -75,7 +75,7 @@ def _inject_recalled_as_system(
     system_entries: list[dict[str, str]] = [
         {"role": "system", "content": f"（记忆片段）{f.content}"}
         for f in recalled_facts
-        if _parse_importance(f.content) >= inject_min
+        if parse_importance(f.content) >= inject_min
     ]
     return system_entries + window
 

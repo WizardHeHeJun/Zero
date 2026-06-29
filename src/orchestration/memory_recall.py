@@ -38,17 +38,19 @@ def _parse_disposition(facts: list[Fact]) -> float | None:
         return None
 
 
-def _parse_importance(content: str) -> float:
+def parse_importance(content: str) -> float:
     """从 episode 文本解析写入时显著度 `precision=`（importance 维度）；缺失返回 0.5 保守默认。
 
-    对应 SupervisorAgent 已固化的写入格式 `... | precision=<float> | ...`。纯正则、无 LLM
-    （守确定性热路径 BLOCK-1）。返回 0（而非默认）会让 γ 维恒失效，故缺失取 0.5 中性值。
+    对应 SupervisorAgent 固化的写入格式 `gist | ... | precision=<float> | ...`。取**最后一个**
+    precision= 匹配——结构化元数据字段在尾部、用户原话/语言在前段，避免用户输入里的
+    `precision=0.99` 污染评分（WARN-1）。纯正则、无 LLM（守确定性热路径 BLOCK-1）。
+    返回 0 会让 γ 维恒失效，故缺失取 0.5 中性值。
     """
-    match = re.search(r"precision=([0-9]+(?:\.[0-9]+)?)", content)
-    if match is None:
+    matches = re.findall(r"precision=([0-9]+(?:\.[0-9]+)?)", content)
+    if not matches:
         return 0.5
     try:
-        return float(match.group(1))
+        return float(matches[-1])
     except ValueError:
         return 0.5
 
@@ -78,7 +80,7 @@ def _rank_episodes(facts: list[Fact], now: datetime, *, arousal: float = 0.0) ->
         valid_at = fact.valid_at if fact.valid_at.tzinfo else fact.valid_at.replace(tzinfo=UTC)
         delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
         recency = delta_days ** (-d)
-        importance = _parse_importance(fact.content)
+        importance = parse_importance(fact.content)
         if "first_contact=True" in fact.content:
             importance *= 1.2
         return alpha * recency + beta * fact.sim + gamma * importance

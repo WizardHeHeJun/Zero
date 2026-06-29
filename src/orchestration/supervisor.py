@@ -34,8 +34,9 @@ class SupervisorAgent:
     def _is_first_contact(self, key: str) -> bool:
         """首次为该 key 写 episode 时返回 True（并登记），之后恒 False。
 
-        进程内 set 轻量记录、无额外 IO；重启重置=可接受（多标一次优于漏标）。对应系列位置效应
-        的首因端（D5）：「第一次见面说的话」获额外检索权重。仅在确认要写 episode 时调用一次。
+        进程内 set 轻量记录、无额外 IO。**边界**：重启 / 多实例（并发或重开 session 各持独立
+        SupervisorAgent）下同 key 可被多标——可接受（多标一次优于漏标，议会 D5 悬而未决 #4）。
+        对应系列位置效应的首因端（D5）：「第一次见面说的话」获额外检索权重。写 episode 前调一次。
         """
         if key in self.seen_episode_keys:
             return False

@@ -21,8 +21,13 @@ from src.storage.graph_store import build_graph_store, build_semantic_store
 
 logger = logging.getLogger(__name__)
 
-# 编排层声明自己放进运行态、需从 checkpoint 恢复的自定义类型（存储层据此白名单）
-ALLOWED_CHECKPOINT_TYPES = [("src.orchestration.state", "Stimulus")]
+# 编排层声明自己放进运行态、需从 checkpoint 恢复的自定义类型（存储层据此白名单）。
+# Fact：AffectState.recalled_facts 携带（D1）；非 InMemory checkpointer（sqlite/postgres）
+# 反序列化须白名单，否则还原成 dict 致下游 f.sim/f.content AttributeError。
+ALLOWED_CHECKPOINT_TYPES = [
+    ("src.orchestration.state", "Stimulus"),
+    ("src.memory.types", "Fact"),
+]
 
 
 def _state_to_entry(stim_name: str, state: AffectState) -> dict[str, Any]:

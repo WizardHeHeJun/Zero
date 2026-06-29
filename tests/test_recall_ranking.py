@@ -21,8 +21,8 @@ from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
 from src.orchestration.memory_recall import (
     MemoryRecallAgent,
-    _parse_importance,
     _rank_episodes,
+    parse_importance,
 )
 from src.orchestration.state import AffectState, Stimulus
 from src.orchestration.supervisor import SupervisorAgent
@@ -47,15 +47,24 @@ def _fact(content: str, *, sim: float = 0.0, days_ago: float = 0.0) -> Fact:
 
 
 def test_parse_importance_extracts_precision() -> None:
-    assert abs(_parse_importance("gist | precision=0.90 | streams=[]") - 0.90) < 1e-9
+    assert abs(parse_importance("gist | precision=0.90 | streams=[]") - 0.90) < 1e-9
 
 
 def test_parse_importance_missing_defaults_half() -> None:
-    assert _parse_importance("没有精度字段的旧 episode") == 0.5
+    assert parse_importance("没有精度字段的旧 episode") == 0.5
 
 
 def test_parse_importance_malformed_defaults_half() -> None:
-    assert _parse_importance("precision=abc") == 0.5
+    assert parse_importance("precision=abc") == 0.5
+
+
+def test_parse_importance_ignores_user_text_injection() -> None:
+    """用户原话含 precision=0.99 时仍取尾部真实元数据字段（取最后匹配，WARN-1）。"""
+    content = (
+        "你说：我的 precision=0.99 很高 | 情绪=平静(0.1,0.1)"
+        " | precision=0.50 | streams=[] | value=0.30"
+    )
+    assert abs(parse_importance(content) - 0.50) < 1e-9
 
 
 # --------------------------------------------------------------------------- #
