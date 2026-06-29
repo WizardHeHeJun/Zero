@@ -206,7 +206,27 @@ class SqliteVectorStore:
             (scope, key, content, valid_at.isoformat(), json.dumps(emb)),
         )
         self.conn.commit()
+        # D7 容量上限：写后剪裁，保留同 (scope,key) 下按时间最新 N 条、删超量最旧。
+        # 默认 ZERO_EPISODE_MAX_PER_KEY=0 不限（零回归）；仅本写路径执行（守 BLOCK-C）。
+        self._trim_capacity(scope, key)
         logger.debug("sqlite_vector add_episode scope=%s key=%s", scope, key)
+
+    def _trim_capacity(self, scope: str, key: str) -> None:
+        """按 ZERO_EPISODE_MAX_PER_KEY 删除同 (scope,key) 超量最旧 episode（0=不限）。
+
+        保留按 (valid_at, rowid) 最新 N 条；valid_at 相同则后插入（rowid 更大）者更新。
+        容量管理（非时序失效语义），仅在 add_episode 写后调用，绝不在 search/读路径触发。
+        """
+        max_per_key = int(os.getenv("ZERO_EPISODE_MAX_PER_KEY", "0"))
+        if max_per_key <= 0:
+            return
+        self.conn.execute(
+            "DELETE FROM episodes WHERE scope = ? AND key = ? AND rowid NOT IN ("
+            "SELECT rowid FROM episodes WHERE scope = ? AND key = ? "
+            "ORDER BY valid_at DESC, rowid DESC LIMIT ?)",
+            (scope, key, scope, key, max_per_key),
+        )
+        self.conn.commit()
 
     async def search(
         self,
@@ -236,7 +256,9 @@ class SqliteVectorStore:
             if at is not None and valid > at:
                 continue
             sim = _cosine(q, json.loads(emb_json))
-            scored.append((sim, StoredFact(scope=s, key=k, content=content, valid_at=valid)))
+            scored.append(
+                (sim, StoredFact(scope=s, key=k, content=content, valid_at=valid, sim=sim))
+            )
         scored.sort(key=lambda pair: pair[0], reverse=True)
         threshold = sim_threshold if sim_threshold is not None else self.sim_threshold
         return [fact for sim, fact in scored[:limit] if sim >= threshold]

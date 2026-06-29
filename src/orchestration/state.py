@@ -12,6 +12,8 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.memory.types import Fact
+
 
 class Stimulus(BaseModel):
     """一个待评价的事件（OCC 评价输入）。各评价维度取值约定在 [-1, 1]。
@@ -76,6 +78,10 @@ class AffectState(BaseModel):
     # 语义召回（Graphiti 等语义记忆侧信道）的相关事实串 → 喂 LanguageAgent 检索；
     # 无语义后端时恒空（零回归）。仅存短文本，不放大对象（遵守 state 约束）。
     recalled_context: list[str] = Field(default_factory=list)
+    # D1+D3：召回的原始 Fact（已三维重排，含 sim/valid_at/importance 线索），供 chat_driver
+    # 按 importance 注入 history 预算竞争。Fact 全为标量/str/datetime，非大对象（满足 state 约束）；
+    # 无语义后端时恒空（零回归）。仅 chat 驱动消费，不进 LLM 数学。
+    recalled_facts: list[Fact] = Field(default_factory=list)
 
     # Language（affect↔language 双向收敛回路）—— 运行态观测量
     language_text: str | None = None  # 生成的语言内容

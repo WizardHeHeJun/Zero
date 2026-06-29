@@ -42,8 +42,15 @@ class MemoryClient:
         if not isinstance(scope, Scope):
             raise ValueError("memory.write 必须显式指定 Scope，禁止默认作用域")
         when = valid_at if valid_at is not None else datetime.now(UTC)
-        self.store.add_fact(scope=scope.value, key=key, content=content, valid_at=when)
-        logger.info("memory.write scope=%s key=%s", scope.value, key)
+        # 后端失败隔离：底层 GraphStore（如 Neo4j 连不上服务）抛错时降级——只告警不崩主管线。
+        # 与语义侧信道 write_episode/recall 同款韧性；scope 校验（编程错误）仍前置抛出、不在此吞。
+        try:
+            self.store.add_fact(scope=scope.value, key=key, content=content, valid_at=when)
+            logger.info("memory.write scope=%s key=%s", scope.value, key)
+        except Exception as exc:
+            logger.warning(
+                "memory.write failed scope=%s key=%s: %s", scope.value, key, exc, exc_info=True
+            )
 
     async def query(
         self,
@@ -57,7 +64,15 @@ class MemoryClient:
         if not isinstance(scope, Scope):
             raise ValueError("memory.query 必须显式指定 Scope，禁止默认作用域")
         logger.debug("memory.query scope=%s key=%s q=%s", scope.value, key, query)
-        stored = self.store.query_facts(scope=scope.value, key=key, at=at)
+        # 后端失败隔离：读失败（如 Neo4j 连不上）降级返回 []（recalled_disposition 退化为 None、
+        # appraisal 不偏置），不崩主管线。与 write 同款韧性。
+        try:
+            stored = self.store.query_facts(scope=scope.value, key=key, at=at)
+        except Exception as exc:
+            logger.warning(
+                "memory.query failed scope=%s key=%s: %s", scope.value, key, exc, exc_info=True
+            )
+            return []
         return [
             Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
         ]
@@ -118,7 +133,8 @@ class MemoryClient:
                 "memory.recall scope=%s key=%s q=%s n=%d", scope.value, key, query, len(stored)
             )
             return [
-                Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key) for s in stored
+                Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key, sim=s.sim)
+                for s in stored
             ]
         except Exception as exc:
             logger.warning(

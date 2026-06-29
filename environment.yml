@@ -5,10 +5,10 @@
 # 更新：  conda env update -f environment.yml --prune
 #
 # 依赖口径与 pyproject.toml 对齐（loose 约束、跨平台可重建）。
-# 含 核心 + dev + **常用 optional extra（ml/llm/nlp/steer）** —— 重建即得可跑真 LLM 对话/真网络化
-# 训练/steering 的完整环境，无需再手动装 extra。
-# db（Postgres/Neo4j saver）与 graphiti（语义知识图谱）属部署/重型可选，**按需**手动装：
-#   pip install -e ".[db]"   /   pip install -e ".[graphiti]"
+# 含 核心 + dev + **常用 optional extra（ml/llm/nlp/steer/db）** —— 重建即得可跑真 LLM 对话/真网络化
+# 训练/steering + 本地落盘运行态（sqlite/postgres saver）的完整环境，无需再手动装 extra。
+# graphiti（语义知识图谱，重型，与 sqlite_vec 二选一）仍属按需手动装：
+#   pip install -e ".[graphiti]"
 # 本机 win-64 实测的精确版本见 environment.lock.yml。
 name: affective-expression
 channels:
@@ -37,3 +37,8 @@ dependencies:
       - sentence-transformers>=2.2
       # steer：开放权重 VA steering
       - transformers>=4.40
+      # db：运行态 SQLite/Postgres saver + 长期记忆 Neo4j 驱动（--chat 本地落盘用 sqlite saver）
+      - langgraph-checkpoint-sqlite
+      - langgraph-checkpoint-postgres
+      - psycopg[binary]>=3
+      - neo4j>=5

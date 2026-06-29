@@ -27,6 +27,7 @@ class StoredFact:
     content: str
     valid_at: datetime
     invalid_at: datetime | None = None
+    sim: float = 0.0  # D4：语义检索余弦相似度（存储层填真值；确定性后端/非检索路径保持 0.0）
 
 
 class GraphStore(Protocol):

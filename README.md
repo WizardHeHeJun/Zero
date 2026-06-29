@@ -56,15 +56,16 @@
 
 最终表现分**自发**（真情流露）与**随意**（社交掩饰）两条通路，落到多个表达通道——面部动作单元（FACS AU）、文本标签、生理信号、语音韵律。
 
-### 6. 记忆 / 持久
+### 6. 记忆 / 持久：短时注意力 ⊗ 长时记忆
 
-多层记忆让仿生人**跨重启记得你**：
+多层记忆让仿生人**跨重启记得你**，并在"当下注意得过来"与"长期记得住"之间架一座桥：
 
 - **对话运行态** — transcript 与对此人的长期态度落本地 SQLite，重启续上；态度还作为先验**偏置当下的情绪评价**（持续被冒犯，连初见的反应都会变冷）。
-- **情景记忆** — 把对话经历按**情绪显著性**择要写成情景 episode（平淡的不记，借鉴海马"情绪/新颖性门控"），后续按**相关性 + 当下情绪**线索**选择性召回**（不是把旧事全倒出来），回灌进回应——于是它**记得你聊过什么**，而不只是记得对你的态度。
-- **确定性图谱**（带时序失效，新事实使旧失效）+ 语义召回侧信道并存；语义侧信道失败绝不拖垮主对话。
+- **短时注意力（工作记忆窗）** — 喂给 LLM 的上下文不是简单截最近 N 轮，而是**首因 + 近因的 U 形窗**：既记得"第一次见面说的话"、也记得最近几轮（借鉴系列位置效应，避免单调截断丢掉开场）。
+- **情景记忆 + 三维召回** — 把对话经历按**情绪显著性**择要写成情景 episode（平淡的不记，借鉴海马"情绪/新颖性门控"）；召回时按 **新近性 × 相关性 × 重要性** 三维加权排序（幂律时序衰减 · 语义相似 · 写入显著度），高分的旧记忆**升入注意力预算、与近期对话同台竞争**（对应皮层记忆重激活），而非旁路堆砌——于是它**记得你聊过什么**、且只在相关时想起来。
+- **遗忘是特性** — 长期事实带**时序失效**（新事实使旧失效）、情景库有**容量上限**，靠自然沉降而非物理删除来遗忘；确定性图谱 + 语义召回侧信道并存，语义侧信道失败绝不拖垮主对话。
 
-> 记忆写什么/何时写/怎么召回，都经跨学科评审定调，且**全程确定性、不让 LLM 替仿生人"编造"记忆**。一键恢复出厂：`python -m tools.reset_db --yes`。
+> 记忆写什么/何时写/怎么召回/怎么排序，都经**跨学科科学家议会**评审定调（强制现场引文），且**全程确定性、不让 LLM 替仿生人"编造"或"挑选"记忆**。一键恢复出厂：`python -m tools.reset_db --yes`。
 
 ---
 
@@ -99,7 +100,7 @@
 | **表达解码器** | 各通道用确定性占位函数 | 每个通道可**换成可训练网络**（韵律 RAVDESS / 生理 WESAD / 表情 AffectNet / 文本→VAD EmoBank），经鸭子类型协议注入，编排层不依赖 torch |
 | **输入感知** | 文本 → `(v, a)` | 视觉图像 / 心电（ECG）/ 语气 / 面部表情 → 更丰富的多通道感知 |
 | **输出形态** | 情绪化文本 + 通道值 | Live2D 形象 / 情感 TTS 等多模态外化 |
-| **记忆与经历** | 对话+态度落盘、情景记忆择要落库与选择性召回 | 记忆巩固与遗忘曲线、稳定人格/自我模型、跨会话人物画像 |
+| **记忆与经历** | 对话+态度落盘、情景择要落库 + 新近×相关×重要三维召回 + 首因/近因注意力窗 | 完整睡眠巩固/遗忘曲线、稳定人格/自我模型、跨会话人物画像 |
 | **运行后端** | 默认本地（内存 / SQLite） | env 一键切容器化 Postgres / Neo4j，接入真实图谱与运行态持久 |
 
 ---
@@ -114,10 +115,11 @@ Zero/
 ├── src/
 │   ├── orchestration/       # 编排层：StateGraph 装配 + 运行入口
 │   │   ├── graph.py         #   build_graph：节点装配 + 条件边路由
-│   │   ├── state.py         #   AffectState / Stimulus（结构化 state）
-│   │   ├── supervisor.py    #   协调 + 任务完成节流写记忆
-│   │   ├── memory_recall.py #   读 user 长期倾向回灌评价先验
-│   │   └── runner.py        #   跑刺激序列 + 多轮对话会话
+│   │   ├── state.py         #   AffectState / Stimulus（结构化 state，含 recalled_facts）
+│   │   ├── supervisor.py    #   协调 + 任务完成节流写记忆 + first_contact 首因标记
+│   │   ├── memory_recall.py #   长期倾向回灌先验 + 召回三维重排（新近×相关×重要，Hill 归一）
+│   │   ├── chat_driver.py   #   交互对话核心：两时间尺度情绪 + U形注意力窗 + 高显著召回注入
+│   │   └── runner.py        #   跑刺激序列 + 多轮对话会话（ConversationSession）
 │   ├── agents/              # 各 Worker（节点契约 (state) -> dict 只回增量）
 │   │   ├── affect_math.py   #   数学内核：OCC/TD/精度/高斯融合·工作空间·三时间尺度
 │   │   ├── perception.py · appraisal.py · value.py
@@ -129,9 +131,9 @@ Zero/
 │   │   ├── language_steering.py  #   VA steering 适配器（开放权重）
 │   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text）
 │   │   └── datasets/        #   DataLoader：synthetic / ravdess / wesad / emobank / facs
-│   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流）
+│   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流、后端失败隔离 + Fact.sim）
 │   ├── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
-│   │   ├── checkpointer.py  #   InMemory / SQLite / Postgres
+│   │   ├── checkpointer.py  #   memory / sqlite(异步 AsyncSqliteSaver) / postgres(待异步接线)
 │   │   ├── graph_store.py   #   门面 + 工厂
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   └── observability/       # 横切：统一日志 setup_logging（每启动落 logs/、级别可配、入口无关）
@@ -142,7 +144,7 @@ Zero/
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
 ├── Dockerfile · docker-compose.yml · .env.example   # 容器化部署
-└── pyproject.toml · environment.yml                 # 依赖与环境（core / ml / db / llm extra）
+└── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti 按需）
 ```
 
 ---

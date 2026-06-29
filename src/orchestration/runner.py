@@ -21,8 +21,14 @@ from src.storage.graph_store import build_graph_store, build_semantic_store
 
 logger = logging.getLogger(__name__)
 
-# 编排层声明自己放进运行态、需从 checkpoint 恢复的自定义类型（存储层据此白名单）
-ALLOWED_CHECKPOINT_TYPES = [("src.orchestration.state", "Stimulus")]
+# 编排层声明自己放进运行态、需从 checkpoint 恢复的自定义类型（存储层据此白名单）。
+# Fact：AffectState.recalled_facts 携带（D1）；非 InMemory checkpointer（sqlite/postgres）
+# 反序列化须白名单，否则还原成 dict 致下游 f.sim/f.content AttributeError。
+ALLOWED_CHECKPOINT_TYPES = [
+    ("src.orchestration.state", "Stimulus"),
+    ("src.memory.types", "Fact"),
+    ("src.memory.types", "Scope"),  # Fact.scope 是 Scope 枚举，随 Fact 一同反序列化需白名单
+]
 
 
 def _state_to_entry(stim_name: str, state: AffectState) -> dict[str, Any]:
@@ -40,6 +46,7 @@ def _state_to_entry(stim_name: str, state: AffectState) -> dict[str, Any]:
         "value_estimate": state.value_estimate,
         "mood": state.mood,
         "recalled_context": state.recalled_context,
+        "recalled_facts": state.recalled_facts,  # D1：供 ChatDriver 按 importance 注入 history
         "language_text": state.language_text,
         "language_affect": state.language_affect,
         "language_consistency": state.language_consistency,
