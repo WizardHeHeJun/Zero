@@ -115,10 +115,11 @@ Zero/
 ├── src/
 │   ├── orchestration/       # 编排层：StateGraph 装配 + 运行入口
 │   │   ├── graph.py         #   build_graph：节点装配 + 条件边路由
-│   │   ├── state.py         #   AffectState / Stimulus（结构化 state）
-│   │   ├── supervisor.py    #   协调 + 任务完成节流写记忆
-│   │   ├── memory_recall.py #   读 user 长期倾向回灌评价先验
-│   │   └── runner.py        #   跑刺激序列 + 多轮对话会话
+│   │   ├── state.py         #   AffectState / Stimulus（结构化 state，含 recalled_facts）
+│   │   ├── supervisor.py    #   协调 + 任务完成节流写记忆 + first_contact 首因标记
+│   │   ├── memory_recall.py #   长期倾向回灌先验 + 召回三维重排（新近×相关×重要，Hill 归一）
+│   │   ├── chat_driver.py   #   交互对话核心：两时间尺度情绪 + U形注意力窗 + 高显著召回注入
+│   │   └── runner.py        #   跑刺激序列 + 多轮对话会话（ConversationSession）
 │   ├── agents/              # 各 Worker（节点契约 (state) -> dict 只回增量）
 │   │   ├── affect_math.py   #   数学内核：OCC/TD/精度/高斯融合·工作空间·三时间尺度
 │   │   ├── perception.py · appraisal.py · value.py
@@ -130,9 +131,9 @@ Zero/
 │   │   ├── language_steering.py  #   VA steering 适配器（开放权重）
 │   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text）
 │   │   └── datasets/        #   DataLoader：synthetic / ravdess / wesad / emobank / facs
-│   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流）
+│   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流、后端失败隔离 + Fact.sim）
 │   ├── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
-│   │   ├── checkpointer.py  #   InMemory / SQLite / Postgres
+│   │   ├── checkpointer.py  #   memory / sqlite(异步 AsyncSqliteSaver) / postgres(待异步接线)
 │   │   ├── graph_store.py   #   门面 + 工厂
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   └── observability/       # 横切：统一日志 setup_logging（每启动落 logs/、级别可配、入口无关）
@@ -143,7 +144,7 @@ Zero/
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
 ├── Dockerfile · docker-compose.yml · .env.example   # 容器化部署
-└── pyproject.toml · environment.yml                 # 依赖与环境（core / ml / db / llm extra）
+└── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti 按需）
 ```
 
 ---
