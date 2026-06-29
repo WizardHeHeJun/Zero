@@ -190,6 +190,25 @@ def test_attitude_accumulates_slowly_object_bound() -> None:
     assert attitude[0] < -0.5  # 多轮持续负面 → 态度才成形变冷
 
 
+def test_attitude_reverts_toward_setpoint_bounds_ratchet() -> None:
+    """议会 B：态度含向 setpoint 的弱回归——持续同向刺激稳态被钳在 |s| 内（防单调棘轮漂移到极端）。
+
+    reversion=0 退化为旧纯 EWMA（稳态趋近 s）；默认含 reversion 时稳态 a*=rate·s/(rate+reversion)，
+    小于 s，验证回归项确实压低了累积上限（affective homeostasis）。
+    """
+    from src.agents.affect_math import attitude_step
+
+    s = (0.8, 0.0)
+    a_rev = (0.0, 0.0)
+    a_pure = (0.0, 0.0)
+    for _ in range(200):
+        a_rev = attitude_step(a_rev, s)  # 默认含 reversion
+        a_pure = attitude_step(a_pure, s, reversion=0.0)  # 旧纯 EWMA（零回归对照）
+    assert a_pure[0] > 0.78  # 纯 EWMA 稳态趋近 s=0.8
+    assert a_rev[0] < a_pure[0]  # 回归项压低稳态（防棘轮）
+    assert a_rev[0] < 0.8  # 始终被钳在 |s| 内，不无限漂移
+
+
 def test_conversation_log_roundtrip_and_feeling() -> None:
     """对话 transcript + 累积情绪落库/重载（跨重启记忆 + 情绪续上的本地存储基元）。"""
     from src.storage.conversation_log import ConversationLog

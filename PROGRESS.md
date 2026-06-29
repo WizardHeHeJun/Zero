@@ -1,6 +1,6 @@
 # 工程进度与成果记录
 
-> **AI 仿生人**（情感引擎 ⊗ LLM，拟人情感交流）的建设记录；当前主体为情感表达子系统（affective-expression）。更新于 2026-06-29。前瞻路线图见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)。
+> **AI 数字人**（情感引擎 ⊗ LLM，拟人情感交流）的建设记录；当前主体为情感表达子系统（affective-expression）。更新于 2026-06-29。前瞻路线图见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)。
 
 ## 缘起
 
@@ -270,6 +270,16 @@
 - **D8 真后端 dogfood + importance 归一**：合并后跑真后端 smoke（qwen-flash+gemini embedding）确认桥通电（召回→重排→注入→LLM 真用上记忆），并暴露 `importance`=写入 `affect_precision`（方差倒数、无界、实测 28–72）碾压三维公式、INJECT_MIN 失效。数学席+CS 席专评（无张力）：Hill 饱和 `p/(p+C)` 归一到 [0,1]（与 sim/recency 同量纲），固定 C=`ZERO_RECALL_IMPORTANCE_SCALE`(默认30)、读侧两处一致归一（自适应 C 撞确定性红线被 BLOCK）；另补 `Scope` 入 checkpoint 白名单。决策落库 notes 的 D8 段。
 - **验证**：`pytest` **333 passed / 5 skipped**（+18 新测：sim 透传 / 容量剪裁 / 三维重排各维 / 首因 / U 形窗 / 注入 / 归一有界单调 + domination 修复）；ruff/format/mypy 干净；真后端 smoke 复跑确认归一后门控恢复区分、Scope 告警消失。
 
+### 阶段 26 — 情绪稳态回归 ⊗ 注意力-记忆桥（从一次真实对话失败现场修起）
+
+真实 `--chat`（qwen-flash）约 33 轮出现三症状：①问起十几轮前说过的"下午两点"反复回避说不出；②人设无恋人却越聊越极致缠绵（"我们"上头）；③把"问时间/谈规划"读成背叛、急转对抗偏执。科学家议会（心理+生物，只读·强制引文）评审，双席均 NEEDS-CHANGES 且收敛，落库 [notes/2026-06-29-emotion-homeostasis-and-memory-bridge-council.md](notes/2026-06-29-emotion-homeostasis-and-memory-bridge-council.md)。
+
+- **A 窗口 + 召回桥根治**：`ZERO_HISTORY_WINDOW` 20→40 / `PRIMACY_K` 3→5（"下午两点"在第 19 轮即被挤出 20 条尾窗，Murdock 中央位置遗忘）；`add_episode`/`write_episode` 加 `embed_text`——只嵌检索 gist（你说/我说），存储全文仍带元数据，向量不再被 `precision=/streams=` 稀释（缺省=全文嵌入、零回归）；`supervisor` 加确定性正则 `_is_commitment`（时间/约定/日期）承诺写入通道，低唤醒承诺也强制入库（解决"根本没写进库"）。
+- **B 情绪稳态回归 + persona 配平**：`attitude_step` 加向 setpoint 弱均值回归 `−reversion·(a−setpoint)`（`ATTITUDE_REVERSION=0.01`，稳态 a*<|s| 封死单调棘轮）；emotion 衰退基线改 `w·attitude+(1−w)·中性`（`ZERO_EMOTION_BASELINE_ATTITUDE_W=0.6`，给情绪指向中性的拉力）；`_CONVERSE_SYS` 增「诚实优先（看不到历史就说不记得、不编造，高于脾气）」+「goal-neutral 话题识别」。`reversion=0`/`w=1` 退化旧行为。
+- **C episode 节流（修正）**：核验 `deterministic.add_fact` 按 (scope,key) 时序失效（memory-rules#4）→ 活跃 disposition 恒为最新一条、不胀，故**撤回**对 disposition 的 salience 门控（曾误伤 `run()` 召回闭环）；真实增长在 episode 侧 → `--chat` 入口 setdefault `ZERO_EPISODE_MAX_PER_KEY=300`，配 salience 门 + dedup 收口。
+- **治理**：code-reviewer 独立审 **PASS / 0 BLOCK**；5 WARN + 4 INFO 均为既有技术债或文档级，记为 follow-up（见 council notes 末「follow-up」段），不在本轮扩面。
+- **验证**：`pytest` **347 passed / 5 skipped**；ruff/format/mypy 干净；真后端 `--chat` 强制 eviction（window=4）实测：时刻被正确想起（承诺通道+gist 召回）、后勤问题平常心作答（不再对抗）、情绪在兴奋/欣喜带振荡回基线（不再单调爬至狂喜）。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
@@ -318,7 +328,7 @@ DATASETS.md                                   数据集清单
 - **接真实后端**：本地已上 SQLite 落盘 + env 后端工厂；**Neo4j GraphStore 适配器已实现**（`Neo4jGraphStore` 裸 Cypher 保时序失效语义、`build_graph_store` 加 `neo4j` 分支 + 缺驱动告警回退，compose 已切 neo4j 后端）；**Postgres saver 已加固**（持显式长连接 + `autocommit/prepare_threshold/dict_row`，避开新版 `from_conn_string` 是 context manager、退出即关连接的坑）。**待真机验证**：在有 Docker 的服务器 `docker compose up` + 装 `db` extra，跑通 Postgres 跨重启恢复运行态 + Neo4j 时序语义（本机无 Docker，集成用例 `importorskip` + 连接探测优雅跳过）。**Graphiti 已深度集成（阶段 8）**：作为与确定性 GraphStore 并存的语义记忆侧信道接入（`SemanticStore`/`GraphitiGraphStore`/`write_episode`/`recall`，富 episode → 语义召回 → 语言层检索），`graphiti` extra、`ZERO_SEMANTIC_BACKEND=graphiti` 门控、默认关。**本地验证路径已就绪（阶段 9）**：`ZERO_GRAPHITI_DB=kuzu`（嵌入式、无 Docker/无服务）+ OpenAI 兼容 key，跑 `python -m scripts.verify_graphiti_local` 即可在本机验证闭环；**待用户带 LLM key 实跑确认**（本机无 key）。
 - **扩 Worker 角色**：已加 MemoryRecall / Mood；可继续按 `/new-agent` 增加。
 
-## 下一步路线图（阶段 15+ · AI 仿生人）
+## 下一步路线图（阶段 15+ · AI 数字人）
 
 > 详见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)（定位确认 + 现状缺口 + 本地落库设计 + 学术依据）。**已定**：chat 默认翻为**本地落盘**（SQLite 三件套：运行态 + 确定性图谱 + 语义经历），零依赖内存档保留为 opt-in。
 

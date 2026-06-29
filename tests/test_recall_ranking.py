@@ -198,7 +198,15 @@ def test_rank_normalization_lets_recency_sim_matter(monkeypatch: pytest.MonkeyPa
 class _RankRecallStore:
     """search 返回两条 StoredFact（一新高显著、一旧低显著），验证重排后顺序。"""
 
-    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
+    async def add_episode(
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
+    ) -> None:
         return None
 
     async def search(
@@ -256,7 +264,15 @@ class _EpisodeRecorder:
     def __init__(self) -> None:
         self.contents: list[str] = []
 
-    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
+    async def add_episode(
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
+    ) -> None:
         self.contents.append(content)
 
     async def search(self, query: str, **kwargs: object) -> list[StoredFact]:

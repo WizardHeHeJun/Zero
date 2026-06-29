@@ -32,7 +32,13 @@ class SemanticStore(Protocol):
     """
 
     async def add_episode(
-        self, *, scope: str, key: str, content: str, valid_at: datetime
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
     ) -> None: ...
 
     async def search(
@@ -75,8 +81,20 @@ class GraphitiGraphStore:
             await self.graphiti.build_indices_and_constraints()
             self.initialized = True
 
-    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
-        """写一条自然语言 episode；Graphiti 抽取实体/关系入图，按 group_id 隔离。"""
+    async def add_episode(
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
+    ) -> None:
+        """写一条自然语言 episode；Graphiti 抽取实体/关系入图，按 group_id 隔离。
+
+        `embed_text` 仅对自管向量的后端（SqliteVector）有意义；Graphiti 自行从 content 抽取
+        实体/关系与向量，故此处忽略该参数（保协议兼容）。
+        """
         from graphiti_core.nodes import EpisodeType  # 延迟导入：缺驱动由工厂回退
 
         await self._ensure_init()
@@ -172,9 +190,23 @@ class SqliteVectorStore:
             logger.debug("embedding 调用失败 model=%s", self.model, exc_info=True)
             raise
 
-    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
-        """写一条 episode：存文本 + 其 embedding。写入前做 dedup 检测，跳过高度相似的重复内容。"""
-        emb = await self._embed(content)
+    async def add_episode(
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
+    ) -> None:
+        """写一条 episode：存 `content` 全文 + 对 `embed_text`（缺省=content）的 embedding。
+
+        议会 A（召回桥根治）：写入端把**用于检索的语义 gist**（embed_text，如「你说：…/我说：…」）
+        与**存储/展示全文**（content，含 情绪/precision/streams/value 等结构化元数据）分离——
+        否则元数据数字会稀释向量，使「下午两点」这类细节按句意检索时相似度被拉低（encoding
+        specificity，Tulving 1973）。`embed_text=None` 时退化为对全文嵌入（旧行为，零回归）。
+        """
+        emb = await self._embed(embed_text or content)
         # B-5 dedup：不走 search 的 sim_threshold 剪枝，直接比对所有已存 episode 原始向量
         try:
             rows = self.conn.execute(

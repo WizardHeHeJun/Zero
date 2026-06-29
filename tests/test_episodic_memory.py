@@ -43,8 +43,24 @@ class _RecordingStore:
     def __init__(self) -> None:
         self.calls: list[dict] = []  # [{"content": ..., "scope": ..., "key": ...}]
 
-    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
-        self.calls.append({"scope": scope, "key": key, "content": content, "valid_at": valid_at})
+    async def add_episode(
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "scope": scope,
+                "key": key,
+                "content": content,
+                "valid_at": valid_at,
+                "embed_text": embed_text,
+            }
+        )
 
     async def search(
         self,
@@ -66,7 +82,15 @@ class _RecordingRecallStore:
         self.episodes = episodes or []
         self.queries: list[str] = []
 
-    async def add_episode(self, *, scope: str, key: str, content: str, valid_at: datetime) -> None:
+    async def add_episode(
+        self,
+        *,
+        scope: str,
+        key: str,
+        content: str,
+        valid_at: datetime,
+        embed_text: str | None = None,
+    ) -> None:
         self.episodes.append(content)
 
     async def search(
@@ -339,12 +363,14 @@ async def test_salience_gate_rpe_none_uses_half(
     assert len(store.calls) >= 1, "rpe=None 时应用 0.5 保守估计，precision=0.6 时应触发"
 
 
-async def test_structured_write_not_gated_by_salience(
+async def test_low_salience_writes_structured_but_skips_episode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """低 salience 时结构化 write（session/disposition）仍执行（不门控）。
+    """低 salience：结构化 write（session 事件 + user disposition）仍写；富 episode 被门控跳过。
 
-    验证方式：用 fake InMemoryGraphStore 记录 add_fact 调用次数。
+    disposition 不门控——确定性后端按 (scope,key) 时序失效（memory-rules#4），活跃集恒为最新一条、
+    不胀；且写在 supervisor 任务完成节点（合 memory-rules#1）。长对话增长在 episode 侧（salience 门
+    + dedup + 容量上限收口），不误伤 disposition→召回闭环。
     """
     monkeypatch.setenv("ZERO_EPISODE_SALIENCE_MIN", "0.15")
     from src.storage.graph_store import InMemoryGraphStore
@@ -362,7 +388,7 @@ async def test_structured_write_not_gated_by_salience(
     ep_store = _RecordingStore()
     mem = MemoryClient(store=base_store, semantic=ep_store)
 
-    # salience = 0.1 * 0.1 = 0.01 < 0.15（episode 应被跳过）
+    # salience = 0.1 * 0.1 = 0.01 < 0.15（episode 应被跳过；结构化 write 不门控）
     state = AffectState(
         stimulus=Stimulus(name="low", goal_congruence=0.0, intensity=0.3),
         affect_sample=(0.0, 0.0),
@@ -373,10 +399,32 @@ async def test_structured_write_not_gated_by_salience(
     )
     await SupervisorAgent(mem)(state)
 
-    # 结构化写入（event + disposition）仍发生
-    assert len(facts) >= 2, f"结构化 write 应调用 >=2 次（session+user），实际 {len(facts)} 次"
-    # episode 被门控跳过
+    assert any(f.startswith("event=") for f in facts), "session 事件应写"
+    assert any(f.startswith("disposition") for f in facts), "disposition 不门控、应写"
     assert len(ep_store.calls) == 0, "低 salience 不应调用 add_episode"
+
+
+async def test_commitment_text_writes_episode_despite_low_salience(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """议会 A 语义写入通道：含时间/约定的低唤醒内容（「下午两点」）即便低 salience 也写 episode。"""
+    monkeypatch.setenv("ZERO_EPISODE_SALIENCE_MIN", "0.15")
+    store = _RecordingStore()
+    mem = MemoryClient(semantic=store)
+    # salience = 0.1 * 0.1 = 0.01 < 0.15，但 text 含承诺/日程标记 → 强制写
+    state = AffectState(
+        stimulus=Stimulus(name="约定", text="下午两点门口等你", goal_congruence=0.1, intensity=0.3),
+        affect_sample=(0.1, 0.1),
+        affect_precision=0.1,
+        rpe=0.1,
+        value_estimate=0.0,
+        user_id="u1",
+    )
+    await SupervisorAgent(mem)(state)
+    assert len(store.calls) == 1, "承诺/日程内容应绕过 salience 门写入 episode"
+    # gist 走 embed_text（与含元数据的存储全文分离）
+    assert store.calls[0]["embed_text"] == "你说：下午两点门口等你"
+    assert "precision=" in store.calls[0]["content"], "存储全文仍含元数据"
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +734,20 @@ async def test_memory_recall_disabled_noop() -> None:
 # ---------------------------------------------------------------------------
 # Stimulus.text 构造（Stimulus 补 text 字段：验证 text 字段存在且可设 None）
 # ---------------------------------------------------------------------------
+
+
+def test_is_commitment_detects_schedule_and_appointment() -> None:
+    """议会 A：承诺/日程语义检测——时间点/钟点/约定/星期日期命中，闲聊不命中。"""
+    from src.orchestration.supervisor import _is_commitment
+
+    assert _is_commitment("下午两点门口等你")  # 下午 + 两点
+    assert _is_commitment("我们约好明天去")  # 约好 + 明天
+    assert _is_commitment("几点出发？")  # 几点
+    assert _is_commitment("3点见")  # 数字+点
+    assert _is_commitment("星期三那家店")  # 星期X
+    assert not _is_commitment("嗯嗯")
+    assert not _is_commitment("")
+    assert not _is_commitment("今天心情不错")  # 无明确时间/约定标记
 
 
 def test_stimulus_text_field_defaults_to_none() -> None:
