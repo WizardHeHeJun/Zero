@@ -78,25 +78,18 @@ def _sqlite_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | Non
 
 
 def _postgres_saver(serde: JsonPlusSerializer | None) -> BaseCheckpointSaver | None:
-    """Postgres 运行态后端（容器化部署目标）；缺 langgraph-checkpoint-postgres/psycopg 时返回 None。
+    """Postgres 运行态后端（容器化部署目标）——当前**构造期 fail-fast**，未接线。
 
-    DSN 取 env `ZERO_PG_DSN`。新版 langgraph 的 `PostgresSaver.from_conn_string` 是 context
-    manager（退出即关连接），直接 `.setup()` 会拿到已关闭连接——故持有显式长连接，按
-    langgraph 文档要求的参数（`autocommit=True, prepare_threshold=0, row_factory=dict_row`）构造，
-    与 sqlite 路径同款。首次需 `.setup()` 建表；本机无驱动、不参与单测，于容器内验证。
+    本系统全程 `ainvoke`（异步），需 `AsyncPostgresSaver`；但它要求 **awaited 的连接** + **显式
+    `await setup()`**（非懒建表，与 AsyncSqliteSaver 不同），而 `build_checkpointer` 是同步函数、
+    且在运行中的事件循环内（无法 `await`）——无法干净地同步构造一个可用的异步 PG saver。
+    故此处**清晰报错 fail-fast**，而非旧的同步 `PostgresSaver`（它会在首轮 `ainvoke` 抛 cryptic
+    `NotImplementedError`，且若静默回退内存会让"以为有 PG 持久"的部署悄悄丢运行态——更危险）。
+    部署 PG 时在**异步入口**接线：`async with AsyncPostgresSaver.from_conn_string(dsn) as saver:
+    await saver.setup(); ...`（或把 build_checkpointer/会话构造异步化）。本地请用 sqlite / memory。
     """
-    try:
-        from langgraph.checkpoint.postgres import PostgresSaver
-        from psycopg import Connection
-        from psycopg.rows import dict_row
-    except ImportError:
-        logger.warning(
-            "ZERO_CHECKPOINT_BACKEND=postgres 但缺 langgraph-checkpoint-postgres/psycopg，"
-            "回退 InMemory"
-        )
-        return None
-    dsn = os.getenv("ZERO_PG_DSN", "postgresql://postgres:postgres@localhost:5432/zero")
-    conn = Connection.connect(dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row)
-    saver = PostgresSaver(conn, serde=serde) if serde is not None else PostgresSaver(conn)
-    saver.setup()
-    return saver
+    raise NotImplementedError(
+        "ZERO_CHECKPOINT_BACKEND=postgres 暂未接线：异步图需 AsyncPostgresSaver（须在异步入口"
+        " await 构造 + await setup()），同步 PostgresSaver 会在 ainvoke 崩、静默回退内存又会悄悄"
+        "丢运行态。本地请改用 ZERO_CHECKPOINT_BACKEND=sqlite 或 memory；部署 PG 时在异步入口接线。"
+    )
