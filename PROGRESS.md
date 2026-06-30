@@ -301,6 +301,7 @@
 - **根因二轮议决（心理+CS 两席，落库同纪要「二轮议决」段）**：**P3** appraise 分级标定校准（`ZERO_APPRAISE_CALIBRATE` 门控、默认关零回归，抵消 LLM 正向偏置使敌意→-0.7~-0.9）**两席 PASS → 已实现**；**P1(a)** `standard_compliance=v` 心理席判**失真·否决**（合并 OCC 正交两维=删 reproach 通道）；**P1(b)** appraise 增独立 standard 维度=忠实主路径（议会背书），改 appraise 协议 + 查共线性，**排中期**；**P4** i.i.d.→AR(1)/OU 读出（设计需数学+神经）待后续轮。
 - **治理**：两轮议会全程只读、未介入数据产生，仅给设计参数范围 + 根因 + 标定准则（合规）；工程未替引擎拍默认值，P3 标定锚是「准则」非「替某句话定数值」（守 [analysis-results-first 红线](.claude/rules/)）。
 - **验证**：`pytest` **367 passed / 5 skipped**（+9 新测：sigma_cap 零回归逐字相等 + 低 cap 降抖 / NOISE_STD 默认与覆盖 / rng_seed 复现 / sample_sigma_cap 穿 flags / persona 模板可读 / P3 标定门控默认关与开启注入）；ruff/format/mypy 干净。
+- **治理**：`code-reviewer` 独立审 **PASS / 0 BLOCK**；3 WARN 记为 follow-up（W2 noise_std 在 `step()` 读 env——随 chat_driver 既有 in-step 约定，与 `ZERO_EMOTION_BASELINE_ATTITUDE_W`/`HISTORY_*` 一致，`sigma_cap`/`rng_seed` 走工厂是因须达 session/graph；W1 affect_core 每轮重建 rng、W3 appraise 读 env 均既有模式），不在本轮扩面。逐项核：层封装 / affect_math 纯函数 / 节点契约 / 热路径无 LLM 污染 / 记忆未触动 / 零回归 全 PASS。
 
 ## 成果与验证
 
