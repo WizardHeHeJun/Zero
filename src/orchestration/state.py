@@ -99,4 +99,7 @@ class AffectState(BaseModel):
     appraisal_conditioning_enabled: bool = False  # 把 OCC 评价结构并入语言生成（CPM/EMA）
     language_max_iters: int = 3  # 回路终止上限（防死循环）
     rng_seed: int | None = None  # 采样可控（测试用）
+    # 后验采样 sigma 上限（情绪「防抖」旋钮）：None → 用 affect_math.MAX_SAMPLE_SIGMA（零回归）。
+    # 调小使 e* 样本更贴 post_mu、降低逐轮抖动；由 chat_driver 读 ZERO_SAMPLE_SIGMA_MAX 注入。
+    sample_sigma_cap: float | None = None
     task_complete: bool = False

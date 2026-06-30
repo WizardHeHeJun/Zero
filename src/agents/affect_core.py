@@ -80,7 +80,7 @@ class AffectCoreAgent:
         # rng_seed 为空时每次调用都重新随机（有意：生产情绪表达的随机性），
         # 非漏传 seed；测试需可复现时显式传 rng_seed。
         rng = random.Random(state.rng_seed) if state.rng_seed is not None else None
-        e_star = sample_affect(post_mu, post_sigma, rng=rng)
+        e_star = sample_affect(post_mu, post_sigma, rng=rng, sigma_cap=state.sample_sigma_cap)
         entry: dict = {
             "node": "affect_core",
             "post_mu": post_mu,

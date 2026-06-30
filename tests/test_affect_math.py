@@ -65,6 +65,30 @@ def test_sample_affect_seeded_is_reproducible_and_bounded() -> None:
     assert -1.0 <= a[0] <= 1.0 and -1.0 <= a[1] <= 1.0
 
 
+def test_sample_affect_sigma_cap_none_equals_constant() -> None:
+    """sigma_cap=None 与显式传 MAX_SAMPLE_SIGMA 逐字相等（防抖旋钮默认零回归）。
+
+    post_sigma 大于常量上限（cap 实际生效）时才能区分两条路径，故取 0.9 > 0.5。
+    """
+    post_mu = (0.0, 0.0)
+    post_sigma = (0.9, 0.9)  # > MAX_SAMPLE_SIGMA，使钳真正生效
+    default = sample_affect(post_mu, post_sigma, rng=random.Random(7))
+    explicit = sample_affect(post_mu, post_sigma, rng=random.Random(7), sigma_cap=MAX_SAMPLE_SIGMA)
+    assert default == explicit
+
+
+def test_sample_affect_lower_sigma_cap_reduces_spread() -> None:
+    """调低 sigma_cap → 样本更贴 post_mu，样本标准差显著下降（防抖确有效）。"""
+    from statistics import pstdev
+
+    post_mu = (0.0, 0.0)
+    post_sigma = (0.5, 0.5)
+    rng_lo, rng_hi = random.Random(0), random.Random(0)
+    lo = [sample_affect(post_mu, post_sigma, rng=rng_lo, sigma_cap=0.05)[0] for _ in range(2000)]
+    hi = [sample_affect(post_mu, post_sigma, rng=rng_hi, sigma_cap=0.5)[0] for _ in range(2000)]
+    assert pstdev(lo) < pstdev(hi)
+
+
 def test_reappraise_lifts_negative_and_calms_more_than_suppression() -> None:
     neg = (-0.8, 0.7)
     rv, ra = reappraise(neg)

@@ -98,6 +98,20 @@ def test_load_persona_malformed_pair_raises(monkeypatch: pytest.MonkeyPatch, tmp
         load_persona()
 
 
+def test_repo_persona_example_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """根目录 persona.example.json 模板：经 ZERO_PERSONA_FILE 可读出、card 非空、表「不编造」。"""
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parent.parent / "persona.example.json"
+    assert example.exists()  # committed 模板（data/ 被 gitignore，故置于根目录）
+    monkeypatch.delenv("ZERO_PERSONA", raising=False)
+    monkeypatch.setenv("ZERO_PERSONA_FILE", str(example))
+    p = load_persona()
+    assert p.card  # L1 卡非空
+    assert p.name  # 有名字
+    assert "初次" in p.card or "不编造" in p.card  # 锁定「诚实陌生人」意图
+
+
 # ---------------------------------------------------------------------------
 # L1：人设卡注入对话 system prompt
 # ---------------------------------------------------------------------------
