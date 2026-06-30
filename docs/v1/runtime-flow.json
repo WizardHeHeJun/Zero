@@ -1,0 +1,71 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "type": "frame",
+      "id": "root",
+      "x": 20,
+      "y": 20,
+      "layout": "dagre",
+      "width": "fit-content",
+      "height": "fit-content",
+      "padding": 56,
+      "fillColor": "#FFFFFF",
+      "borderColor": "#DEE0E3",
+      "borderWidth": 1,
+      "borderRadius": 16,
+      "layoutOptions": {
+        "rankdir": "LR",
+        "nodesep": 46,
+        "ranksep": 110,
+        "edges": [
+          ["user", "appraise", "你的话"],
+          ["appraise", "engine", "刺激 (v,a)"],
+          ["engine", "timescales", "瞬时 e*"],
+          ["timescales", "converse", "当前情绪"],
+          ["converse", "reply", "回应"],
+          ["engine", "memory", "写情景(显著性门控)"],
+          ["memory", "converse", "召回背景 retrieved"],
+          ["reply", "user", "下一轮 · mood/态度/记忆 跨轮持久"]
+        ]
+      },
+      "children": [
+        { "type": "ellipse", "id": "user", "width": 120, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "👤 你说一句话", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        {
+          "type": "frame", "id": "appraise", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 230, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 3, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🔍 评价桥 · LLM 输入接点", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "ConversationModel.appraise_text\n把你的话读成情绪坐标 (v,a)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "engine", "layout": "vertical", "gap": 5, "padding": 16, "alignItems": "center", "width": 250, "height": "fit-content",
+          "fillColor": "#FEE3E2", "borderColor": "#D25D5A", "borderWidth": 3, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🧠 情感引擎 · 确定性(无 LLM)", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "perception → appraisal → value → affect_core\n并行流显著度门控融合 → 采样瞬时情绪 e*", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "timescales", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 210, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "⏱️ 两时间尺度", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "快变 emotion（几轮衰退）\n慢变 attitude（慢累积·持久化）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "converse", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 235, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 3, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🗣️ 自然对话 · LLM 输出接点", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "ConversationModel.converse(push, retrieved)\n情绪经用词倾向漏进措辞 + 召回背景", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "ellipse", "id": "reply", "width": 130, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "💬 带情绪的回应", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        { "type": "cylinder", "id": "memory", "width": 215, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "MemoryClient.write_episode / recall\n显著性写情景 · 选择性召回", "fontSize": 10, "color": "#646A73" } ] }
+      ]
+    }
+  ]
+}
