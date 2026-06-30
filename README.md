@@ -211,21 +211,88 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 ---
 
-## 可调参数（按需微调对话行为）
+## 配置（`.env`）
 
-默认开箱即用；想调「记多久 / 情绪多稳 / 召回多严」时，在 `.env` 设下列变量即可。完整清单见 [.env.example](.env.example)；各 knob 的**设计依据**见 [PROGRESS.md](PROGRESS.md) 与 [notes/](notes/) 议会纪要。
+所有运行配置都走 `.env`（复制 [.env.example](.env.example) 起步），代码不写死模型/后端默认。**不设任何变量即全内存占位、零依赖可跑**；`.env.example` 里每个变量都有一行速记，下面按用途分组给出完整说明。
+
+### 运行后端
+
+运行态 Checkpointer 与 长期记忆图谱**各自独立选后端**，可任意组合；默认都在内存，落盘 / 真后端按需开。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ZERO_CHECKPOINT_BACKEND` | `memory` | 运行态后端：`memory` / `sqlite` / `postgres` |
+| `ZERO_CHECKPOINT_DB` | `data/checkpoints.sqlite3` | sqlite 后端的库文件路径 |
+| `ZERO_PG_DSN` | — | postgres 后端 DSN |
+| `ZERO_MEMORY_BACKEND` | `memory` | 长期记忆图谱（确定性 `(scope,key)` 失效）：`memory` / `sqlite`（落盘）/ `neo4j`（需 `db` extra） |
+| `ZERO_GRAPH_DB` | `data/graph.sqlite3` | sqlite 图谱的库文件路径 |
+| `ZERO_NEO4J_URI` · `_USER` · `_PASSWORD` | `bolt://localhost:7687` · `neo4j` · `password` | neo4j 连接（`ZERO_MEMORY_BACKEND=neo4j` 或 Graphiti 用 neo4j 图库时生效） |
+
+### LLM 接入（OpenAI 兼容）
+
+语言层（评价桥 + 自然对话）与语义记忆 embedding **共用一处** OpenAI 兼容接口，最小配置见上方「快速开始」。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ZERO_OPENAI_API_KEY` | — | 必填 |
+| `ZERO_OPENAI_MODEL` | `qwen-flash` | **必填**，须是 key 有权限的真实模型 id（`limited` 等权限标签不是模型名、会 400；可用 `/v1/models` 列出，如 `qwen-flash` / `deepseek-v4-flash` / `gpt-5.5`） |
+| `ZERO_OPENAI_BASE_URL` | `https://api.openai.com/v1` | 可指向 OpenAI / 本地 vLLM / Ollama / 第三方网关，留空用 SDK 默认 |
+
+### 语义记忆侧信道（默认关）
+
+确定性图谱之外，可叠一条**语义召回**侧信道（向量相似召回）；默认关，**侧信道失败绝不拖垮主对话**。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ZERO_SEMANTIC_BACKEND` | 关 | `sqlite_vec`（轻量、推荐）/ `graphiti`（深度集成，需 `graphiti` extra） |
+| `ZERO_GRAPHITI_DB` | `neo4j` | Graphiti 图库，复用上面 `NEO4J_*` |
+| `ZERO_GRAPHITI_MODEL` | `deepseek-v4-pro` | Graphiti 抽取实体 / 关系入图谱用的对话/推理 LLM |
+| `ZERO_GRAPHITI_EMBED_MODEL` | `gemini-embedding-001` | 向量嵌入模型（`sqlite_vec` / `graphiti` 都用它做相似召回，须是 embedding 模型） |
+
+> **文本情感回归**（输入侧，默认走词典 / LLM 评价桥）：置 `ZERO_TEXT_AFFECT_BACKEND=st` 改用训练好的回归头，须同时给 `ZERO_TEXT_AFFECT_MODEL_PATH`（如 `artifacts/text_affect_regressor_st.pt`）。
+
+### 指定人格（`--chat`）
+
+给数字人指定一份人格（能力详见上文「指定人格」一节）。两个入口，**默认都不设 = 中性无偏人格、逐字现有行为**，文件优先：
+
+- `ZERO_PERSONA` — 仅 **L1 人设卡**的快捷入口：身份 / 背景 / 口吻 / 与用户关系，单行文本，注入对话 system prompt。
+- `ZERO_PERSONA_FILE` — 指向**完整人格 JSON**（L1 人设卡 + L2 气质底色 + L3 预置关系），字段全可选：
+
+```jsonc
+{
+  "name": "小津",
+  "card": "你叫小津，是用户多年的老友……",   // L1 人设卡
+  "setpoint": [0.1, -0.05],                  // L2 气质基线 (v,a)：略偏暖、偏平静
+  "reactivity": 0.6,                         // L2 对刺激的即时反应增益（↑≈神经质）
+  "recovery": 0.4,                           // L2 情绪恢复残留比例（↑=情绪退得慢）
+  "initial_attitude": [0.3, 0.1],            // L3 首次接触的初始态度（已经喜欢这个人）
+  "seed_memories": ["我们去年夏天一起去过青岛看海", "你不吃香菜"]  // L3 预灌的共同记忆
+}
+```
+
+> L2 的「大五人格 → PAD 具体数值映射 / 预设人格库」属科学决策，须走 `/science-council` 设计门；本接口只提供旋钮 + 中性默认，不替算法拍板具体性格参数。
+
+### 对话行为微调旋钮
+
+默认开箱即用；想调「记多久 / 情绪多稳 / 召回多严」时设下列变量（留空即用默认）。仅 `HISTORY_PRIMACY_K` / `HISTORY_WINDOW` / `EMOTION_BASELINE_ATTITUDE_W` 的默认会改变 `--chat` 行为，其余默认零回归 / 关。各 knob 的**设计依据**见 [PROGRESS.md](PROGRESS.md) 阶段 25-26 与 [notes/](notes/) 议会纪要。
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `ZERO_HISTORY_WINDOW` | 40 | 喂给 LLM 的工作记忆窗总条数（越大记越久、也越费 token） |
 | `ZERO_HISTORY_PRIMACY_K` | 5 | 窗内保留的「最初几条」（首因），其余留给最近几轮（近因） |
-| `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」的占比；`<1` 给情绪一份回到平静的拉力（防越聊越上头） |
-| `ZERO_RECALL_SIM_MIN` | 0.65 | 召回相似度下限（越高越只在强相关时才想起旧事） |
-| `ZERO_RECALL_INJECT_MIN` | 0.5 | 旧记忆「升入当前注意力」与近期对话同台竞争的重要性门槛 |
-| `ZERO_EPISODE_SALIENCE_MIN` | 0.15 | 情景记忆写入的情绪显著度门（越低记得越多；含时间/约定的内容总会被记下） |
+| `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」的占比；`<1` 给情绪回到平静的拉力（防越聊越上头；`1`=旧纯 attitude 基线） |
+| `ZERO_RECALL_SIM_MIN` | 0.65 | 召回余弦相似度下限（越高越只在强相关时才想起旧事） |
+| `ZERO_RECALL_INJECT_MIN` | 0.5 | 旧记忆「升入当前注意力预算」与近期对话同台竞争的重要性门 ∈[0,1] |
+| `ZERO_RECALL_DECAY_D` | 0.5 | 召回三维重排：recency 幂律衰减指数 d |
+| `ZERO_RECALL_ALPHA` · `_BETA` · `_GAMMA` | 0.33 · 0.34 · 0.33 | 三维重排权重：recency · sim · importance |
+| `ZERO_RECALL_IMPORTANCE_SCALE` | 30 | importance 归一 Hill 常数 C：`p/(p+C)`，与 sim/recency 同量纲 |
+| `ZERO_RECALL_AROUSAL_MOD` | 0 | 唤醒调制召回 importance（`1` 开启） |
 | `ZERO_EPISODE_MAX_PER_KEY` | 0（`python main.py` 默认 300） | 单人情景记忆条数上限，满了删最旧（0=不限） |
+| `ZERO_EPISODE_SALIENCE_MIN` | 0.15 | 情景写入的显著度门 `salience=precision×\|rpe\|`（越低记得越多；含时间/约定的内容旁路强写） |
+| `ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD` | 0 | 低唤醒高语义补偿 `salience+=0.3·\|value\|`（`1` 开启） |
+| `ZERO_EPISODE_DEDUP_MAX` | 0.92 | 情景写入去重余弦阈（高于此视为近义跳过） |
 
-> 留空即用上表默认；想还原更早的行为逐项设回旧值即可（如窗口设回 `20`、`ZERO_EMOTION_BASELINE_ATTITUDE_W=1`）。运行后端（SQLite/Postgres/Neo4j）与 LLM/embedding 的配置见上节「快速开始」与 `.env.example`。
+> 想还原更早的行为逐项设回旧值即可（如窗口设回 `20`、`ZERO_EMOTION_BASELINE_ATTITUDE_W=1`）。
 
 ---
 
