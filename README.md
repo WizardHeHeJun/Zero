@@ -157,7 +157,7 @@ Zero/
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py
 ├── tools/                   # 运维脚本（reset_db.py 清库）
-├── docs/                    # 对外框架图：v2/ 当前(4 张·Mermaid/飞书渲染) + v1/ 旧版存档
+├── docs/                    # 对外框架图（详见 docs/README.md）
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
 ├── Dockerfile · docker-compose.yml · .env.example   # 容器化部署
