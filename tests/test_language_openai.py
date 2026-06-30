@@ -73,3 +73,41 @@ async def test_clamps_out_of_range_vad() -> None:
     model = OpenAILanguageModel(client=client, model="x")
     draft = await model.generate(affect=(0.0, 0.0), context="", retrieved="", feedback=None)
     assert draft.affect == (1.0, -1.0)
+
+
+# ---------- P3：appraise 分级标定校准（ZERO_APPRAISE_CALIBRATE 门控，默认关零回归） ----------
+
+
+class _CapturingClient:
+    """记录每次 create 的 kwargs（看 appraise 的 system prompt），返回固定 VAD。"""
+
+    def __init__(self, vad: str = '{"valence": -0.3, "arousal": 0.2}') -> None:
+        self.calls: list[dict] = []
+
+        class _C:
+            async def create(_self, **kwargs: object) -> _Resp:  # noqa: N805
+                self.calls.append(dict(kwargs))
+                return _Resp(vad)
+
+        self.chat = type("_Chat", (), {"completions": _C()})()
+
+
+async def test_appraise_calibration_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ZERO_APPRAISE_CALIBRATE 未设 → appraise prompt 与 _APPRAISE_SYS 逐字相等（零回归）。"""
+    from src.agents.language_openai import _APPRAISE_SYS
+
+    monkeypatch.delenv("ZERO_APPRAISE_CALIBRATE", raising=False)
+    client = _CapturingClient()
+    await OpenAILanguageModel(client=client, model="x").appraise_text("你真没用")
+    assert client.calls[0]["messages"][0]["content"] == _APPRAISE_SYS
+
+
+async def test_appraise_calibration_on_injects_graded_anchors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ZERO_APPRAISE_CALIBRATE=1 → system prompt 附分级校准锚（含极端攻击 -0.95 锚）。"""
+    monkeypatch.setenv("ZERO_APPRAISE_CALIBRATE", "1")
+    client = _CapturingClient()
+    await OpenAILanguageModel(client=client, model="x").appraise_text("你真没用")
+    sys = client.calls[0]["messages"][0]["content"]
+    assert "参照标定示例" in sys and "valence≈-0.95" in sys

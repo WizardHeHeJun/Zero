@@ -298,9 +298,9 @@
 - **防抖旋钮（代码默认=旧常量，逐字零回归）**：`ZERO_EMOTION_NOISE_STD`（每轮情绪噪声 std，默认 0.05）→ `chat_driver`；`ZERO_SAMPLE_SIGMA_MAX`（后验采样 sigma 上限，默认 0.5）→ `sample_affect` 加 `sigma_cap` 参，经 `AffectState.sample_sigma_cap` 穿透（照搬 `rng_seed` 路径、`affect_math` 保持纯函数）。
 - **P5 可复现**：`ZERO_CHAT_RNG_SEED` 单种子贯穿 `--chat` 两处随机源（引擎后验采样 `session.rng_seed` + chat 层情绪噪声 `ChatDriver.rng_seed`）；未设=零回归、走旧随机；eval 设它即逐轮逐字复现（修议会点名"`random.gauss` 不受 rng_seed 控制"的缺陷）。
 - **科学家议会四席评议（数学/心理/神经/CS，只读·强制引文）**：判定 **NEEDS-CHANGES**，落库 [notes/2026-06-30-emotion-debounce-knobs-council-decision.md](notes/2026-06-30-emotion-debounce-knobs-council-decision.md)。共识——降 cap/噪声只是**临时安全网**；真因在 **① 先验量级稀释**（`chat_driver` 构造 Stimulus 时 `standard_compliance=0`，OCC 0.3 权重结构性空置 → 敌意句 post_mu valence 仅 ≈-0.35、cap 对典型输入根本不生效）+ **② 逐轮 i.i.d. 采样违反情绪时序自相关**（应 AR(1)/OU；翻号=情境-情绪解耦=病态，非健康变异）。推荐值（`SIGMA_MAX` 0.10-0.12 / `NOISE_STD` 0.01-0.02、eval 设 0）按 CS 席治理原则**走 `.env.example` 文档、不改代码默认**。
-- **根因待办（gated，未在本轮改）**：**P1** 接 `standard_compliance`（接现有 appraisal 信号=工程可做；重定义 OCC standard 语义=需回议会）· **P3** `lm.appraise_text` 标定校准（敌意应给 -0.7~-0.9，需心理席）· **P4** i.i.d.→AR(1)/OU 或多采样均值（设计需数学+神经）。
-- **治理**：议会全程只读、未介入情绪/记忆/语言数据产生，仅给设计参数范围 + 根因（合规）；工程只加旋钮、**未替引擎拍任何新默认值**（守 [analysis-results-first 红线](.claude/rules/)）。
-- **验证**：`pytest` **365 passed / 5 skipped**（+7 新测：sigma_cap 零回归逐字相等 + 低 cap 降抖 / NOISE_STD 默认与覆盖 / rng_seed 复现 / sample_sigma_cap 穿 flags / persona 模板可读）；ruff/format/mypy 干净。
+- **根因二轮议决（心理+CS 两席，落库同纪要「二轮议决」段）**：**P3** appraise 分级标定校准（`ZERO_APPRAISE_CALIBRATE` 门控、默认关零回归，抵消 LLM 正向偏置使敌意→-0.7~-0.9）**两席 PASS → 已实现**；**P1(a)** `standard_compliance=v` 心理席判**失真·否决**（合并 OCC 正交两维=删 reproach 通道）；**P1(b)** appraise 增独立 standard 维度=忠实主路径（议会背书），改 appraise 协议 + 查共线性，**排中期**；**P4** i.i.d.→AR(1)/OU 读出（设计需数学+神经）待后续轮。
+- **治理**：两轮议会全程只读、未介入数据产生，仅给设计参数范围 + 根因 + 标定准则（合规）；工程未替引擎拍默认值，P3 标定锚是「准则」非「替某句话定数值」（守 [analysis-results-first 红线](.claude/rules/)）。
+- **验证**：`pytest` **367 passed / 5 skipped**（+9 新测：sigma_cap 零回归逐字相等 + 低 cap 降抖 / NOISE_STD 默认与覆盖 / rng_seed 复现 / sample_sigma_cap 穿 flags / persona 模板可读 / P3 标定门控默认关与开启注入）；ruff/format/mypy 干净。
 
 ## 成果与验证
 

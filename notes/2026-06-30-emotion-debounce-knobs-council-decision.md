@@ -86,3 +86,42 @@
 - Hoyer, P. & Hyvärinen, A. (2002). Interpreting neural response variability as Monte Carlo sampling of the posterior. *NIPS 2002*. [NeurIPS](https://proceedings.neurips.cc/paper/2002/hash/a486cd07e4ac3d270571622f4f316ec5-Abstract.html) — 神经变异性作后验采样的奠基。
 - Bayes estimator. *Wikipedia*. [link](https://en.wikipedia.org/wiki/Bayes_estimator) — 二次损失→后验均值（MMSE）；0-1 损失→MAP；单样本=次优读出。
 - Kalman, R. E. (1960). A new approach to linear filtering and prediction problems. *J. Basic Eng.* 82(1):35-45. [DOI:10.1115/1.3662552](https://doi.org/10.1115/1.3662552) — 最优状态估计基准（CS 席：prior mean 偏弱时压方差不能拉离分界）。
+
+---
+
+## 二轮议决（先验量级修复 P1/P3，心理 + CS 两席，2026-06-30）
+
+把一轮路由回议会的「先验 valence 太弱」议决成**可实现决定**。两席在 P1(a) 上正面分歧、由心理席（OCC 语义权威）裁定。
+
+### 各席判定
+
+| 提案 | 心理席（OCC 语义） | CS 席（红线/可行性） | **议会决定** |
+| --- | --- | --- | --- |
+| **P1(a)** `standard_compliance = goal_congruence` | **失真·不得实施**——合并 OCC 正交两维=删除 reproach 通道 | 条件 PASS，但语义裁决权让给心理席 | ❌ **否决**（心理席失真裁定优先） |
+| **P1(b)** appraise 增独立 standard 维度 | **忠实·议会背书**（主路径），须 eval 查与 valence 共线性 | NEEDS-CHANGES：协议 breaking，优先新增 `appraise_full()` 不改现签名 | ✅ 忠实主路径，**排中期**（P3 之后） |
+| **P1(c)** 确定性信号派生 | 简化·可作轻量回退 | — | 备选回退 |
+| **P3** `_APPRAISE_SYS` 分级标定校准 | **PASS**，给分级校准锚（须分级、防误伤"语气直但中性"） | **PASS**，加 `ZERO_APPRAISE_CALIBRATE` env 门控、独立 PR | ✅ **可做**，先行 |
+| **P5** rng_seed 接管 noise | — | PASS（已完成） | ✅ 已落地（commit `ec15f26`） |
+
+### 关键裁决与依据
+
+- **P1(a) 被否**：OCC（[OCC 1988](https://doi.org/10.1017/CBO9780511571299)）中 anger = **distress（goals 维）+ reproach（standards 维）** 复合，两维正交。令 standard=goal 即删 reproach 通道，丢 Lazarus「a demeaning offense against me and mine」的 standards 特质（[Core relational theme](https://en.wikipedia.org/wiki/Core_relational_theme)）。**用户言语攻击时 standard_compliance 应独立取强负**（粗鲁 -0.5~-0.7，明确侮辱/谩骂 -0.8~-1.0），与 goal_congruence 各自贡献。
+- **P3 先行**：只改 `_APPRAISE_SYS` 提示词常量（单文件、低风险）；P1(b) 依赖 P3 标定先定。LLM 有系统性正向偏置（positivity bias，[arXiv:2507.21083](https://arxiv.org/abs/2507.21083)：GPT-4 对负向输入给负向响应概率仅中性输入的 1/3），正是 `appraise_text` 对敌意只给 -0.2~-0.3 的成因。
+- **P3 必须分级**（心理席给的校准锚，按语义距离插值、非硬规则）：中性「你好」≈0 · 轻微批评「这回答不太对」≈-0.2 · 明确不满「总让我失望」≈-0.4 · 明确敌意「你真没用」≈-0.75 · 极端谩骂≈-0.95。一刀切「负面→-0.7」会误伤"语气直但中性"输入。
+- **P3 红线边界**（CS）：改 `_APPRAISE_SYS` = 「校准仪器量程」非「替仪器读数」→ 属「议会定准则、工程师建机制」合规分工，**不违**「议会不下场生成」。须加 `ZERO_APPRAISE_CALIBRATE` env 门控保零回归（影响 chat + 研究 `generate` 的 VAD 反推两路）。
+
+### 执行顺序（议会定）
+
+1. **P3**（env 门控分级校准）——工程师先做，两席 PASS。
+2. **P1(b)**（独立 standard 维度）——P3 标定稳定后做；新增 `appraise_full()`、配共线性 eval；忠实主路径。
+3. **P1(a)** 永久否决；**P1(c)** 仅作 LLM 不可用时的轻量回退。
+
+### 红线自查
+两席全程只读、未介入数据产生；仅给构念忠实裁定 + 标定准则 + 归属/门控建议。P3 的标定锚是「准则」非「替某句话定数值」，合规。
+
+### 二轮新增引文（现场核验）
+- Lazarus, R. S. (1991). *Emotion and Adaptation*. OUP. — anger 核心关系主题「a demeaning offense against me and mine」。[Core relational theme (Wikipedia)](https://en.wikipedia.org/wiki/Core_relational_theme) · [Appraisal theory (Wikipedia)](https://en.wikipedia.org/wiki/Appraisal_theory)
+- Smith, C. A. & Lazarus, R. S. (1993). Appraisal components, core relational themes, and the emotions. *Cognition & Emotion* 7(3-4):233-269. [ResearchGate](https://www.researchgate.net/publication/247497157_Appraisal_Components_Core_Relational_Themes_and_the_Emotions) — anger=goal incongruence 高 + other-blame 高。
+- Steunebrink, B. et al. (2009). The OCC model revisited. [PDF](https://people.idsia.ch/~steunebrink/Publications/KI09_OCC_revisited.pdf) — OCC 形式化，确认 goals/standards 维正交。
+- Khorshidifar, F. et al. (2025). ChatGPT Reads Your Tone and Responds Accordingly — Until It Does Not. [arXiv:2507.21083](https://arxiv.org/abs/2507.21083) — LLM 正向偏置：负向输入响应被压向中性，解释 appraise 标定太软。
+- Anger intensity continuum. [Anger (Wikipedia)](https://en.wikipedia.org/wiki/Anger) — annoyance→rage 连续体，支持分级标定。
