@@ -290,6 +290,18 @@
 - **装配**：`load_persona()` 读 `ZERO_PERSONA_FILE`（JSON 全字段、显式给路径却格式错则 fail-fast）/ `ZERO_PERSONA`（仅人设卡快捷入口）；`build_chat_driver` 显式构造共享 `MemoryClient` 注入 `ConversationSession`，使种子落在召回会查的同一 user/key 下。`main.py` 入口零改。
 - **验证**：`pytest` **358 passed / 5 skipped**（+11 新测：加载 4 / L1 注入 + 空卡逐字零回归 / L2 setpoint 抬高情绪基线 + 默认零回归 / L3 首轮 USER 幂等播种 + 二轮不重播 + 非首次接触不播）；ruff/format/mypy 干净。code-reviewer 独立审查门（项目级规则）作为可选 follow-up（本轮未触发，未涉算法语义改动、L2 数值映射已留议会门）。
 
+### 阶段 28 — 人格卡模板 + 情绪「防抖」旋钮 + 采样失真议会评议（从一次真实对话的「翻号/编造关系」修起）
+
+真实 `--chat`（qwen-flash）现场两症状：①问"你谁啊"时无人格锚 → LLM 即兴编造一段恩怨戏（"昨晚把你从酒吧拖回来"）；②用户连续敌意时，逐轮情绪标签翻号（愤怒↔兴奋）、与对话内容解耦、且整体偏平淡。定位后分两臂处理：工程先落 opt-in 旋钮（零回归），算法语义交科学家议会议决。分支 `feat/affect-debounce-knobs-persona-card`（commit `ec15f26`，未合并）。
+
+- **人格卡模板（治"编造关系"）**：新增 `persona.example.json`（"诚实陌生人"——明确初次对话、无共同往事、被问身份/关系如实说、不编故事；脾气仍交给 `_CONVERSE_SYS`）。置于仓库根（`data/` 被 gitignore），`.env.example` 补 `cp → data/persona.json` 启用指引。纯配置、不碰 affect/language 逻辑。
+- **防抖旋钮（代码默认=旧常量，逐字零回归）**：`ZERO_EMOTION_NOISE_STD`（每轮情绪噪声 std，默认 0.05）→ `chat_driver`；`ZERO_SAMPLE_SIGMA_MAX`（后验采样 sigma 上限，默认 0.5）→ `sample_affect` 加 `sigma_cap` 参，经 `AffectState.sample_sigma_cap` 穿透（照搬 `rng_seed` 路径、`affect_math` 保持纯函数）。
+- **P5 可复现**：`ZERO_CHAT_RNG_SEED` 单种子贯穿 `--chat` 两处随机源（引擎后验采样 `session.rng_seed` + chat 层情绪噪声 `ChatDriver.rng_seed`）；未设=零回归、走旧随机；eval 设它即逐轮逐字复现（修议会点名"`random.gauss` 不受 rng_seed 控制"的缺陷）。
+- **科学家议会四席评议（数学/心理/神经/CS，只读·强制引文）**：判定 **NEEDS-CHANGES**，落库 [notes/2026-06-30-emotion-debounce-knobs-council-decision.md](notes/2026-06-30-emotion-debounce-knobs-council-decision.md)。共识——降 cap/噪声只是**临时安全网**；真因在 **① 先验量级稀释**（`chat_driver` 构造 Stimulus 时 `standard_compliance=0`，OCC 0.3 权重结构性空置 → 敌意句 post_mu valence 仅 ≈-0.35、cap 对典型输入根本不生效）+ **② 逐轮 i.i.d. 采样违反情绪时序自相关**（应 AR(1)/OU；翻号=情境-情绪解耦=病态，非健康变异）。推荐值（`SIGMA_MAX` 0.10-0.12 / `NOISE_STD` 0.01-0.02、eval 设 0）按 CS 席治理原则**走 `.env.example` 文档、不改代码默认**。
+- **根因待办（gated，未在本轮改）**：**P1** 接 `standard_compliance`（接现有 appraisal 信号=工程可做；重定义 OCC standard 语义=需回议会）· **P3** `lm.appraise_text` 标定校准（敌意应给 -0.7~-0.9，需心理席）· **P4** i.i.d.→AR(1)/OU 或多采样均值（设计需数学+神经）。
+- **治理**：议会全程只读、未介入情绪/记忆/语言数据产生，仅给设计参数范围 + 根因（合规）；工程只加旋钮、**未替引擎拍任何新默认值**（守 [analysis-results-first 红线](.claude/rules/)）。
+- **验证**：`pytest` **365 passed / 5 skipped**（+7 新测：sigma_cap 零回归逐字相等 + 低 cap 降抖 / NOISE_STD 默认与覆盖 / rng_seed 复现 / sample_sigma_cap 穿 flags / persona 模板可读）；ruff/format/mypy 干净。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
