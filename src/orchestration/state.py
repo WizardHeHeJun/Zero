@@ -102,4 +102,8 @@ class AffectState(BaseModel):
     # 后验采样 sigma 上限（情绪「防抖」旋钮）：None → 用 affect_math.MAX_SAMPLE_SIGMA（零回归）。
     # 调小使 e* 样本更贴 post_mu、降低逐轮抖动；由 chat_driver 读 ZERO_SAMPLE_SIGMA_MAX 注入。
     sample_sigma_cap: float | None = None
+    # 情绪读出模式（P4 议会议决，数学+神经一致）：'sample'=逐轮后验采样（默认·逐字旧行为）；
+    # 'map'=取后验均值 e*=post_mu（MMSE 最优点估计），消除单样本大方差致的逐轮翻号，时序连续性
+    # 交既有 emotion_decay_step 的 AR1≈0.4 承担（OU 离散化）。由 ZERO_AFFECT_READOUT 注入。
+    affect_readout: str = "sample"
     task_complete: bool = False

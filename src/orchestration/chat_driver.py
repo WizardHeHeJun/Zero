@@ -294,6 +294,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # chat 层情绪噪声（ChatDriver.rng_seed）。未设 → None → 两处走旧随机（零回归；eval 设此复现）。
     seed_env = os.getenv("ZERO_CHAT_RNG_SEED")
     rng_seed = int(seed_env) if seed_env else None
+    # 情绪读出模式（P4 议会 α）：'map'=后验均值 e*=post_mu（消逐轮翻号）；默认 'sample'=旧行为。
+    affect_readout = os.getenv("ZERO_AFFECT_READOUT", "sample")
     # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
     # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
     session = ConversationSession(
@@ -305,6 +307,7 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         recall_enabled=True,  # 开语义召回，把 recalled_context 回灌 converse
         sample_sigma_cap=sample_sigma_cap,  # 「防抖」旋钮（ZERO_SAMPLE_SIGMA_MAX；None=零回归）
         rng_seed=rng_seed,  # P5：引擎采样可复现（ZERO_CHAT_RNG_SEED；None=零回归）
+        affect_readout=affect_readout,  # P4：'map' 均值读出（ZERO_AFFECT_READOUT；默认 sample）
     )
     return ChatDriver(
         thread=resolved_thread,

@@ -73,6 +73,7 @@ async def run(
     language_max_iters: int = 3,
     rng_seed: int | None = None,
     sample_sigma_cap: float | None = None,
+    affect_readout: str = "sample",
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -116,6 +117,7 @@ async def run(
                 "language_max_iters": language_max_iters,
                 "rng_seed": rng_seed,
                 "sample_sigma_cap": sample_sigma_cap,
+                "affect_readout": affect_readout,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -167,6 +169,7 @@ class ConversationSession:
         language_max_iters: int = 3,
         rng_seed: int | None = None,
         sample_sigma_cap: float | None = None,
+        affect_readout: str = "sample",
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -197,6 +200,7 @@ class ConversationSession:
             "language_max_iters": language_max_iters,
             "rng_seed": rng_seed,
             "sample_sigma_cap": sample_sigma_cap,
+            "affect_readout": affect_readout,
         }
 
     async def step(self, stim: Stimulus) -> dict[str, Any]:

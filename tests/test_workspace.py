@@ -106,6 +106,14 @@ def test_affect_core_zero_regression_keys() -> None:
     assert set(out) == {"post_mu", "post_sigma", "affect_sample", "trace"}
 
 
+def test_affect_core_map_readout_returns_post_mu() -> None:
+    """P4（议会 α）：affect_readout='map' → e*=post_mu（确定无方差）；默认 'sample' 仍采样。"""
+    out_map = AffectCoreAgent()(_core_state(affect_readout="map"))
+    assert out_map["affect_sample"] == out_map["post_mu"]  # MAP 读出 = 后验均值
+    out_sample = AffectCoreAgent()(_core_state())  # 默认 affect_readout='sample'（逐字旧行为）
+    assert out_sample["affect_sample"] != out_sample["post_mu"]  # 采样点偏离均值
+
+
 # ---------- 端到端管线 ----------
 
 

@@ -53,6 +53,14 @@ def test_session_threads_sample_sigma_cap_into_flags() -> None:
     assert default.flags["sample_sigma_cap"] is None
 
 
+def test_session_threads_affect_readout_into_flags() -> None:
+    """affect_readout 经 ConversationSession 进 flags；默认 'sample'（P4 读出旋钮零回归）。"""
+    mapped = ConversationSession(thread_id="t-readout", affect_readout="map")
+    assert mapped.flags["affect_readout"] == "map"
+    default = ConversationSession(thread_id="t-readout-def")
+    assert default.flags["affect_readout"] == "sample"
+
+
 # ---------- 评价桥 appraise_text（fake client，不依赖 openai） ----------
 
 
