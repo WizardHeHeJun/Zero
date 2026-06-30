@@ -155,12 +155,13 @@ Zero/
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   └── observability/       # 横切：统一日志 setup_logging（每启动落 logs/、级别可配、入口无关）
 ├── tests/                   # 单测 + 行为/记忆回归
-├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py
+├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py + 验证 verify_*.py（如 verify_affect_readout 实测 map 读出消翻号）
 ├── tools/                   # 运维脚本（reset_db.py 清库）
 ├── docs/                    # 对外框架图（详见 docs/README.md）
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
-├── Dockerfile · docker-compose.yml · .env.example   # 容器化部署
+├── persona.example.json · .env.example              # --chat 人格卡模板 / 配置模板（cp 到 data/ 或 .env 启用）
+├── Dockerfile · docker-compose.yml                  # 容器化部署
 └── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti 按需）
 ```
 
