@@ -1,0 +1,32 @@
+flowchart LR
+  user(["👤 用户输入"]):::terminal
+  appraise["🔍 评价桥<br/>appraise_text：文本→(v,a)"]:::appraise
+  engine["🧠 情感引擎·贝叶斯主动推断<br/>OCC评价→TD价值/精度→显著度门控<br/>工作空间(并行流ignite)→后验采样 e*"]:::engine
+  timescales["⏱️ 三时间尺度<br/>瞬时 e* / 快变 emotion(衰退2-3轮)<br/>慢变 attitude(对人累积·落盘)<br/>+ 稳态回弹(向setpoint弱回归，不越聊越上头)"]:::timescale
+  language["🗣️ 双路语言<br/>LLM命题(pull) + 情绪push泄漏(用词/steering)"]:::language
+  expression["🎭 表达双通路<br/>自发/随意 × 4通道(FACS/文本/生理/韵律)"]:::expression
+  persona["🎭 人格 Persona(可选注入)<br/>人设卡 / 气质底色 / 预置关系<br/>默认中性=零回归(大五→PAD交议会)"]:::persona
+  memory[("🗄️ 记忆/持久<br/>注意力↔记忆桥：显著性写·三维召回·注入预算·时序遗忘<br/>图谱+语义·ConversationLog落盘")]:::memory
+  output(["💬 最终表现"]):::terminal
+
+  user -->|"感知输入"| appraise
+  appraise -->|"刺激(v,a)"| engine
+  engine -->|"瞬时 e*"| timescales
+  timescales -->|"当前情绪"| language
+  timescales -->|"当前情绪"| expression
+  language -->|"命题+情绪泄漏"| output
+  expression -->|"表情/韵律"| output
+  engine -->|"读写"| memory
+  timescales -->|"态度落盘"| memory
+  persona -->|"人设卡"| language
+  persona -->|"气质setpoint"| timescales
+  persona -->|"预置关系种子"| memory
+
+  classDef terminal fill:#F1F3F5,stroke:#868E96,color:#1F2329
+  classDef appraise fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
+  classDef timescale fill:#EAE2FE,stroke:#8569CB,color:#1F2329
+  classDef language fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef expression fill:#FEF1CE,stroke:#D4B45B,color:#1F2329
+  classDef memory fill:#DFF5E5,stroke:#509863,color:#1F2329
+  classDef persona fill:#FBE9F0,stroke:#C45D8B,color:#1F2329

@@ -27,7 +27,10 @@
           ["language", "output", "命题内容+情绪泄漏"],
           ["expression", "output", "表情/韵律"],
           ["engine", "memory", "读写"],
-          ["timescales", "memory", "态度落盘"]
+          ["timescales", "memory", "态度落盘"],
+          ["persona", "language", "人设卡 card"],
+          ["persona", "timescales", "气质 setpoint"],
+          ["persona", "memory", "预置关系 种子"]
         ]
       },
       "children": [
@@ -53,7 +56,7 @@
           "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 10,
           "children": [
             { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "⏱️ 三时间尺度", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "瞬时 e*（每刺激采样）\n快变 emotion（衰退~2-3轮）\n慢变 attitude（对人累积~10轮，落盘）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "瞬时 e*（每刺激采样）\n快变 emotion（衰退~2-3轮）\n慢变 attitude（对人累积，落盘）\n+ 稳态回弹（向 setpoint 弱回归，不越聊越上头）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
           ]
         },
         {
@@ -73,7 +76,15 @@
           ]
         },
         { "type": "ellipse", "id": "output", "width": 130, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "💬 最终表现", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
-        { "type": "cylinder", "id": "memory", "width": 195, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆 / 持久\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "图谱+语义 · ConversationLog\n(对话+态度落 SQLite)", "fontSize": 10, "color": "#646A73" } ] }
+        {
+          "type": "frame", "id": "persona", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 215, "height": "fit-content",
+          "fillColor": "#FBE9F0", "borderColor": "#C45D8B", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎭 人格 Persona（可选注入）", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "人设卡 / 气质底色 / 预置关系\n默认中性=零回归（大五→PAD 数值交议会）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "cylinder", "id": "memory", "width": 205, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆 / 持久\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "注意力↔记忆桥：显著性门控写 · 三维召回\n(新近×相关×重要) · 注入注意力预算 · 时序遗忘\n图谱+语义 · ConversationLog 落盘", "fontSize": 10, "color": "#646A73" } ] }
       ]
     }
   ]

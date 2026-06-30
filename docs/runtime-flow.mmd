@@ -1,0 +1,29 @@
+flowchart LR
+  user(["👤 你说一句话"]):::terminal
+  appraise["🔍 评价桥·LLM输入接点<br/>ConversationModel.appraise_text<br/>把话读成情绪坐标(v,a)"]:::appraise
+  engine["🧠 情感引擎·确定性(无LLM)<br/>perception→appraisal→value→affect_core<br/>并行流显著度门控融合→采样 e*"]:::engine
+  timescales["⏱️ 三时间尺度+稳态<br/>瞬时 e* / 快变 emotion(几轮衰退)<br/>慢变 attitude(慢累积·持久化)<br/>+ 稳态回弹(向setpoint回归)"]:::timescale
+  converse["🗣️ 自然对话·LLM输出接点<br/>ConversationModel.converse(push,retrieved)<br/>情绪经用词倾向漏进措辞 + 召回背景"]:::language
+  persona["🎭 人格 Persona(可选注入)<br/>人设卡进converse·气质进引擎<br/>预置关系首次接触播种·默认中性零回归"]:::persona
+  memory[("🗄️ 记忆<br/>write_episode / recall<br/>显著性写情景·三维召回重排·注入注意力预算(U形窗)")]:::memory
+  reply(["💬 带情绪的回应"]):::terminal
+
+  user -->|"你的话"| appraise
+  appraise -->|"刺激(v,a)"| engine
+  engine -->|"瞬时 e*"| timescales
+  timescales -->|"当前情绪"| converse
+  converse -->|"回应"| reply
+  engine -->|"写情景(显著性门控)"| memory
+  memory -->|"召回背景retrieved"| converse
+  persona -->|"人设卡"| converse
+  persona -->|"气质setpoint"| timescales
+  persona -->|"首次接触种子"| memory
+  reply -.->|"下一轮·mood/态度/记忆跨轮持久"| user
+
+  classDef terminal fill:#F1F3F5,stroke:#868E96,color:#1F2329
+  classDef appraise fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
+  classDef timescale fill:#EAE2FE,stroke:#8569CB,color:#1F2329
+  classDef language fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef persona fill:#FBE9F0,stroke:#C45D8B,color:#1F2329
+  classDef memory fill:#DFF5E5,stroke:#509863,color:#1F2329

@@ -1,0 +1,72 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "type": "frame",
+      "id": "root",
+      "x": 20,
+      "y": 20,
+      "layout": "dagre",
+      "width": "fit-content",
+      "height": "fit-content",
+      "padding": 56,
+      "fillColor": "#FFFFFF",
+      "borderColor": "#DEE0E3",
+      "borderWidth": 1,
+      "borderRadius": 16,
+      "layoutOptions": {
+        "rankdir": "LR",
+        "nodesep": 44,
+        "ranksep": 116,
+        "edges": [
+          ["turn", "write", "每轮（任务完成节点）"],
+          ["write", "episodes", "强编码"],
+          ["write", "disposition", "长期倾向"],
+          ["episodes", "recall", "查询(情绪线索)"],
+          ["recall", "inject", "Top-K 三维重排"],
+          ["inject", "llm", "进 prompt"],
+          ["disposition", "bias", "标量"],
+          ["bias", "turn", "偏置下一轮评价"]
+        ]
+      },
+      "children": [
+        { "type": "ellipse", "id": "turn", "width": 140, "height": 70, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "💬 当前对话轮\n你说/我说 + e*", "fontSize": 12, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        {
+          "type": "frame", "id": "write", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 250, "height": "fit-content",
+          "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 3, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "✍️ 显著性门控写入", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "salience=precision×|rpe| 超阈才强编码\n（海马情绪/新颖性门控，McGaugh）\n承诺/日程语义通道旁路（低唤醒也写）\n确定性三层拼接 · 禁 LLM 摘要", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "cylinder", "id": "episodes", "width": 215, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 情景库 episode\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "时序失效（新事实使旧失效）\n+ 容量上限 → 自然遗忘\n（确定性图谱 + 语义向量侧信道）", "fontSize": 10, "color": "#646A73" } ] },
+        {
+          "type": "frame", "id": "recall", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 240, "height": "fit-content",
+          "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🔎 三维召回重排", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "score = α·新近 Δt^(-d) + β·相关 sim\n+ γ·重要 importance（Hill 归一同量纲）\n首因 ×1.2 · mood-congruent 线索 · dedup", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "inject", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 240, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 3, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🧠 注入注意力预算", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "U 形工作记忆窗（首因+近因，Murdock）\n+ 高显著召回升 system 条目\n与近期对话同台竞争（皮层记忆重激活）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "ellipse", "id": "llm", "width": 130, "height": 70, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "🗣️ 喂 LLM\nconverse", "fontSize": 12, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
+        { "type": "cylinder", "id": "disposition", "width": 180, "height": "fit-content", "fillColor": "#EAF6EE", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "📊 长期倾向 disposition\n", "bold": true, "fontSize": 12, "color": "#1F2329" }, { "content": "user 作用域 · 时序失效\n活跃集恒为最新一条", "fontSize": 10, "color": "#646A73" } ] },
+        {
+          "type": "frame", "id": "bias", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 190, "height": "fit-content",
+          "fillColor": "#FEE3E2", "borderColor": "#D25D5A", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🧭 偏置当下评价", "bold": true, "fontSize": 13, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "长期态度偏置 appraisal 先验\n（持续被冒犯，初见反应都变冷）", "fontSize": 10, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -26,6 +26,9 @@
           ["converse", "reply", "回应"],
           ["engine", "memory", "写情景(显著性门控)"],
           ["memory", "converse", "召回背景 retrieved"],
+          ["persona", "converse", "人设卡"],
+          ["persona", "timescales", "气质 setpoint"],
+          ["persona", "memory", "首次接触 种子"],
           ["reply", "user", "下一轮 · mood/态度/记忆 跨轮持久"]
         ]
       },
@@ -51,8 +54,8 @@
           "type": "frame", "id": "timescales", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 210, "height": "fit-content",
           "fillColor": "#EAE2FE", "borderColor": "#8569CB", "borderWidth": 2, "borderRadius": 10,
           "children": [
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "⏱️ 两时间尺度", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "快变 emotion（几轮衰退）\n慢变 attitude（慢累积·持久化）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "⏱️ 三时间尺度 + 稳态", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "瞬时 e* / 快变 emotion（几轮衰退）\n慢变 attitude（慢累积·持久化）\n+ 稳态回弹（向 setpoint 回归）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
           ]
         },
         {
@@ -64,7 +67,15 @@
           ]
         },
         { "type": "ellipse", "id": "reply", "width": 130, "height": 66, "fillColor": "#F1F3F5", "borderColor": "#868E96", "borderWidth": 2, "text": "💬 带情绪的回应", "fontSize": 14, "textColor": "#1F2329", "textAlign": "center", "verticalAlign": "middle" },
-        { "type": "cylinder", "id": "memory", "width": 215, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "MemoryClient.write_episode / recall\n显著性写情景 · 选择性召回", "fontSize": 10, "color": "#646A73" } ] }
+        {
+          "type": "frame", "id": "persona", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 225, "height": "fit-content",
+          "fillColor": "#FBE9F0", "borderColor": "#C45D8B", "borderWidth": 2, "borderRadius": 8,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎭 人格 Persona（可选注入）", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "人设卡进 converse · 气质进引擎\n预置关系首次接触播种 · 默认中性零回归", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "cylinder", "id": "memory", "width": 225, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "MemoryClient.write_episode / recall\n显著性写情景 · 三维召回重排 · 注入注意力预算(U形窗)", "fontSize": 10, "color": "#646A73" } ] }
       ]
     }
   ]

@@ -1,0 +1,24 @@
+flowchart LR
+  turn(["💬 当前对话轮<br/>你说/我说 + e*"]):::terminal
+  write["✍️ 显著性门控写入<br/>salience=precision×abs(rpe) 超阈强编码<br/>承诺/日程语义通道旁路(低唤醒也写)<br/>确定性三层拼接·禁LLM摘要"]:::memory
+  episodes[("🗄️ 情景库 episode<br/>时序失效(新使旧失效) + 容量上限 → 自然遗忘")]:::memory
+  recall["🔎 三维召回重排<br/>score = α·新近 + β·相关sim + γ·重要importance<br/>(Hill归一同量纲)·首因×1.2·mood线索·dedup"]:::timescale
+  inject["🧠 注入注意力预算<br/>U形窗(首因+近因) + 高显著召回升system条目<br/>与近期对话同台竞争(皮层重激活)"]:::appraise
+  llm(["🗣️ 喂 LLM converse"]):::terminal
+  disposition[("📊 长期倾向 disposition<br/>user作用域·时序失效·活跃集恒最新")]:::memory
+  bias["🧭 偏置当下评价<br/>长期态度偏置 appraisal 先验<br/>(持续被冒犯，初见反应都变冷)"]:::engine
+
+  turn -->|"每轮(任务完成节点)"| write
+  write -->|"强编码"| episodes
+  write -->|"长期倾向"| disposition
+  episodes -->|"查询(情绪线索)"| recall
+  recall -->|"Top-K三维重排"| inject
+  inject -->|"进prompt"| llm
+  disposition -->|"标量"| bias
+  bias -.->|"偏置下一轮评价"| turn
+
+  classDef terminal fill:#F1F3F5,stroke:#868E96,color:#1F2329
+  classDef appraise fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
+  classDef timescale fill:#EAE2FE,stroke:#8569CB,color:#1F2329
+  classDef memory fill:#DFF5E5,stroke:#509863,color:#1F2329

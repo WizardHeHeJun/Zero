@@ -1,0 +1,83 @@
+{
+  "version": 2,
+  "nodes": [
+    {
+      "type": "frame",
+      "id": "root",
+      "x": 20,
+      "y": 20,
+      "layout": "dagre",
+      "width": "fit-content",
+      "height": "fit-content",
+      "padding": 56,
+      "fillColor": "#FFFFFF",
+      "borderColor": "#DEE0E3",
+      "borderWidth": 1,
+      "borderRadius": 16,
+      "layoutOptions": {
+        "rankdir": "LR",
+        "nodesep": 40,
+        "ranksep": 120,
+        "edges": [
+          ["persona", "l1", "身份"],
+          ["persona", "l2", "气质"],
+          ["persona", "l3", "关系"],
+          ["l1", "lang", "注入 system prompt"],
+          ["l2", "engine", "透传参数"],
+          ["l3", "mem", "首次接触幂等播种"]
+        ]
+      },
+      "children": [
+        {
+          "type": "frame", "id": "persona", "layout": "vertical", "gap": 6, "padding": 16, "alignItems": "center", "width": 215, "height": "fit-content",
+          "fillColor": "#FBE9F0", "borderColor": "#C45D8B", "borderWidth": 3, "borderRadius": 12,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎭 Persona（人格定义）", "bold": true, "fontSize": 15, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "load_persona()：ZERO_PERSONA_FILE(JSON)\n/ ZERO_PERSONA(人设卡快捷)\n默认中性 Persona() == 逐字现有行为(零回归)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "l1", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 230, "height": "fit-content",
+          "fillColor": "#FCF1F6", "borderColor": "#C45D8B", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "L1 人设卡 card", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "身份 / 背景 / 口吻 / 与用户关系\n空卡 → system prompt 逐字现状", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "l2", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 250, "height": "fit-content",
+          "fillColor": "#FCF1F6", "borderColor": "#C45D8B", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "L2 气质底色", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "setpoint / reactivity / recovery\n情绪基线·反应快慢·恢复速度（默认=引擎常量）\n大五→PAD 数值映射交科学家议会", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "l3", "layout": "vertical", "gap": 5, "padding": 14, "alignItems": "center", "width": 250, "height": "fit-content",
+          "fillColor": "#FCF1F6", "borderColor": "#C45D8B", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "L3 预置关系", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "initial_attitude（初见即已有的态度）\n+ seed_memories（预灌共同记忆）\n仅空 transcript 首次接触时播种", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "lang", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 215, "height": "fit-content",
+          "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🗣️ 语言", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "OpenAILanguageModel.converse\n人设卡前置于 _CONVERSE_SYS（仅对话路径）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        {
+          "type": "frame", "id": "engine", "layout": "vertical", "gap": 4, "padding": 12, "alignItems": "center", "width": 215, "height": "fit-content",
+          "fillColor": "#FEE3E2", "borderColor": "#D25D5A", "borderWidth": 2, "borderRadius": 10,
+          "children": [
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🧠 情感引擎", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "attitude_step(setpoint=) /\nemotion_decay_step(recovery=, reactivity=)\n引擎本就关键字参数·零改", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+          ]
+        },
+        { "type": "cylinder", "id": "mem", "width": 205, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆 / 态度\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "初始 attitude 起步 + write_episode 种子\nUSER scope · seeded 守卫只写一次", "fontSize": 10, "color": "#646A73" } ] }
+      ]
+    }
+  ]
+}
