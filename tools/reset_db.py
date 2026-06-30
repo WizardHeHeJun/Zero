@@ -261,7 +261,7 @@ def main() -> None:
         targets.append((key, path))
 
     if not args.yes:
-        reply = input("\n确认清空？(yes/N) ").strip().lower()
+        reply = input("\n确认清空？(Y/N) ").strip().lower()
         if reply not in ("y", "yes"):
             print("已取消。")
             return
