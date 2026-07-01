@@ -113,6 +113,7 @@ class ChatDriver:
         memory: MemoryClient | None = None,
         seed_key: str = "",
         first_contact: bool = False,
+        rng_seed: int | None = None,
     ) -> None:
         self.thread = thread
         self.lm = lm
@@ -128,6 +129,9 @@ class ChatDriver:
         self.seed_key = seed_key  # 种子记忆写入的 user 作用域 key（= user_id = thread）
         self.first_contact = first_contact  # 首次接触此人（空 transcript）才播种关系
         self.seeded = False  # L3 种子记忆只在首轮写一次的守卫
+        # 情绪噪声 RNG（P5 可复现，议会建议）：给了 seed → 专属 Random（跨轮推进、跨进程可复现）；
+        # None → 用模块级 random（逐字旧行为、零回归，且保留既有 monkeypatch 测试可控）。
+        self.rng = random.Random(rng_seed) if rng_seed is not None else None
 
     async def step(self, user_text: str) -> ChatTurn:
         """推进一轮：评价→引擎→两时间尺度情绪→生成回复→落盘，返回本轮结果。"""
@@ -175,9 +179,13 @@ class ChatDriver:
             recovery=self.persona.recovery,
             reactivity=self.persona.reactivity,
         )
+        # 情绪噪声标准差（「防抖」旋钮）：默认 0.05（逐字旧行为），调小=更稳，0=关该噪声源。
+        noise_std = float(os.getenv("ZERO_EMOTION_NOISE_STD", "0.05"))
+        # P5：有 seed 用专属 Random 复现；无 seed 走模块级 random（零回归、可 monkeypatch）。
+        gauss = self.rng.gauss if self.rng is not None else random.gauss
         self.emotion = (
-            clamp(self.emotion[0] + random.gauss(0.0, 0.05), -1.0, 1.0),
-            clamp(self.emotion[1] + random.gauss(0.0, 0.05), -1.0, 1.0),
+            clamp(self.emotion[0] + gauss(0.0, noise_std), -1.0, 1.0),
+            clamp(self.emotion[1] + gauss(0.0, noise_std), -1.0, 1.0),
         )
         word = affect_label(*self.emotion)
         self.history.append({"role": "user", "content": user_text})
@@ -279,6 +287,15 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # 显式构造记忆后端并注入 session：使「种子记忆写入」与「图内召回」共用同一后端（种子落在召回
     # 会查的 user/key 下）。与 runner/ConversationSession 默认装配等价（默认后端由 env 决定）。
     memory = MemoryClient(build_graph_store(), semantic=build_semantic_store())
+    # 后验采样 sigma 上限（情绪「防抖」旋钮）：未设 → None → 用引擎常量 MAX_SAMPLE_SIGMA（零回归）。
+    sigma_cap_env = os.getenv("ZERO_SAMPLE_SIGMA_MAX")
+    sample_sigma_cap = float(sigma_cap_env) if sigma_cap_env else None
+    # P5（可复现，议会建议）：单个种子贯穿 --chat 两处随机源——引擎后验采样（session.rng_seed）+
+    # chat 层情绪噪声（ChatDriver.rng_seed）。未设 → None → 两处走旧随机（零回归；eval 设此复现）。
+    seed_env = os.getenv("ZERO_CHAT_RNG_SEED")
+    rng_seed = int(seed_env) if seed_env else None
+    # 情绪读出模式（P4 议会 α）：'map'=后验均值 e*=post_mu（消逐轮翻号）；默认 'sample'=旧行为。
+    affect_readout = os.getenv("ZERO_AFFECT_READOUT", "sample")
     # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
     # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
     session = ConversationSession(
@@ -288,6 +305,9 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         mood_enabled=False,  # A.7 双稳会自锁；chat 用 emotion(快衰退)+attitude(慢累积)
         workspace_enabled=True,
         recall_enabled=True,  # 开语义召回，把 recalled_context 回灌 converse
+        sample_sigma_cap=sample_sigma_cap,  # 「防抖」旋钮（ZERO_SAMPLE_SIGMA_MAX；None=零回归）
+        rng_seed=rng_seed,  # P5：引擎采样可复现（ZERO_CHAT_RNG_SEED；None=零回归）
+        affect_readout=affect_readout,  # P4：'map' 均值读出（ZERO_AFFECT_READOUT；默认 sample）
     )
     return ChatDriver(
         thread=resolved_thread,
@@ -301,4 +321,5 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         memory=memory,
         seed_key=resolved_thread,  # 种子记忆 user 作用域 key（= user_id = thread）
         first_contact=first_contact,
+        rng_seed=rng_seed,  # P5：chat 层情绪噪声可复现（同一 ZERO_CHAT_RNG_SEED；None=零回归）
     )

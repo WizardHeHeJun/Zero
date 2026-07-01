@@ -237,11 +237,18 @@ def sample_affect(
     post_sigma: tuple[float, float],
     *,
     rng: random.Random | None = None,
+    sigma_cap: float | None = None,
 ) -> tuple[float, float]:
-    """从后验高斯采样 e*=(valence, arousal)；方差有界、结果钳制到 [-1, 1]。"""
+    """从后验高斯采样 e*=(valence, arousal)；方差有界、结果钳制到 [-1, 1]。
+
+    `sigma_cap` 为采样标准差上限（逐维），默认 None → 用常量 `MAX_SAMPLE_SIGMA`（逐字旧行为）。
+    调小可让样本更贴 post_mu、降低逐轮 (v,a) 抖动（情绪「防抖」旋钮，经 state 由 env 注入）。
+    仅钳采样方差，不动 `gaussian_fuse`/`fuse_terms` 里的后验数值稳定钳（另一回事）。纯函数、无 I/O。
+    """
+    cap = MAX_SAMPLE_SIGMA if sigma_cap is None else sigma_cap
     generator = rng if rng is not None else random.Random()
-    v = clamp(generator.gauss(post_mu[0], min(MAX_SAMPLE_SIGMA, post_sigma[0])), -1.0, 1.0)
-    a = clamp(generator.gauss(post_mu[1], min(MAX_SAMPLE_SIGMA, post_sigma[1])), -1.0, 1.0)
+    v = clamp(generator.gauss(post_mu[0], min(cap, post_sigma[0])), -1.0, 1.0)
+    a = clamp(generator.gauss(post_mu[1], min(cap, post_sigma[1])), -1.0, 1.0)
     return (v, a)
 
 

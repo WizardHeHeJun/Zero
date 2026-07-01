@@ -45,6 +45,22 @@ async def test_session_value_table_persists_across_turns() -> None:
     assert last != first  # 价值随重复在线学习（跨轮 checkpoint 持久）
 
 
+def test_session_threads_sample_sigma_cap_into_flags() -> None:
+    """sample_sigma_cap 经 ConversationSession 进 flags；默认 None（防抖旋钮零回归）。"""
+    capped = ConversationSession(thread_id="t-sigma", sample_sigma_cap=0.1)
+    assert capped.flags["sample_sigma_cap"] == 0.1
+    default = ConversationSession(thread_id="t-sigma-def")
+    assert default.flags["sample_sigma_cap"] is None
+
+
+def test_session_threads_affect_readout_into_flags() -> None:
+    """affect_readout 经 ConversationSession 进 flags；默认 'sample'（P4 读出旋钮零回归）。"""
+    mapped = ConversationSession(thread_id="t-readout", affect_readout="map")
+    assert mapped.flags["affect_readout"] == "map"
+    default = ConversationSession(thread_id="t-readout-def")
+    assert default.flags["affect_readout"] == "sample"
+
+
 # ---------- 评价桥 appraise_text（fake client，不依赖 openai） ----------
 
 

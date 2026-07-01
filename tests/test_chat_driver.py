@@ -74,3 +74,62 @@ async def test_attitude_prior_is_pre_step_snapshot(monkeypatch: pytest.MonkeyPat
     assert turn.attitude_prior == 0.25
     assert turn.attitude[0] != 0.25  # 已被 attitude_step 推进
     log.close()
+
+
+async def test_emotion_noise_std_env_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ZERO_EMOTION_NOISE_STD 未设 → 噪声标准差默认 0.05（逐字旧行为）。"""
+    monkeypatch.delenv("ZERO_EMOTION_NOISE_STD", raising=False)
+    sigmas: list[float] = []
+    monkeypatch.setattr(
+        "src.orchestration.chat_driver.random.gauss",
+        lambda mu, sigma: sigmas.append(sigma) or 0.0,
+    )
+    log = ConversationLog(":memory:")
+    await _make_driver(log, _FakeSession((0.6, 0.4))).step("x")
+    assert sigmas and all(s == 0.05 for s in sigmas)  # 默认 0.05
+    log.close()
+
+
+async def test_emotion_noise_std_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ZERO_EMOTION_NOISE_STD=0 → 噪声关闭（gauss 以 sigma=0 调用，旋钮真生效）。"""
+    monkeypatch.setenv("ZERO_EMOTION_NOISE_STD", "0")
+    sigmas: list[float] = []
+    monkeypatch.setattr(
+        "src.orchestration.chat_driver.random.gauss",
+        lambda mu, sigma: sigmas.append(sigma) or 0.0,
+    )
+    log = ConversationLog(":memory:")
+    await _make_driver(log, _FakeSession((0.6, 0.4))).step("x")
+    assert sigmas and all(s == 0.0 for s in sigmas)
+    log.close()
+
+
+async def test_emotion_noise_reproducible_with_rng_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P5：同一 rng_seed → 情绪噪声逐轮可复现（两 driver 的情绪序列逐字相等）。"""
+    monkeypatch.setenv("ZERO_EMOTION_NOISE_STD", "0.05")  # 钉死噪声开（不受跑测环境 env 污染）
+    log_a, log_b = ConversationLog(":memory:"), ConversationLog(":memory:")
+    da = ChatDriver(
+        thread="t",
+        lm=None,
+        log=log_a,
+        session=_FakeSession((0.6, 0.4)),
+        history=[],
+        attitude=(0.0, 0.0),
+        mode="test",
+        rng_seed=123,
+    )
+    db = ChatDriver(
+        thread="t",
+        lm=None,
+        log=log_b,
+        session=_FakeSession((0.6, 0.4)),
+        history=[],
+        attitude=(0.0, 0.0),
+        mode="test",
+        rng_seed=123,
+    )
+    seq_a = [(await da.step("x")).emotion for _ in range(5)]
+    seq_b = [(await db.step("x")).emotion for _ in range(5)]
+    assert seq_a == seq_b  # 同 seed 逐字复现
+    log_a.close()
+    log_b.close()

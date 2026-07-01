@@ -26,7 +26,6 @@ from src.storage.conversation_log import ConversationLog
 
 def test_load_persona_neutral_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """未配置任何项 → 中性 Persona()：setpoint/反应/恢复=引擎常量、无卡/无种子（零回归基线）。"""
-    monkeypatch.delenv("ZERO_PERSONA", raising=False)
     monkeypatch.delenv("ZERO_PERSONA_FILE", raising=False)
     p = load_persona()
     assert p == Persona()
@@ -38,17 +37,8 @@ def test_load_persona_neutral_default(monkeypatch: pytest.MonkeyPatch) -> None:
     assert p.seed_memories == ()
 
 
-def test_load_persona_inline_card(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_PERSONA 快捷入口：只配 L1 人设卡，其余仍中性。"""
-    monkeypatch.delenv("ZERO_PERSONA_FILE", raising=False)
-    monkeypatch.setenv("ZERO_PERSONA", "你叫小津")
-    p = load_persona()
-    assert p.card == "你叫小津"
-    assert p.setpoint == ATTITUDE_SETPOINT  # 仅 L1，气质仍中性
-
-
 def test_load_persona_from_json_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """完整 JSON 文件：全字段解析（pair→tuple、seeds→tuple），文件优先于内联卡。"""
+    """完整 JSON 文件：全字段解析（pair→tuple、seeds→tuple）。"""
     path = tmp_path / "persona.json"
     path.write_text(
         json.dumps(
@@ -64,11 +54,10 @@ def test_load_persona_from_json_file(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("ZERO_PERSONA", "应被文件覆盖")
     monkeypatch.setenv("ZERO_PERSONA_FILE", str(path))
     p = load_persona()
     assert p.name == "小津"
-    assert p.card == "你叫小津，是老友"  # 文件优先
+    assert p.card == "你叫小津，是老友"
     assert p.setpoint == (0.1, -0.05)
     assert p.reactivity == 0.7
     assert p.recovery == 0.5
@@ -96,6 +85,19 @@ def test_load_persona_malformed_pair_raises(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setenv("ZERO_PERSONA_FILE", str(path))
     with pytest.raises(ValueError):
         load_persona()
+
+
+def test_repo_persona_example_loads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """根目录 persona.example.json 模板：经 ZERO_PERSONA_FILE 可读出、card 非空、表「不编造」。"""
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parent.parent / "persona.example.json"
+    assert example.exists()  # committed 模板（data/ 被 gitignore，故置于根目录）
+    monkeypatch.setenv("ZERO_PERSONA_FILE", str(example))
+    p = load_persona()
+    assert p.card  # L1 卡非空
+    assert p.name  # 有名字
+    assert "初次" in p.card or "不编造" in p.card  # 锁定「诚实陌生人」意图
 
 
 # ---------------------------------------------------------------------------

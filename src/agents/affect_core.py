@@ -80,7 +80,13 @@ class AffectCoreAgent:
         # rng_seed 为空时每次调用都重新随机（有意：生产情绪表达的随机性），
         # 非漏传 seed；测试需可复现时显式传 rng_seed。
         rng = random.Random(state.rng_seed) if state.rng_seed is not None else None
-        e_star = sample_affect(post_mu, post_sigma, rng=rng)
+        # P4（议会 α，数学+神经一致）：map 读出取后验均值 e*=post_mu（MMSE 最优点估计，消单样本大
+        # 方差致的逐轮翻号，时序连续性交既有 emotion_decay_step 的 AR1≈0.4 承担）；默认 sample=逐轮
+        # 后验采样（逐字旧行为，零回归）。sample_affect 保留——可供表达层做简并可变性。
+        if state.affect_readout == "map":
+            e_star = post_mu
+        else:
+            e_star = sample_affect(post_mu, post_sigma, rng=rng, sigma_cap=state.sample_sigma_cap)
         entry: dict = {
             "node": "affect_core",
             "post_mu": post_mu,

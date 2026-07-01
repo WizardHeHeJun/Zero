@@ -31,7 +31,7 @@
 - **生存流** — 快速、低精度的亚符号信号（突如其来的巨响先于"这是什么"就拉高唤醒）；
 - **语义流** — 文本/语义读出的情绪作为一条**独立、低精度**的高阶先验汇入（语言是高阶皮层的 top-down 预测，与评价、感官流并列竞争而非互相覆盖）；
 - **显著度门控点燃** — 各流各出一个 `(均值, 精度)`，由显著网络打分，只有**过阈的流被"点燃"广播**进全局工作空间（全局工作空间理论的 ignition），其余停留局部、不空播；
-- **精度加权融合 + 后验采样** — 点燃的流按精度加权融合，采样出此刻的**瞬时情绪 e\***（随机性让同一刺激也有细微波动）。
+- **精度加权融合 + 后验采样** — 点燃的流按精度加权融合，采样出此刻的**瞬时情绪 e\***（随机性让同一刺激也有细微波动）；读出也可切**稳定模式**（取后验均值而非单次采样），让情绪只跟刺激走、不被单样本噪声带得逐轮乱跳（见配置 `ZERO_AFFECT_READOUT`）。
 
 ### 3. 三时间尺度：情绪会退、态度会沉淀
 
@@ -155,12 +155,13 @@ Zero/
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   └── observability/       # 横切：统一日志 setup_logging（每启动落 logs/、级别可配、入口无关）
 ├── tests/                   # 单测 + 行为/记忆回归
-├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py
+├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py + 验证 verify_*.py（如 verify_affect_readout 实测 map 读出消翻号）
 ├── tools/                   # 运维脚本（reset_db.py 清库）
 ├── docs/                    # 对外框架图（详见 docs/README.md）
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
-├── Dockerfile · docker-compose.yml · .env.example   # 容器化部署
+├── persona.example.json · .env.example              # --chat 人格卡模板 / 配置模板（cp 到 data/ 或 .env 启用）
+├── Dockerfile · docker-compose.yml                  # 容器化部署
 └── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti 按需）
 ```
 
@@ -184,6 +185,8 @@ python main.py --workspace
 # 4. 核心管线 (v,a) 轨迹 JSON
 python main.py --trace
 ```
+
+> **对话时每轮会打印一行 trace**：`你这句≈(v,a)`（你这句被读出的情绪坐标）｜`情绪=<词>(v,a)`（数字人此刻的情绪）｜`对你的态度=(v,a)`（它对你的长期态度）——一眼看清引擎在想什么。
 
 接**真 LLM**（OpenAI 兼容接口，本地 vLLM / 第三方网关皆可）需 `llm` extra 并在 `.env` 配置——配置只走 `.env`，代码不写死模型默认：
 
@@ -209,11 +212,19 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 > **日志与排障**：每次启动落一份 `logs/zero-<时间戳>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。
 
+> **开发/测试**：`pytest`（全套回归）· `ruff check . && ruff format .`（风格）· `mypy src`（类型）——保存时基础检查自动跑。
+
 ---
 
 ## 配置（`.env`）
 
 所有运行配置都走 `.env`（复制 [.env.example](.env.example) 起步），代码不写死模型/后端默认。**不设任何变量即全内存占位、零依赖可跑**；`.env.example` 里每个变量都有一行速记，下面按用途分组给出完整说明。
+
+**怎么读 `.env`（三类）**：
+
+- **【必填】** 只有 `ZERO_OPENAI_API_KEY` + `ZERO_OPENAI_MODEL`（接真 LLM 用；缺了 `--chat` 自动回退词典+模板，仍能跑）。
+- **后端选择**（顶部各组）：`.env.example` 里给出的赋值就是**各自默认值**，写不写效果一样，想切落盘/真库才改。
+- **可选旋钮**（底部）：默认**注释掉** = 用内置默认；取消注释才覆盖。其中 ⭐ 是**数字人推荐开**——`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号），两个足矣；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
 
 ### 运行后端
 
@@ -253,10 +264,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 ### 指定人格（`--chat`）
 
-给数字人指定一份人格（能力详见上文「指定人格」一节）。两个入口，**默认都不设 = 中性无偏人格、逐字现有行为**，文件优先：
-
-- `ZERO_PERSONA` — 仅 **L1 人设卡**的快捷入口：身份 / 背景 / 口吻 / 与用户关系，单行文本，注入对话 system prompt。
-- `ZERO_PERSONA_FILE` — 指向**完整人格 JSON**（L1 人设卡 + L2 气质底色 + L3 预置关系），字段全可选：
+给数字人指定一份人格（能力详见上文「指定人格」一节）：`ZERO_PERSONA_FILE` 指向一个**人格 JSON**（默认不设 = 中性无偏人格、逐字现有行为）。字段全可选（L1 人设卡 + L2 气质底色 + L3 预置关系）——**只想要人设卡就只写 `card` 一个字段**，不必写全、也不用往 `.env` 塞长文本：
 
 ```jsonc
 {
@@ -272,26 +280,52 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 > L2 的「大五人格 → PAD 具体数值映射 / 预设人格库」属科学决策，须走 `/science-council` 设计门；本接口只提供旋钮 + 中性默认，不替算法拍板具体性格参数。
 
-### 对话行为微调旋钮
+### 对话调优与排障（对症开旋钮）
 
-默认开箱即用；想调「记多久 / 情绪多稳 / 召回多严」时设下列变量（留空即用默认）。仅 `HISTORY_PRIMACY_K` / `HISTORY_WINDOW` / `EMOTION_BASELINE_ATTITUDE_W` 的默认会改变 `--chat` 行为，其余默认零回归 / 关。各 knob 的**设计依据**见 [PROGRESS.md](PROGRESS.md) 阶段 25-26 与 [notes/](notes/) 议会纪要。
+对话不对劲时，多数能靠一两个旋钮解决——先按症状开，细节见下方全表：
+
+| 症状 | 开什么 |
+| --- | --- |
+| 一上来就编造共同往事 / 假装认识你 | `ZERO_PERSONA_FILE`（给它身份 +「初次见面不编造」，见上文「指定人格」） |
+| 情绪标签逐轮乱跳、与内容不符（敌意却标「兴奋」） | `ZERO_AFFECT_READOUT=map`（取后验均值、消采样翻号） |
+| 敌意/负面被读得太轻 | `ZERO_APPRAISE_CALIBRATE=1`（**视模型**：强模型如 deepseek 本就够负、可不开） |
+| 越聊越「上头」、情绪停在高位 | 调低 `ZERO_EMOTION_BASELINE_ATTITUDE_W`（加大回中性的拉力） |
+
+> 两个**自查脚本**（无需改代码）：`python -m scripts.verify_affect_readout`（**无需 LLM**，实证 `map` 把翻号率从 ~20% 压到 0）；`python -m scripts.verify_appraise_calibration`（**需 LLM key**，按你的模型实测标定要不要开）。
+
+### 微调旋钮·全表
+
+默认开箱即用（仅 `HISTORY_*` / `EMOTION_BASELINE_ATTITUDE_W` 的默认改变 `--chat`，其余默认零回归 / 关）；设计依据见 [PROGRESS.md](PROGRESS.md) 与 [notes/](notes/) 议会纪要。
+
+**① 数字人情绪 / 对话**
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `ZERO_HISTORY_WINDOW` | 40 | 喂给 LLM 的工作记忆窗总条数（越大记越久、也越费 token） |
+| `ZERO_AFFECT_READOUT` | `sample` | 情绪读出：`map` 取后验均值（稳定，消逐轮翻号）/ `sample` 逐轮采样（默认，带随机波动） |
+| `ZERO_APPRAISE_CALIBRATE` | 关 | 分级标定锚抵消 LLM 把负面读太轻的正向偏置（敌意→更负）；`1` 开启。**视模型**——强模型（deepseek 类）本就够负、可不开 |
+| `ZERO_EMOTION_NOISE_STD` | 0.05 | 每轮情绪的随机噪声幅度（调小=更稳、`0`=关该噪声源） |
+| `ZERO_SAMPLE_SIGMA_MAX` | 0.5 | 后验采样的逐维抖动上限（仅 `sample` 读出下生效） |
+| `ZERO_CHAT_RNG_SEED` | — | 固定随机种子，贯穿引擎采样 + 情绪噪声，便于 eval 复现（留空=每次随机） |
+| `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」占比；`<1` 给回中性的拉力、防越聊越上头（`1`=旧行为） |
+
+**② 记忆 / 注意力窗 + 召回排序**（默认已按认知科学调好，一般不用动）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_HISTORY_WINDOW` | 40 | 喂 LLM 的工作记忆窗总条数（越大记越久、越费 token） |
 | `ZERO_HISTORY_PRIMACY_K` | 5 | 窗内保留的「最初几条」（首因），其余留给最近几轮（近因） |
-| `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」的占比；`<1` 给情绪回到平静的拉力（防越聊越上头；`1`=旧纯 attitude 基线） |
 | `ZERO_RECALL_SIM_MIN` | 0.65 | 召回余弦相似度下限（越高越只在强相关时才想起旧事） |
-| `ZERO_RECALL_INJECT_MIN` | 0.5 | 旧记忆「升入当前注意力预算」与近期对话同台竞争的重要性门 ∈[0,1] |
-| `ZERO_RECALL_DECAY_D` | 0.5 | 召回三维重排：recency 幂律衰减指数 d |
+| `ZERO_RECALL_INJECT_MIN` | 0.5 | 旧记忆升入注意力预算、与近期对话同台竞争的重要性门 ∈[0,1] |
+| `ZERO_RECALL_DECAY_D` | 0.5 | 三维重排：recency 幂律衰减指数 d |
 | `ZERO_RECALL_ALPHA` · `_BETA` · `_GAMMA` | 0.33 · 0.34 · 0.33 | 三维重排权重：recency · sim · importance |
-| `ZERO_RECALL_IMPORTANCE_SCALE` | 30 | importance 归一 Hill 常数 C：`p/(p+C)`，与 sim/recency 同量纲 |
+| `ZERO_RECALL_IMPORTANCE_SCALE` | 30 | importance 归一 Hill 常数 C：`p/(p+C)` |
 | `ZERO_RECALL_AROUSAL_MOD` | 0 | 唤醒调制召回 importance（`1` 开启） |
-| `ZERO_EPISODE_MAX_PER_KEY` | 0（`python main.py` 默认 300） | 单人情景记忆条数上限，满了删最旧（0=不限） |
-| `ZERO_EPISODE_SALIENCE_MIN` | 0.15 | 情景写入的显著度门 `salience=precision×\|rpe\|`（越低记得越多；含时间/约定的内容旁路强写） |
+| `ZERO_EPISODE_MAX_PER_KEY` | 0（`--chat` 默认 300） | 单人情景记忆条数上限，满了删最旧（0=不限） |
+| `ZERO_EPISODE_SALIENCE_MIN` | 0.15 | 情景写入的显著度门 `salience=precision×\|rpe\|`（含时间/约定内容旁路强写） |
 | `ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD` | 0 | 低唤醒高语义补偿 `salience+=0.3·\|value\|`（`1` 开启） |
 | `ZERO_EPISODE_DEDUP_MAX` | 0.92 | 情景写入去重余弦阈（高于此视为近义跳过） |
 
+> **其它进阶变量**（`.env.example` 未列）：`ZERO_CHAT_THREAD` 切对话线程 id，隔离不同会话的历史/态度/记忆 scope、防串味；`ZERO_PUSH_LOGIT_BIAS` 让 push 通路叠加 OpenAI `logit_bias`（需兼容 tokenizer，缺则优雅退回纯 prompt 用词倾向）。
 > 想还原更早的行为逐项设回旧值即可（如窗口设回 `20`、`ZERO_EMOTION_BASELINE_ATTITUDE_W=1`）。
 
 ---

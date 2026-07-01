@@ -290,6 +290,20 @@
 - **装配**：`load_persona()` 读 `ZERO_PERSONA_FILE`（JSON 全字段、显式给路径却格式错则 fail-fast）/ `ZERO_PERSONA`（仅人设卡快捷入口）；`build_chat_driver` 显式构造共享 `MemoryClient` 注入 `ConversationSession`，使种子落在召回会查的同一 user/key 下。`main.py` 入口零改。
 - **验证**：`pytest` **358 passed / 5 skipped**（+11 新测：加载 4 / L1 注入 + 空卡逐字零回归 / L2 setpoint 抬高情绪基线 + 默认零回归 / L3 首轮 USER 幂等播种 + 二轮不重播 + 非首次接触不播）；ruff/format/mypy 干净。code-reviewer 独立审查门（项目级规则）作为可选 follow-up（本轮未触发，未涉算法语义改动、L2 数值映射已留议会门）。
 
+### 阶段 28 — 人格卡模板 + 情绪「防抖」旋钮 + 采样失真议会评议（从一次真实对话的「翻号/编造关系」修起）
+
+真实 `--chat`（qwen-flash）现场两症状：①问"你谁啊"时无人格锚 → LLM 即兴编造一段恩怨戏（"昨晚把你从酒吧拖回来"）；②用户连续敌意时，逐轮情绪标签翻号（愤怒↔兴奋）、与对话内容解耦、且整体偏平淡。定位后分两臂处理：工程先落 opt-in 旋钮（零回归），算法语义交科学家议会议决。分支 `feat/affect-debounce-knobs-persona-card`（commit `ec15f26`，未合并）。
+
+- **人格卡模板（治"编造关系"）**：新增 `persona.example.json`（"诚实陌生人"——明确初次对话、无共同往事、被问身份/关系如实说、不编故事；脾气仍交给 `_CONVERSE_SYS`）。置于仓库根（`data/` 被 gitignore），`.env.example` 补 `cp → data/persona.json` 启用指引。纯配置、不碰 affect/language 逻辑。
+- **防抖旋钮（代码默认=旧常量，逐字零回归）**：`ZERO_EMOTION_NOISE_STD`（每轮情绪噪声 std，默认 0.05）→ `chat_driver`；`ZERO_SAMPLE_SIGMA_MAX`（后验采样 sigma 上限，默认 0.5）→ `sample_affect` 加 `sigma_cap` 参，经 `AffectState.sample_sigma_cap` 穿透（照搬 `rng_seed` 路径、`affect_math` 保持纯函数）。
+- **P5 可复现**：`ZERO_CHAT_RNG_SEED` 单种子贯穿 `--chat` 两处随机源（引擎后验采样 `session.rng_seed` + chat 层情绪噪声 `ChatDriver.rng_seed`）；未设=零回归、走旧随机；eval 设它即逐轮逐字复现（修议会点名"`random.gauss` 不受 rng_seed 控制"的缺陷）。
+- **科学家议会四席评议（数学/心理/神经/CS，只读·强制引文）**：判定 **NEEDS-CHANGES**，落库 [notes/2026-06-30-emotion-debounce-knobs-council-decision.md](notes/2026-06-30-emotion-debounce-knobs-council-decision.md)。共识——降 cap/噪声只是**临时安全网**；真因在 **① 先验量级稀释**（`chat_driver` 构造 Stimulus 时 `standard_compliance=0`，OCC 0.3 权重结构性空置 → 敌意句 post_mu valence 仅 ≈-0.35、cap 对典型输入根本不生效）+ **② 逐轮 i.i.d. 采样违反情绪时序自相关**（应 AR(1)/OU；翻号=情境-情绪解耦=病态，非健康变异）。推荐值（`SIGMA_MAX` 0.10-0.12 / `NOISE_STD` 0.01-0.02、eval 设 0）按 CS 席治理原则**走 `.env.example` 文档、不改代码默认**。
+- **根因二轮议决（心理+CS 两席，落库同纪要「二轮议决」段）**：**P3** appraise 分级标定校准（`ZERO_APPRAISE_CALIBRATE` 门控、默认关零回归，抵消 LLM 正向偏置使敌意→-0.7~-0.9）**两席 PASS → 已实现**；**P1(a)** `standard_compliance=v` 心理席判**失真·否决**（合并 OCC 正交两维=删 reproach 通道）；**P1(b)** appraise 增独立 standard 维度=忠实主路径（议会背书）——但 **2026-07-01 P3 eval（`scripts/verify_appraise_calibration.py`）裁决：deepseek-v4-pro 无议会假设的正向偏置（敌意本读 -0.8/-0.9、那 premise 属 qwen-flash/GPT-4）、先验不弱 → P1(b) 本模型无必要**，改判「除非换有正向偏置模型再验」（见 notes 末 eval 段）；**P4 已实现**：三轮议会（数学+神经）一致 α——`ZERO_AFFECT_READOUT=map` 取后验均值 `e*=post_mu`（MMSE，消单样本翻号；时序交既有 AR1≈0.4，=OU 离散化不双计数），默认 `sample` 零回归。
+- **治理**：两轮议会全程只读、未介入数据产生，仅给设计参数范围 + 根因 + 标定准则（合规）；工程未替引擎拍默认值，P3 标定锚是「准则」非「替某句话定数值」（守 [analysis-results-first 红线](.claude/rules/)）。
+- **验证**：`pytest` **367 passed / 5 skipped**（+9 新测：sigma_cap 零回归逐字相等 + 低 cap 降抖 / NOISE_STD 默认与覆盖 / rng_seed 复现 / sample_sigma_cap 穿 flags / persona 模板可读 / P3 标定门控默认关与开启注入）；ruff/format/mypy 干净。
+- **治理**：`code-reviewer` 独立审 **PASS / 0 BLOCK**；3 WARN 记为 follow-up（W2 noise_std 在 `step()` 读 env——随 chat_driver 既有 in-step 约定，与 `ZERO_EMOTION_BASELINE_ATTITUDE_W`/`HISTORY_*` 一致，`sigma_cap`/`rng_seed` 走工厂是因须达 session/graph；W1 affect_core 每轮重建 rng、W3 appraise 读 env 均既有模式），不在本轮扩面。逐项核：层封装 / affect_math 纯函数 / 节点契约 / 热路径无 LLM 污染 / 记忆未触动 / 零回归 全 PASS。
+- **后续精简（2026-07-01·同分支）**：移除内联 `ZERO_PERSONA` 快捷入口——与 `ZERO_PERSONA_FILE` 冗余（JSON 只写 `card` 一个字段即等价），内联长文本还令 `.env` 臃肿。人格入口**统一为 `ZERO_PERSONA_FILE`**：`persona.py` 删 `os.getenv("ZERO_PERSONA")` 分支（早返回中性 `Persona()`）、`test_persona` 删 inline 测试、README/ai-docs/persona-injection 图同步（图重渲、临时画板已删）。pytest 368 passed。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）

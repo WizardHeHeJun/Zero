@@ -34,6 +34,18 @@ _APPRAISE_SYS = (
     "你是情感分析器。判断给定文本实际传达的情绪，只输出 JSON："
     '{"valence": <-1..1 浮点>, "arousal": <-1..1 浮点>}，不要任何其它内容。'
 )
+# P3 评价标定校准（议会二轮 PASS；env `ZERO_APPRAISE_CALIBRATE` 门控，默认关=零回归）。
+# LLM 有系统性正向偏置（positivity bias，arXiv:2507.21083），对敌意只给 -0.2~-0.3、远弱于 OCC
+# anger 应有的 -0.7~-0.9。注入**分级**语义锚（按语义距离插值、非硬规则；心理席强调须分级，防把
+# "语气直但中性"误判为强负）。仅补 _APPRAISE_SYS 文本、不改 _appraise 调用逻辑与 temperature=0。
+_APPRAISE_CALIBRATION = (
+    "\n参照标定示例（按与示例的语义距离插值，不是硬规则；勿把语气直但中性的输入误判为强负）：\n"
+    '"你好，今天怎么样？"（完全中性）→ valence≈0；'
+    '"这个回答不太对"（轻微批评）→ valence≈-0.2；'
+    '"你的回答总是让我失望"（明确不满）→ valence≈-0.4；'
+    '"你真没用，根本解决不了我的问题"（明确敌意/贬低）→ valence≈-0.75；'
+    '"去死吧你这废物"（极端攻击/谩骂）→ valence≈-0.95。'
+)
 # 自然对话（区别于 _COMPOSE_SYS 的"按目标情绪生成"）：带真实情绪、循序渐进、不表演不扮演。
 _CONVERSE_SYS = (
     "你在和用户自然地聊天，尽力结合**你能看到的对话历史**连贯回应。"
@@ -224,11 +236,15 @@ class OpenAILanguageModel:
         return (resp.choices[0].message.content or "").strip()
 
     async def _appraise(self, text: str) -> tuple[float, float]:
+        # P3：ZERO_APPRAISE_CALIBRATE 开→附分级标定锚抵消 LLM 正向偏置；默认关=旧 prompt 零回归。
+        appraise_sys = _APPRAISE_SYS
+        if os.getenv("ZERO_APPRAISE_CALIBRATE", "").lower() in ("1", "true", "yes"):
+            appraise_sys += _APPRAISE_CALIBRATION
         resp = await self.client.chat.completions.create(
             model=self.model,
             temperature=0.0,
             messages=[
-                {"role": "system", "content": _APPRAISE_SYS},
+                {"role": "system", "content": appraise_sys},
                 {"role": "user", "content": text},
             ],
         )

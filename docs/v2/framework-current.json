@@ -48,7 +48,7 @@
           "fillColor": "#FEE3E2", "borderColor": "#D25D5A", "borderWidth": 3, "borderRadius": 10,
           "children": [
             { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🧠 情感引擎 · 贝叶斯主动推断", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "OCC评价 → TD价值/精度 → 显著度门控\n工作空间(并行流 ignite) → 后验采样 e*", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "OCC评价 → TD价值/精度 → 显著度门控\n工作空间(并行流 ignite) → 后验读出 e*\n(采样默认 / MAP均值稳定 · 消逐轮翻号)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
           ]
         },
         {

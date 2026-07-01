@@ -72,22 +72,20 @@ def _persona_from_dict(data: dict[str, object]) -> Persona:
 
 
 def load_persona() -> Persona:
-    """从环境装配 Persona。未配置任何项 → 返回中性 `Persona()`（== 现有行为，零回归）。
+    """从环境装配 Persona。未配置 `ZERO_PERSONA_FILE` → 中性 `Persona()`（== 现有行为，零回归）。
 
-    两种来源（互补）：
-    - `ZERO_PERSONA_FILE`：人格定义 JSON 文件路径（全字段：name/card/setpoint/reactivity/
-      recovery/initial_attitude/seed_memories，均可选）。**显式给了路径却读不出/格式错 → 抛错**
-      （配置错误 fail-fast，不静默退化中性，见 [[config-only-via-env]]）。
-    - `ZERO_PERSONA`：仅人设卡文本的快捷入口（只配 L1 时省去写文件）；与文件并存时文件优先。
+    唯一来源 `ZERO_PERSONA_FILE`：人格定义 JSON 文件路径（全字段 name/card/setpoint/reactivity/
+    recovery/initial_attitude/seed_memories，**均可选**——只想要人设卡就只写 `card` 一个字段，
+    免去往 `.env` 塞长文本、也不让配置臃肿）。**显式给了路径却读不出/格式错 → 抛错**（配置错误
+    fail-fast，不静默退化中性，见 [[config-only-via-env]]）。
     """
     path = os.getenv("ZERO_PERSONA_FILE")
-    if path:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        if not isinstance(data, dict):
-            raise ValueError(
-                f"ZERO_PERSONA_FILE={path} 顶层须为 JSON 对象，得到：{type(data).__name__}"
-            )
-        return _persona_from_dict(data)
-    card = os.getenv("ZERO_PERSONA", "")
-    return Persona(card=card)
+    if not path:
+        return Persona()
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"ZERO_PERSONA_FILE={path} 顶层须为 JSON 对象，得到：{type(data).__name__}"
+        )
+    return _persona_from_dict(data)
