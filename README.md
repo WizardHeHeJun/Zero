@@ -208,8 +208,7 @@ python -m scripts.train_prosody --root data/ravdess --epochs 300   # 权重存 a
 python -m scripts.demo_pipeline                                    # 端到端：合成训练 → 注入 → 跑（无需外部数据）
 ```
 
-> **预训练权重怎么用**：从 Release 下载权重 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore）即可——各 `load_*` / `scripts/*`（如 `demo_pipeline`）会自动加载；缺某个权重时对应通道回退内置默认/占位，不影响其它通道。
-> - 下载源：稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件自带全部 5 个权重，或权重专发 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（真实数据训练）。
+> **不想自己训练？直接用现成权重**：真实数据训练好的权重已随 Release 提供，拿来即用——从 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件是同一份）下载 5 个 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore），各 `load_*` / `scripts/*`（如 `demo_pipeline`）自动加载；缺某通道回退内置默认 / 占位、不影响其它。
 > - 五通道：`text_affect_regressor.pt` / `text_affect_regressor_st.pt`（文本→(v,a)，词袋 / 句向量，EmoBank）· `prosody_decoder.pt`（(v,a)→韵律，RAVDESS）· `physiology_decoder.pt`（(v,a)→生理，WESAD）· `expression_decoder.pt`（(v,a)→表情 FACS，demo）。
 
 > **日志与排障**：每次启动落一份 `logs/zero-<时间戳>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。
