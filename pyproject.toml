@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "情感表达多 Agent 系统（研究原型/骨架）"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "langgraph>=0.2",
+    "langgraph>=1.2",
     "pydantic>=2",
 ]
 
@@ -12,7 +12,7 @@ dependencies = [
 # 真网络化（ExpressionAgent 等占位的可训练替换）；本机用 conda env affective-expression 安装。
 ml = [
     "torch>=2.2",
-    "numpy>=1.26",
+    "numpy>=2",
     "librosa>=0.10",
     "scipy>=1.10",
 ]
@@ -21,11 +21,11 @@ db = [
     "langgraph-checkpoint-sqlite",
     "langgraph-checkpoint-postgres",
     "psycopg[binary]>=3",
-    "neo4j>=5",
+    "neo4j>=6",
 ]
 # 真语言层：OpenAI 兼容接口 adapter（编排层默认不依赖，注入 OpenAILanguageModel 时才需）
 llm = [
-    "openai>=1.0",
+    "openai>=2",
 ]
 # 语义记忆侧信道（深度集成）：Graphiti（LLM 抽实体/关系入图 + 语义/向量检索；自带 neo4j/openai）。
 # 与确定性 GraphStore 并存、默认关；置 ZERO_SEMANTIC_BACKEND=graphiti 时才需。
@@ -41,20 +41,20 @@ graphiti = [
 # 带语义泛化、跨域更稳。独立于 ml（避免 transformers 几百 MB 拖重 ml）；默认词袋版不引入。
 # 训练/推理句向量版（STTextAffectRegressor / train_text_affect_st）时才需。
 nlp = [
-    "sentence-transformers>=2.2",
+    "sentence-transformers>=5",
 ]
 # 表示空间 steering（输出侧）：把 e*=(v,a) 作为 steering 坐标加到开放权重 LM 的隐状态。
 # 注入 SteeringLanguageModel 且用默认 transformers 后端时才需；编排层/默认路径不依赖。
 steer = [
     "torch>=2.2",
-    "transformers>=4.40",
-    "numpy>=1.26",
+    "transformers>=5",
+    "numpy>=2",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.23",
+    "pytest>=9",
+    "pytest-asyncio>=1",
     "ruff",
     "mypy",
 ]

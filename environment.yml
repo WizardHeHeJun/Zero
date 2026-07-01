@@ -18,27 +18,27 @@ dependencies:
   - pip
   - pip:
       # 运行依赖（= pyproject [project].dependencies）
-      - langgraph>=0.2
+      - langgraph>=1.2
       - pydantic>=2
       # 开发工具（= pyproject [dependency-groups].dev）
-      - pytest>=8
-      - pytest-asyncio>=0.23
+      - pytest>=9
+      - pytest-asyncio>=1
       - ruff
       - mypy
       # ── 常用 optional extra（= pyproject [project.optional-dependencies]）──
       # ml：真网络化解码器（韵律/生理/表情）
       - torch>=2.2
-      - numpy>=1.26
+      - numpy>=2
       - librosa>=0.10
       - scipy>=1.10
       # llm：OpenAI 兼容接口（--chat / --llm 真模型）
-      - openai>=1.0
+      - openai>=2
       # nlp：文本句向量回归（STTextAffectRegressor）
-      - sentence-transformers>=2.2
+      - sentence-transformers>=5
       # steer：开放权重 VA steering
-      - transformers>=4.40
+      - transformers>=5
       # db：运行态 SQLite/Postgres saver + 长期记忆 Neo4j 驱动（--chat 本地落盘用 sqlite saver）
       - langgraph-checkpoint-sqlite
       - langgraph-checkpoint-postgres
       - psycopg[binary]>=3
-      - neo4j>=5
+      - neo4j>=6
