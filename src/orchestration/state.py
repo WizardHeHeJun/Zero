@@ -106,4 +106,13 @@ class AffectState(BaseModel):
     # 'map'=取后验均值 e*=post_mu（MMSE 最优点估计），消除单样本大方差致的逐轮翻号，时序连续性
     # 交既有 emotion_decay_step 的 AR1≈0.4 承担（OU 离散化）。由 ZERO_AFFECT_READOUT 注入。
     affect_readout: str = "sample"
+    # arousal 证据基准平移（P1-c 议会 Q7）：默认 0.0=旧整流行为（arousal 恒正）；负值启用
+    # deactivation（平淡低强度输入可给零/负 arousal，副交感臂）。AppraisalAgent 读 → occ_prior，
+    # 由 chat_driver 读 ZERO_AROUSAL_BASELINE 注入。仅标量，不入 LLM 数学（守热路径红线）。
+    arousal_baseline: float = 0.0
+    # arousal_gain 增益上限（P4-d 议会二轮·廉价 cap 防御）：默认 None → 不 cap（旧线性无界行为，
+    # 零回归）；设 x∈[0.3,0.6] → arousal_gain 无条件钳到 1+x（高唤醒段效果最显著），
+    # 防正反馈无界放大。完整倒 U 立项排后（值得升级的实测触发 arousal>0.5）。仅 workspace 路径用；
+    # 标量、不入 LLM 热路径。
+    arousal_gain_cap: float | None = None
     task_complete: bool = False

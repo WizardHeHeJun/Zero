@@ -74,6 +74,8 @@ async def run(
     rng_seed: int | None = None,
     sample_sigma_cap: float | None = None,
     affect_readout: str = "sample",
+    arousal_baseline: float = 0.0,
+    arousal_gain_cap: float | None = None,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -118,6 +120,8 @@ async def run(
                 "rng_seed": rng_seed,
                 "sample_sigma_cap": sample_sigma_cap,
                 "affect_readout": affect_readout,
+                "arousal_baseline": arousal_baseline,
+                "arousal_gain_cap": arousal_gain_cap,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -170,6 +174,8 @@ class ConversationSession:
         rng_seed: int | None = None,
         sample_sigma_cap: float | None = None,
         affect_readout: str = "sample",
+        arousal_baseline: float = 0.0,
+        arousal_gain_cap: float | None = None,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -201,6 +207,8 @@ class ConversationSession:
             "rng_seed": rng_seed,
             "sample_sigma_cap": sample_sigma_cap,
             "affect_readout": affect_readout,
+            "arousal_baseline": arousal_baseline,
+            "arousal_gain_cap": arousal_gain_cap,
         }
 
     async def step(self, stim: Stimulus) -> dict[str, Any]:

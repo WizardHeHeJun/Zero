@@ -73,18 +73,25 @@ def occ_prior(
     standard_compliance: float,
     attitude_appeal: float,
     intensity: float,
+    *,
+    arousal_baseline: float = 0.0,
 ) -> tuple[tuple[float, float], tuple[float, float], float]:
     """OCC 评价 → (prior_mu, prior_sigma, reward)。
 
     valence 由目标/标准/态度一致性线性合成；arousal 由强度与 |效价| 合成；
     sigma 随显著度上升而下降（越显著越确定）；reward = 目标一致性（闭合 2↔3）。
+    `arousal_baseline`（默认 0.0，零回归）平移 arousal 证据基准，设负值启用 deactivation（Q7）。
     """
     valence = clamp(
         0.5 * goal_congruence + 0.3 * standard_compliance + 0.2 * attitude_appeal,
         -1.0,
         1.0,
     )
-    arousal = clamp(0.4 * abs(intensity) + 0.6 * abs(valence), -1.0, 1.0)
+    # P1-c（议会 Q7·失真必改）：`arousal_baseline` 让平淡输入可给零/负 arousal 证据（副交感
+    # deactivation 臂；circumplex 下半区）。默认 0.0 = 逐字旧行为（arousal 恒正整流，零回归）；
+    # 设负值（如 -0.08 抵消 0.4·下限）则低强度低 |valence| 的平淡对话把 arousal 拉向静息/负。
+    # `0.6·|valence|`（circumplex V 形，Kuppens 2013）保留——强情绪两端仍抬唤醒。纯参数、无 env。
+    arousal = clamp(0.4 * abs(intensity) + 0.6 * abs(valence) + arousal_baseline, -1.0, 1.0)
     conf = clamp(0.3 + 0.5 * abs(intensity), 0.0, 1.0)
     sigma = max(MIN_SIGMA, 0.5 * (1.0 - conf))
     reward = clamp(goal_congruence, -1.0, 1.0)
@@ -355,6 +362,7 @@ def attitude_step(
     rate: float = ATTITUDE_RATE,
     reversion: float = ATTITUDE_REVERSION,
     setpoint: tuple[float, float] = ATTITUDE_SETPOINT,
+    reversion_a: float | None = None,
 ) -> tuple[float, float]:
     """慢变态度/印象：按 stimulus 缓慢累积 + 向个体基线弱回归（evaluative conditioning）。
 
@@ -362,8 +370,14 @@ def attitude_step(
     稳定、对象指向的评价（Scherer/Frijda 的 sentiment/attitude 层）。`reversion` 项是议会必改：
     无它则持续同向 stimulus 把 attitude 单调推到极端（affective homeostasis 缺失 / 慢性应激无负
     反馈，Russell 2003 · Kuppens 2010）；有它则恒定刺激下稳态 a*≈rate·s/(rate+reversion)、被钳在
-    |s| 内不无限漂移，刺激停歇时缓慢回基线。`reversion=0` 退化为旧纯 EWMA（零回归开关）。纯函数。
+    |s| 内不无限漂移，刺激停歇时缓慢回基线。`reversion=0` 退化为旧纯 EWMA（零回归开关）。
+
+    P1-b（议会 Q2b·失真必改）：`reversion_a` 为 arousal 维**独立**回归率（默认 None → 用 `reversion`
+    两维同构=逐字旧行为、零回归）。心理席主裁：attitude 是 valence 维评价，"对某人的长期唤醒基线"
+    无文献先例。设 `reversion_a`≫`reversion`（纪要推荐 0.3–0.5）使 arousal 稳态 a*≈setpoint_a≈0，
+    功能上令 attitude 不再累积 arousal 直流偏置，同时不改二元组结构（零 breaking）。纯函数。
     """
+    rev_a = reversion if reversion_a is None else reversion_a
     return (
         clamp(
             (1.0 - rate) * attitude[0]
@@ -373,13 +387,24 @@ def attitude_step(
             1.0,
         ),
         clamp(
-            (1.0 - rate) * attitude[1]
-            + rate * stimulus[1]
-            - reversion * (attitude[1] - setpoint[1]),
+            (1.0 - rate) * attitude[1] + rate * stimulus[1] - rev_a * (attitude[1] - setpoint[1]),
             -1.0,
             1.0,
         ),
     )
+
+
+def habituation_factor(exposure: int, tau: float) -> float:
+    """习惯化衰减系数 η(n)=exp(−n/τ)（Groves & Thompson 1970 双过程；重复刺激响应递减）。
+
+    P2（议会 Q6·失真必改）：对同一对话对象累计曝光 `exposure` 轮，给 arousal 输入乘 η∈(0,1] 衰减
+    （SCR 习惯化 5–10 次趋零 → τ≈5–10）。`tau<=0` → 返回 1.0（不衰减，零回归开关）；`exposure` 负
+    值按 0 处理。纯函数、无 I/O、无 env——衰减只由上层（chat_driver）按 env `ZERO_HABITUATION_TAU`
+    决定是否施加、施加于哪一维（守 affect_math 纯函数红线）。
+    """
+    if tau <= 0.0:
+        return 1.0
+    return math.exp(-max(0, exposure) / tau)
 
 
 def emotion_decay_step(

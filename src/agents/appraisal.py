@@ -27,6 +27,7 @@ class AppraisalAgent:
             stim.standard_compliance,
             stim.attitude_appeal,
             stim.intensity,
+            arousal_baseline=state.arousal_baseline,  # P1-c(Q7)：0.0 零回归；负值启 deactivation
         )
         if state.recalled_disposition is not None:
             biased_v = clamp(

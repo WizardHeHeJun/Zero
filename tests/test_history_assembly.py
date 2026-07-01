@@ -125,6 +125,7 @@ class _RecordingLM:
         retrieved: str = "",
         *,
         push: bool = False,
+        relationship_hint: str = "",
     ) -> str:
         self.seen_history = history
         return "好的"
