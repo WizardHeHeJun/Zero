@@ -216,6 +216,12 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 所有运行配置都走 `.env`（复制 [.env.example](.env.example) 起步），代码不写死模型/后端默认。**不设任何变量即全内存占位、零依赖可跑**；`.env.example` 里每个变量都有一行速记，下面按用途分组给出完整说明。
 
+**怎么读 `.env`（三类）**：
+
+- **【必填】** 只有 `ZERO_OPENAI_API_KEY` + `ZERO_OPENAI_MODEL`（接真 LLM 用；缺了 `--chat` 自动回退词典+模板，仍能跑）。
+- **后端选择**（顶部各组）：`.env.example` 里给出的赋值就是**各自默认值**，写不写效果一样，想切落盘/真库才改。
+- **可选旋钮**（底部）：默认**注释掉** = 用内置默认；取消注释才覆盖。其中 ⭐ 是**数字人推荐开**——`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号），两个足矣；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
+
 ### 运行后端
 
 运行态 Checkpointer 与 长期记忆图谱**各自独立选后端**，可任意组合；默认都在内存，落盘 / 真后端按需开。
