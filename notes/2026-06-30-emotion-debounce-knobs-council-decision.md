@@ -160,3 +160,24 @@
 - Kuppens, P. et al. (2015). Emotional inertia... *PMC4705270*. [PMC](https://pmc.ncbi.nlm.nih.gov/articles/PMC4705270/) — 负性情绪 AR1≈0.33-0.40 实证。
 - Minimum mean square error estimator. [Wikipedia](https://en.wikipedia.org/wiki/Minimum_mean_square_error_estimator) — MMSE = 后验均值。
 - Elliptical Ornstein–Uhlenbeck process. [arXiv:2001.05965](https://arxiv.org/pdf/2001.05965) — OU 均匀采样等价 AR(1) 的离散化推导。
+
+---
+
+## P3 标定 eval 实测 + P1(b) 裁决（2026-07-01，`scripts/verify_appraise_calibration.py`）
+
+议会二轮定「P1(b) 须先过 P3 的 LLM eval」。**实测 `deepseek-v4-pro`（用户当前 .env 模型）**：
+
+| 输入 | 标定关(默认) | 标定开(P3) |
+| --- | --- | --- |
+| 完全中性 | (0.0,0.0) | (0.0,0.0) |
+| 语气直但中性 | (-0.1,-0.2) | (0.0,0.0) |
+| 轻微批评 | (-0.5,-0.3) | (-0.2,-0.2) |
+| **明确敌意** | **(-0.8,0.6)** | (-0.75,0.8) |
+| **极端攻击** | **(-0.9,0.8)** | (-0.85,0.9) |
+
+**发现（推翻议会一个前提）**：deepseek-v4-pro **无议会假设的正向偏置**——敌意本就读 -0.8/-0.9（议会的「软 appraise -0.2~-0.3」premise 来自 GPT-4 文献 [arXiv:2507.21083](https://arxiv.org/abs/2507.21083) + 原始翻号所在的 **qwen-flash**，**不适用本模型**）。标定开反而把强敌意略削（锚 -0.75/-0.95 比模型天然读数还轻、成天花板）；它真正的作用是**纠中性/轻负端的 over-negative**（"语气直但中性" -0.1→0、"轻微批评" -0.5→-0.2）。
+
+**裁决**：
+- **P1(b) 不予落地**——其前提（先验量级弱、需增独立 standard 维度抬 valence）**在 deepseek 上不成立**（先验已强）；议会的 eval 门**未过**（"过"应是"标定确把弱先验拉强"，实测是"先验本就强、标定反微降"）。P1(b) 从「排中期」改判**「本模型无必要，除非换用有正向偏置的模型（如 qwen-flash）再验」**。
+- **P3 `ZERO_APPRAISE_CALIBRATE`**：deepseek 上属**可选的 gradation 微调**（改善轻批评/中性端），非「救软 appraise」；强敌意场景可略削峰值。**模型相关，各模型各验一次**。
+- **P4 `ZERO_AFFECT_READOUT=map`**：唯一**模型无关**的翻号根治（消采样方差），不受此发现影响，仍推荐。
