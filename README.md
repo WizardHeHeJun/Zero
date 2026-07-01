@@ -209,7 +209,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 ```
 
 > **预训练权重怎么用**：从 Release 下载权重 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore）即可——各 `load_*` / `scripts/*`（如 `demo_pipeline`）会自动加载；缺某个权重时对应通道回退内置默认/占位，不影响其它通道。
-> - 下载源：稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件自带全部 5 个权重，或权重专发 [`weights-v0.2`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.2)（真实数据训练）。
+> - 下载源：稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件自带全部 5 个权重，或权重专发 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（真实数据训练）。
 > - 五通道：`text_affect_regressor.pt` / `text_affect_regressor_st.pt`（文本→(v,a)，词袋 / 句向量，EmoBank）· `prosody_decoder.pt`（(v,a)→韵律，RAVDESS）· `physiology_decoder.pt`（(v,a)→生理，WESAD）· `expression_decoder.pt`（(v,a)→表情 FACS，demo）。
 
 > **日志与排障**：每次启动落一份 `logs/zero-<时间戳>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。
