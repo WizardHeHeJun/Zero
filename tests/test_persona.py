@@ -88,11 +88,13 @@ def test_load_persona_malformed_pair_raises(monkeypatch: pytest.MonkeyPatch, tmp
 
 
 def test_repo_persona_example_loads(monkeypatch: pytest.MonkeyPatch) -> None:
-    """根目录 persona.example.json 模板：经 ZERO_PERSONA_FILE 可读出、card 非空、表「不编造」。"""
+    """personas/persona.example.json 模板：经 ZERO_PERSONA_FILE 可读出、card 非空、表「不编造」。"""
     from pathlib import Path
 
-    example = Path(__file__).resolve().parent.parent / "persona.example.json"
-    assert example.exists()  # committed 模板（data/ 被 gitignore，故置于根目录）
+    example = Path(__file__).resolve().parent.parent / "personas" / "persona.example.json"
+    assert (
+        example.exists()
+    )  # committed 模板（personas/ 里 *.example.json 随仓库共享，个人 *.json 走 gitignore）
     monkeypatch.setenv("ZERO_PERSONA_FILE", str(example))
     p = load_persona()
     assert p.card  # L1 卡非空

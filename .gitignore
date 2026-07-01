@@ -64,7 +64,11 @@ pgdata/
 neo4j_data/
 redis_data/
 *.dump
-data/
+# data/ 是本地用户数据(库文件/数据集/缓存), 不进版本库
+data/*
+# personas/ 放人格卡: *.example.json 模板随仓库共享; 个人真实人格(*.json)不进版本库, 可放多份随时切换(改 ZERO_PERSONA_FILE 指向)
+personas/*.json
+!personas/*.example.json
 artifacts/
 
 # ── 日志 / 临时 ────────────────────────────────────

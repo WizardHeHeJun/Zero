@@ -1,6 +1,8 @@
 # 工程进度与成果记录
 
-> **AI 数字人**（情感引擎 ⊗ LLM，拟人情感交流）的建设记录；当前主体为情感表达子系统（affective-expression）。更新于 2026-06-29。前瞻路线图见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)。
+> **AI 数字人**（情感引擎 ⊗ LLM，拟人情感交流）的建设记录；当前主体为情感表达子系统（affective-expression）。更新于 2026-07-02（已到阶段 32）。前瞻路线图见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)。
+>
+> 注：本文件是**本地工程记录**，不从对外 README 链接（README 只放对外能力，工程进度留此）。
 
 ## 缘起
 
@@ -294,7 +296,7 @@
 
 真实 `--chat`（qwen-flash）现场两症状：①问"你谁啊"时无人格锚 → LLM 即兴编造一段恩怨戏（"昨晚把你从酒吧拖回来"）；②用户连续敌意时，逐轮情绪标签翻号（愤怒↔兴奋）、与对话内容解耦、且整体偏平淡。定位后分两臂处理：工程先落 opt-in 旋钮（零回归），算法语义交科学家议会议决。分支 `feat/affect-debounce-knobs-persona-card`（commit `ec15f26`，未合并）。
 
-- **人格卡模板（治"编造关系"）**：新增 `persona.example.json`（"诚实陌生人"——明确初次对话、无共同往事、被问身份/关系如实说、不编故事；脾气仍交给 `_CONVERSE_SYS`）。置于仓库根（`data/` 被 gitignore），`.env.example` 补 `cp → data/persona.json` 启用指引。纯配置、不碰 affect/language 逻辑。
+- **人格卡模板（治"编造关系"）**：新增 `persona.example.json`（"诚实陌生人"——明确初次对话、无共同往事、被问身份/关系如实说、不编故事；脾气仍交给 `_CONVERSE_SYS`）。`.env.example` 补 `cp → data/persona.json` 启用指引。纯配置、不碰 affect/language 逻辑。**（2026-07-02 文档同步：模板从仓库根移至 `data/persona.example.json`，与真正的 `data/persona.json` 同处一目录；`.gitignore` 由 `data/` 改 `data/*` + `!data/persona.example.json` 放行该模板，测试路径同步。）**
 - **防抖旋钮（代码默认=旧常量，逐字零回归）**：`ZERO_EMOTION_NOISE_STD`（每轮情绪噪声 std，默认 0.05）→ `chat_driver`；`ZERO_SAMPLE_SIGMA_MAX`（后验采样 sigma 上限，默认 0.5）→ `sample_affect` 加 `sigma_cap` 参，经 `AffectState.sample_sigma_cap` 穿透（照搬 `rng_seed` 路径、`affect_math` 保持纯函数）。
 - **P5 可复现**：`ZERO_CHAT_RNG_SEED` 单种子贯穿 `--chat` 两处随机源（引擎后验采样 `session.rng_seed` + chat 层情绪噪声 `ChatDriver.rng_seed`）；未设=零回归、走旧随机；eval 设它即逐轮逐字复现（修议会点名"`random.gauss` 不受 rng_seed 控制"的缺陷）。
 - **科学家议会四席评议（数学/心理/神经/CS，只读·强制引文）**：判定 **NEEDS-CHANGES**，落库 [notes/2026-06-30-emotion-debounce-knobs-council-decision.md](notes/2026-06-30-emotion-debounce-knobs-council-decision.md)。共识——降 cap/噪声只是**临时安全网**；真因在 **① 先验量级稀释**（`chat_driver` 构造 Stimulus 时 `standard_compliance=0`，OCC 0.3 权重结构性空置 → 敌意句 post_mu valence 仅 ≈-0.35、cap 对典型输入根本不生效）+ **② 逐轮 i.i.d. 采样违反情绪时序自相关**（应 AR(1)/OU；翻号=情境-情绪解耦=病态，非健康变异）。推荐值（`SIGMA_MAX` 0.10-0.12 / `NOISE_STD` 0.01-0.02、eval 设 0）按 CS 席治理原则**走 `.env.example` 文档、不改代码默认**。
@@ -303,6 +305,7 @@
 - **验证**：`pytest` **367 passed / 5 skipped**（+9 新测：sigma_cap 零回归逐字相等 + 低 cap 降抖 / NOISE_STD 默认与覆盖 / rng_seed 复现 / sample_sigma_cap 穿 flags / persona 模板可读 / P3 标定门控默认关与开启注入）；ruff/format/mypy 干净。
 - **治理**：`code-reviewer` 独立审 **PASS / 0 BLOCK**；3 WARN 记为 follow-up（W2 noise_std 在 `step()` 读 env——随 chat_driver 既有 in-step 约定，与 `ZERO_EMOTION_BASELINE_ATTITUDE_W`/`HISTORY_*` 一致，`sigma_cap`/`rng_seed` 走工厂是因须达 session/graph；W1 affect_core 每轮重建 rng、W3 appraise 读 env 均既有模式），不在本轮扩面。逐项核：层封装 / affect_math 纯函数 / 节点契约 / 热路径无 LLM 污染 / 记忆未触动 / 零回归 全 PASS。
 - **后续精简（2026-07-01·同分支）**：移除内联 `ZERO_PERSONA` 快捷入口——与 `ZERO_PERSONA_FILE` 冗余（JSON 只写 `card` 一个字段即等价），内联长文本还令 `.env` 臃肿。人格入口**统一为 `ZERO_PERSONA_FILE`**：`persona.py` 删 `os.getenv("ZERO_PERSONA")` 分支（早返回中性 `Persona()`）、`test_persona` 删 inline 测试、README/ai-docs/persona-injection 图同步（图重渲、临时画板已删）。pytest 368 passed。
+- **人格卡迁出 data/ → 独立 `personas/` 目录（2026-07-01·同分支）**：用户指出个人配置对项目流程**强耦合**（一旦经 `ZERO_PERSONA_FILE` 启用即不可随手删：缺文件 fail-fast、见 `persona.py:85` `open()` 无兜底），不该与 `data/` 里**可丢弃**的库文件/数据集/缓存混放。先抽到通用 `config/`、后按「专放人格 + 支持切换」定名 `personas/`（复数=可放多份人格、`ZERO_PERSONA_FILE` 指向哪份即切换，`load_persona()` 本就读任意路径、**无需新代码**）。模板 `personas/persona.example.json` 随仓库共享（`git mv` 保留回根的历史链）、个人 `personas/persona.json` gitignore；`.gitignore` 由「`data/*` + `!data/persona.example.json` 白名单」改为「`personas/*.json` 忽略 + `!personas/*.example.json` 放行」（模板共享 / 个人多份人格均不入库，与 `data/` 全忽略语义相反）；`.env.example`/README（目录树 + 指定人格正文，补切换说明）/`test_persona` 路径同步。纯目录/配置迁移——`persona.py` 加载逻辑零改、`main.py` 零改。`pytest` **390 passed / 5 skipped**、ruff/format 干净（mypy 仅 `test_persona` 既有 `_RecordingSemantic` 协议漂移一处，HEAD 即有、与本改动无关）。
 
 ### 阶段 29 — 带对话内容的可读日志（每轮 step 落 `logs/conversation-*.log`）
 
@@ -352,7 +355,7 @@
 
 ## 成果与验证
 
-- **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
+- **测试**：`pytest` **390 passed, 5 skipped**（累计至阶段 32：情感引擎内核 + 两时间尺度情绪 + 注意力↔记忆桥 + 人格注入 + seeking 吸引盆两轮裁决落地等；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy src`（49 文件）干净。（早期各阶段的历史通过数见对应「阶段」小节。）
 - **测试覆盖**：节点契约、条件边路由、闭环轨迹、双通路差异、在线 TD 收敛、记忆节流/scope、层依赖、数学内核边界、各通道 loader（合成 fixture 真实跑通 librosa/scipy）、端到端注入。
 - **端到端 demo 实测**：对负向刺激产出 `e*≈(-0.45, 0.61)` → "angry"，FACS 以 AU04/AU15 主导、心率 ~96bpm，全部由训练模型经 6 节点管线生成。
 
@@ -402,7 +405,7 @@ DATASETS.md                                   数据集清单
 
 > 详见 [notes/2026-06-25-roadmap-bionic-human.md](notes/2026-06-25-roadmap-bionic-human.md)（定位确认 + 现状缺口 + 本地落库设计 + 学术依据）。**已定**：chat 默认翻为**本地落盘**（SQLite 三件套：运行态 + 确定性图谱 + 语义经历），零依赖内存档保留为 opt-in。
 
-> ⚠ 编号说明：本路线图为**规划标签**，与上方"已完成阶段"序列（现已到**阶段 20**）是两套并行编号、历史遗留。下面按主线给出状态，已实现项标 ✅。
+> ⚠ 编号说明：本路线图为**规划标签**，与上方"已完成阶段"序列（现已到**阶段 32**）是两套并行编号、历史遗留。下面按主线给出状态，已实现项标 ✅。
 
 **记忆主线（近期，逐级依赖）**
 - ✅ **chat 记忆闭环 / recall 回灌**（已由阶段 18–20 实现）：text_affect 接内核（阶段 18，受约束 c）、ConversationModel 协议 + 双存储边界（阶段 19）、recall 默认开回灌对话 + user scope 按 thread 隔离（阶段 20）。supervisor 任务完成节点已写情感事件/disposition/episode。

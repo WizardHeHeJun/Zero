@@ -160,7 +160,8 @@ Zero/
 ├── docs/                    # 对外框架图（详见 docs/README.md）
 ├── diagrams/                # 架构设计图谱系
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
-├── persona.example.json · .env.example              # --chat 人格卡模板 / 配置模板（cp 到 data/ 或 .env 启用）
+├── .env.example                                     # 配置模板（cp 为 .env 启用）
+├── personas/                                        # --chat 人格卡目录：*.example.json 模板随仓库共享 / 个人 *.json 走 gitignore；放多份 persona 改 ZERO_PERSONA_FILE 即切换
 ├── Dockerfile · docker-compose.yml                  # 容器化部署
 └── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti 按需）
 ```
@@ -211,7 +212,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 > **不想自己训练？直接用现成权重**：真实数据训练好的权重已随 Release 提供，拿来即用——从 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件是同一份）下载 5 个 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore），各 `load_*` / `scripts/*`（如 `demo_pipeline`）自动加载；缺某通道回退内置默认 / 占位、不影响其它。
 > - 五通道：`text_affect_regressor.pt` / `text_affect_regressor_st.pt`（文本→(v,a)，词袋 / 句向量，EmoBank）· `prosody_decoder.pt`（(v,a)→韵律，RAVDESS）· `physiology_decoder.pt`（(v,a)→生理，WESAD）· `expression_decoder.pt`（(v,a)→表情 FACS，demo）。
 
-> **日志与排障**：每次启动落一份 `logs/zero-<时间戳>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。
+> **日志与排障**：每次启动落一份 `logs/zero-<时间戳>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。对话另落一份**人读日志** `logs/conversation-<时间戳>.log`（每轮 user/Zero 原文 + 评价/情绪/态度 trace，默认开、`ZERO_CONVERSATION_LOG=0` 关且不落任何对话内容）。
 
 > **开发/测试**：`pytest`（全套回归）· `ruff check . && ruff format .`（风格）· `mypy src`（类型）——保存时基础检查自动跑。
 
@@ -265,7 +266,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 ### 指定人格（`--chat`）
 
-给数字人指定一份人格（能力详见上文「指定人格」一节）：`ZERO_PERSONA_FILE` 指向一个**人格 JSON**（默认不设 = 中性无偏人格、逐字现有行为）。字段全可选（L1 人设卡 + L2 气质底色 + L3 预置关系）——**只想要人设卡就只写 `card` 一个字段**，不必写全、也不用往 `.env` 塞长文本：
+给数字人指定一份人格（能力详见上文「指定人格」一节）：`ZERO_PERSONA_FILE` 指向一个**人格 JSON**（默认不设 = 中性无偏人格、逐字现有行为）。仓库自带一份「诚实陌生人」模板 `personas/persona.example.json`（与真正的 `personas/persona.json` 同处一目录），`cp personas/persona.example.json personas/persona.json` 改改即用（想要多重人格就在 `personas/` 放多份、切换时改 `ZERO_PERSONA_FILE` 指向即可）。字段全可选（L1 人设卡 + L2 气质底色 + L3 预置关系）——**只想要人设卡就只写 `card` 一个字段**，不必写全、也不用往 `.env` 塞长文本：
 
 ```jsonc
 {
@@ -291,12 +292,13 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | 情绪标签逐轮乱跳、与内容不符（敌意却标「兴奋」） | `ZERO_AFFECT_READOUT=map`（取后验均值、消采样翻号） |
 | 敌意/负面被读得太轻 | `ZERO_APPRAISE_CALIBRATE=1`（**视模型**：强模型如 deepseek 本就够负、可不开） |
 | 越聊越「上头」、情绪停在高位 | 调低 `ZERO_EMOTION_BASELINE_ATTITUDE_W`（加大回中性的拉力） |
+| 越聊越「暧昧」/ 关系无端升温、与对话内容脱钩 | `ZERO_INTENSITY_FLOOR=0` + `ZERO_AROUSAL_BASELINE=-0.08` + `ZERO_ATTITUDE_REVERSION_A=0.4`（去 arousal 直流偏置，见下「越聊越暧昧」全表） |
 
 > 两个**自查脚本**（无需改代码）：`python -m scripts.verify_affect_readout`（**无需 LLM**，实证 `map` 把翻号率从 ~20% 压到 0）；`python -m scripts.verify_appraise_calibration`（**需 LLM key**，按你的模型实测标定要不要开）。
 
 ### 微调旋钮·全表
 
-默认开箱即用（仅 `HISTORY_*` / `EMOTION_BASELINE_ATTITUDE_W` 的默认改变 `--chat`，其余默认零回归 / 关）；设计依据见 [PROGRESS.md](PROGRESS.md) 与 [notes/](notes/) 议会纪要。
+默认开箱即用（仅 `HISTORY_*` / `EMOTION_BASELINE_ATTITUDE_W` 的默认改变 `--chat`，其余默认零回归 / 关）；设计依据见 [notes/](notes/) 议会纪要。
 
 **① 数字人情绪 / 对话**
 
@@ -309,7 +311,21 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_CHAT_RNG_SEED` | — | 固定随机种子，贯穿引擎采样 + 情绪噪声，便于 eval 复现（留空=每次随机） |
 | `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」占比；`<1` 给回中性的拉力、防越聊越上头（`1`=旧行为） |
 
-**② 记忆 / 注意力窗 + 召回排序**（默认已按认知科学调好，一般不用动）
+**② 治「越聊越暧昧 / 关系无端升温」**（科学家议会 seeking 吸引盆两轮裁决；默认全逐字零回归、荐值走注释，⭐=数字人推荐开）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_INTENSITY_FLOOR` | 0.2 | ⭐arousal 强度下限；设 `0` 去掉中性输入的正 arousal 直流底噪（暧昧滑移的根之一） |
+| `ZERO_AROUSAL_BASELINE` | 0 | ⭐arousal 基准平移；负值（荐 -0.08）让平淡对话给零/负唤醒（副交感 vagal brake / deactivation） |
+| `ZERO_ATTITUDE_REVERSION_A` | 同 valence(0.01) | ⭐态度 arousal 维**独立**回归率（荐 0.3–0.5）；令长期态度只累积效价、不累积唤醒偏置 |
+| `ZERO_ATTITUDE_SETPOINT_A` | persona.setpoint[1] | 态度 arousal 回归锚；未设=取气质底色的 a、`0`=中性 |
+| `ZERO_HABITUATION_TAU` | 关 | 习惯化 τ(轮，荐 5–10)：重复互动 arousal 响应按 `exp(-n/τ)` 递减（SCR 习惯化）；空/0=关 |
+| `ZERO_AROUSAL_GAIN_CAP` | 不 cap | workspace `arousal_gain` 上限（荐 0.3–0.6）；防高唤醒正反馈失稳；空=旧无界 |
+| `ZERO_ATTITUDE_RATE_DECAY_K` | 0 | 越熟态度形成越慢（关系止血 Q5-A）；`0`=关，仅减缓漂移、非真多稳态 |
+| `ZERO_FAMILIARITY_TAU` | 20 | 熟悉度累积 τ(轮)，配合 `RATE_DECAY_K`；仅 `K>0` 时生效 |
+| `ZERO_RELATIONSHIP_STAGE_HINT` | 关 | 给 LLM 关系距离软提示（曝光三档，关系止血 Q5-B；确定性派生、不经 LLM 判跃迁）；空/0=关 |
+
+**③ 记忆 / 注意力窗 + 召回排序**（默认已按认知科学调好，一般不用动）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
