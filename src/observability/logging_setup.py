@@ -30,6 +30,11 @@ NOISY_THIRD_PARTY = ("httpx", "httpcore", "openai", "urllib3", "sentence_transfo
 FILE_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 CONSOLE_PLAIN_FORMAT = "%(message)s"
 
+# 对话内容日志：专用 logger 名 + 可读块格式（首行带时间戳，message 自身是多行块）。
+CONVERSATION_LOGGER_NAME = "zero.conversation"
+CONVERSATION_FILE_FORMAT = "[%(asctime)s] %(message)s"
+CONVERSATION_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 # 挂在本模块所建 handler 上的标记，用于幂等探测（区别于入口自带的其它 handler）。
 HANDLER_FLAG = "_zero_observability_managed"
 
@@ -94,4 +99,55 @@ def setup_logging(*, log_dir: str | None = None, level: int | None = None) -> Pa
         log_path,
         logging.getLevelName(resolved_level),
     )
+    return log_path
+
+
+def _managed_conversation_handler(conv: logging.Logger) -> logging.Handler | None:
+    """若 `zero.conversation` 已挂过本模块建的 handler，返回它（幂等复用）；否则 None。"""
+    for handler in conv.handlers:
+        if getattr(handler, HANDLER_FLAG, False):
+            return handler
+    return None
+
+
+def setup_conversation_log(*, log_dir: str | None = None) -> Path | None:
+    """初始化「带对话内容」的专用日志：每次启动新建一份 ``conversation-*.log``，返回其路径。
+
+    与 `setup_logging` 并列的横切设施，专供交互对话入口：每轮对话在 `ChatDriver.step`
+    末尾向 ``zero.conversation`` logger 发一条可读多行块（含 user/reply 原文 + 引擎 trace），
+    本函数把该 logger 路由到独立文件，并 `propagate=False` 使对话内容**不**再灌进主 app 日志
+    （两份分开）。开关 ``ZERO_CONVERSATION_LOG``（默认 ``1``；设 ``0`` 关）。
+
+    关：给 ``zero.conversation`` 挂 `NullHandler` + `propagate=False`（对话内容彻底不落任何
+    日志，零回归、不动隐私），返回 ``None``。开：复用 ``ZERO_LOG_DIR``（默认 ``logs``）建
+    ``conversation-{stamp}-{pid}.log``，挂 `FileHandler`，返回 `Path`。幂等（复用 `HANDLER_FLAG`
+    探测：同进程重复调只挂一次）。入口无关、不 import 任何业务层。
+    """
+    conv = logging.getLogger(CONVERSATION_LOGGER_NAME)
+
+    existing = _managed_conversation_handler(conv)
+    if existing is not None:
+        base = getattr(existing, "baseFilename", None)
+        return Path(base) if base is not None else None
+
+    conv.setLevel(logging.INFO)
+    conv.propagate = False  # 对话内容独立成文件，不再灌进主 app 日志
+
+    if (os.getenv("ZERO_CONVERSATION_LOG") or "1") == "0":
+        null_handler = logging.NullHandler()
+        setattr(null_handler, HANDLER_FLAG, True)
+        conv.addHandler(null_handler)  # 关：吞掉任何发往本 logger 的记录
+        return None
+
+    directory = Path(log_dir or os.getenv("ZERO_LOG_DIR") or "logs")
+    directory.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_path = directory / f"conversation-{stamp}-{os.getpid()}.log"
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(CONVERSATION_FILE_FORMAT, CONVERSATION_DATE_FORMAT))
+    setattr(file_handler, HANDLER_FLAG, True)
+    conv.addHandler(file_handler)
     return log_path

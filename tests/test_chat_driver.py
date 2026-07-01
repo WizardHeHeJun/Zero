@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -133,3 +134,28 @@ async def test_emotion_noise_reproducible_with_rng_seed(monkeypatch: pytest.Monk
     assert seq_a == seq_b  # 同 seed 逐字复现
     log_a.close()
     log_b.close()
+
+
+async def test_step_emits_conversation_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """每轮 step 向 zero.conversation 发一条含 user 原文 + reply 的可读记录（对话内容日志）。"""
+    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+    records: list[logging.LogRecord] = []
+    conv = logging.getLogger("zero.conversation")
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    conv.addHandler(handler)
+    saved_level = conv.level
+    conv.setLevel(logging.INFO)  # 具名 logger 默认 NOTSET → 显式置 INFO 才放行本记录
+    try:
+        log = ConversationLog(":memory:")
+        driver = _make_driver(log, _FakeSession((0.6, 0.4)))
+        turn = await driver.step("我很开心")
+        log.close()
+    finally:
+        conv.removeHandler(handler)
+        conv.setLevel(saved_level)
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "我很开心" in message  # user 原文
+    assert turn.reply in message  # Zero 回复原文
+    assert "第1轮" in message  # 轮次标注

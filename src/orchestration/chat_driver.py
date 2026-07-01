@@ -36,6 +36,10 @@ from src.storage.conversation_log import ConversationLog
 from src.storage.graph_store import build_graph_store, build_semantic_store
 
 logger = logging.getLogger(__name__)
+# 「带对话内容」的专用 logger：每轮 step 末尾发一条可读块（含 user/reply 原文 + 引擎 trace），
+# 由 src.observability.setup_conversation_log 路由到独立 logs/conversation-*.log（入口接线）。
+# 未接线时（如测试/其它入口）默认 propagate → 落主日志或被吞，均不影响对话本身（零回归）。
+_conversation_logger = logging.getLogger("zero.conversation")
 
 # 中性人格单例：作 ChatDriver.persona 的默认值（避免在参数默认里调用 Persona()，ruff B008）。
 _NEUTRAL_PERSONA = Persona()
@@ -214,6 +218,26 @@ class ChatDriver:
             e,
             self.emotion,
             self.attitude,
+        )
+        # 「带对话内容」的可读日志：本轮 = 一条记录。无条件发往 zero.conversation，开关/落盘/隔离
+        # 由入口的 setup_conversation_log 兜底（ZERO_CONVERSATION_LOG=0 时被 NullHandler 吞）。
+        _conversation_logger.info(
+            "thread=%s 第%d轮\n  你   > %s\n  Zero > %s\n"
+            "  ├ 评价(v,a)=(%+.2f,%+.2f)  先验=%+.2f\n"
+            "  ├ 情绪=%s (%+.2f,%+.2f)\n"
+            "  └ 对你的态度=(%+.2f,%+.2f)",
+            self.thread,
+            len(self.history) // 2,
+            user_text,
+            reply,
+            v,
+            a,
+            attitude_prior,
+            word,
+            self.emotion[0],
+            self.emotion[1],
+            self.attitude[0],
+            self.attitude[1],
         )
         return ChatTurn(
             reply=reply,

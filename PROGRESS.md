@@ -304,6 +304,26 @@
 - **治理**：`code-reviewer` 独立审 **PASS / 0 BLOCK**；3 WARN 记为 follow-up（W2 noise_std 在 `step()` 读 env——随 chat_driver 既有 in-step 约定，与 `ZERO_EMOTION_BASELINE_ATTITUDE_W`/`HISTORY_*` 一致，`sigma_cap`/`rng_seed` 走工厂是因须达 session/graph；W1 affect_core 每轮重建 rng、W3 appraise 读 env 均既有模式），不在本轮扩面。逐项核：层封装 / affect_math 纯函数 / 节点契约 / 热路径无 LLM 污染 / 记忆未触动 / 零回归 全 PASS。
 - **后续精简（2026-07-01·同分支）**：移除内联 `ZERO_PERSONA` 快捷入口——与 `ZERO_PERSONA_FILE` 冗余（JSON 只写 `card` 一个字段即等价），内联长文本还令 `.env` 臃肿。人格入口**统一为 `ZERO_PERSONA_FILE`**：`persona.py` 删 `os.getenv("ZERO_PERSONA")` 分支（早返回中性 `Persona()`）、`test_persona` 删 inline 测试、README/ai-docs/persona-injection 图同步（图重渲、临时画板已删）。pytest 368 passed。
 
+### 阶段 29 — 带对话内容的可读日志（每轮 step 落 `logs/conversation-*.log`）
+
+现有可观测性两块、都不给人读对话：主 app 日志 `logs/zero-*.log` 每轮仅一行 DEBUG 数字 trace（`chat step … appraise/emotion/attitude`，默认 INFO 不落盘、无对话文本），对话文本只进 `data/chat_history.sqlite3`（喂 LLM 历史的机器态）。补一份「每轮即记、含真实 user/Zero 原文 + 引擎 trace」的人读日志。
+
+- **触发点**：`ChatDriver.step()` 一轮完成（评价→引擎→两时间尺度→生成→落 SQLite）即向专用 logger `zero.conversation` 发一条 INFO 可读块（thread/轮次 + user 原文 + reply 原文 + 评价(v,a)/先验/情绪/态度）。一轮=一条记录，保留原 `logger.debug` 数字 trace 互补。
+- **落盘/隔离**：`src/observability/logging_setup.py` 新增 `setup_conversation_log()`——挂独立 `FileHandler` 写本次启动专属 `conversation-{stamp}-{pid}.log`（复用 `ZERO_LOG_DIR`），`propagate=False` 使对话内容不灌进主 app 日志（两份分开）；幂等复用 `HANDLER_FLAG`；仍不 import 业务层（层无关回归断言续成立）。入口 `main.py._chat_repl` 在 `_load_dotenv()` 后接线一次（仅对话路径，非对话模式不产空文件）。
+- **开关**：`ZERO_CONVERSATION_LOG` 默认开、设 `0` 关（关时挂 `NullHandler`+`propagate=False`，对话内容彻底不落任何日志，零回归·不动隐私）；`.env.example` 文档化，判定集中在 observability 一处、镜像既有 `ZERO_LOG_CONSOLE` 写法。
+- **验证**：`pytest` **372 passed / 5 skipped**（+4 新测：on 落盘+propagate 关 / off 返回 None+无 FileHandler / 幂等 / step 发 zero.conversation 含 user+reply）；ruff/format/mypy 干净；端到端 `python main.py` 走一轮确认 `logs/conversation-*.log` 出现且含真实对话+trace，`ZERO_CONVERSATION_LOG=0` 不产文件、主日志无泄漏。
+
+### 阶段 30 — "seeking 吸引盆"诊断 + 网络体系级议会提案（从"~20 轮后必然滑向暧昧"的真实对话现场，⏳评审中）
+
+真实 `--chat`（deepseek-v4-pro）现场：**情绪读数全程平滑（不翻号、不跳变），却在 ~20 轮后系统性滑入暧昧**（约饭→定时间→"我该怎么认出你"→"迟到就打电话"），且**与对话内容脱钩**。用户判断"这不符合内容、是更深层的心理情绪探索"。主程做**确定性根因核验**（纯 `affect_math`、无 LLM、可复跑）后定性为**动力系统的吸引子问题，非噪声**——不改运行代码，产一份网络体系级议会提案。
+
+- **确定性证据（两复现）**：①纯中性输入 30 轮，`att_valence` 严格 0、`att_arousal` 单调爬到 +0.064 正平台（稳态 `rate·ē/(rate+rev)` 代数吻合）；②每 4 轮一个温和日常正事件（约饭这类、远非暧昧），emotion 立刻锁进 `emotion_lexicon` 的 **seeking 象限**（v+,a+=欣喜/专注，`motivational_system=seeking`）并稳定在 (+.22,+.20)、中性轮也掉不回。→ **seeking 是吸引盆，网络无机制拉出**。
+- **根因（区别于阶段 26 已修的"attitude 缺 reversion 棘轮"）**：reversion 已生效、attitude 未跑飞；真问题是 **arousal 维输入被整流**（`occ_prior` 的 `0.4·|intensity|+0.6·|valence|` 全 abs + `chat_driver:152` intensity 下限 0.2）→ reversion 拉向 setpoint=0 却拉不过恒正输入 → **正直流工作点**；valence 因输入零均值稳在 0，故不对称。
+- **网络体系级：九条同向耦合环**（整流直流源→attitude 累积→emotion baseline 混合→workspace `arousal_gain` 正反馈→TD key 每句不同无跨轮学习→标签落 seeking→push 取 seeking 词→记忆尾窗 20 轮挤出"陌生"锚→LLM rapport 升级+人设无距离约束→缺习惯化）**全部推向 v+/a+，唯一负反馈 reversion=0.01 太弱** → 单一吸引子、确定性滑向暧昧；"~20 轮"= attitude 平台时标(τ≈12)×记忆窗挤出初始锚(≈20)的交汇。
+- **提案落库**：[notes/2026-07-01-arousal-baseline-dc-bias-council-proposal.md](notes/2026-07-01-arousal-baseline-dc-bias-council-proposal.md)——Q1–Q4（arousal 直流底噪/attitude 是否含唤醒维/静息点/情绪基线混合）+ 深层探索 Q5–Q7（关系多稳态·习惯化·arousal 双向性），每点标 忠实/简化/失真 待判 + 候选修法 + 归属（[工程接线] vs [议会定语义]）。
+- **议会评审（五席并行·只读·强制引文，⏳进行中）**：数学（吸引子存在性/稳定性主裁）·心理（Q2 attitude 唤醒维 + Q5 关系多稳态主裁）·神经（seeking 环路/NE 增益正反馈）·生物（自主神经静息唤醒/习惯化）·CS（守红线门）。**结论 + 落库纪要待收敛后补**（另立 `2026-07-0x-...-council.md`）。
+- **治理**：主程只读核验、不改运行代码、不介入数据产生；候选修法均在"不把 LLM/meta 塞进 affect 热路径"内（守 [analysis-results-first 红线](.claude/rules/)）。
+
 ## 成果与验证
 
 - **测试**：`pytest` **247 passed, 5 skipped**（含阶段 18–20 的 text_affect 流 / ConversationModel 协议 / recall 回灌 / attitude 进先验等新增；5 skipped 为 ml 缺 torch + Graphiti/steering 实机 smoke 优雅跳过）；`ruff check`/`ruff format`/`mypy` 干净。（注：阶段 18/19 已合并 main，阶段 20 在 PR #29；本数为 rebase 到最新 main 后的全仓库合并态。）
