@@ -20,7 +20,9 @@ ai-shared/
 evals/
 PRP/
 /CLAUDE.md
-# 注: diagrams/ 是目标系统的架构设计产物(非知识路由), 随项目纳入版本控制。
+# 注: notes/(研究/议会纪要) 与 diagrams/(架构图产物) 仅本地维护, 不随仓库共享。
+notes/
+diagrams/
 
 # ── 知识交接（本地，用户自行维护，不上 GitHub）──────
 /HANDOFF.md
