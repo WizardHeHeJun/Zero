@@ -33,7 +33,7 @@
           "fillColor": "#FBE9F0", "borderColor": "#C45D8B", "borderWidth": 3, "borderRadius": 12,
           "children": [
             { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎭 Persona（人格定义）", "bold": true, "fontSize": 15, "color": "#1F2329" } ], "textAlign": "center" },
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "load_persona()：ZERO_PERSONA_FILE(JSON)\n/ ZERO_PERSONA(人设卡快捷)\n默认中性 Persona() == 逐字现有行为(零回归)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "load_persona()：ZERO_PERSONA_FILE(人格 JSON·唯一入口)\n默认中性 Persona() == 逐字现有行为(零回归)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
           ]
         },
         {
