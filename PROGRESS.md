@@ -313,7 +313,7 @@
 - **开关**：`ZERO_CONVERSATION_LOG` 默认开、设 `0` 关（关时挂 `NullHandler`+`propagate=False`，对话内容彻底不落任何日志，零回归·不动隐私）；`.env.example` 文档化，判定集中在 observability 一处、镜像既有 `ZERO_LOG_CONSOLE` 写法。
 - **验证**：`pytest` **372 passed / 5 skipped**（+4 新测：on 落盘+propagate 关 / off 返回 None+无 FileHandler / 幂等 / step 发 zero.conversation 含 user+reply）；ruff/format/mypy 干净；端到端 `python main.py` 走一轮确认 `logs/conversation-*.log` 出现且含真实对话+trace，`ZERO_CONVERSATION_LOG=0` 不产文件、主日志无泄漏。
 
-### 阶段 30 — "seeking 吸引盆"诊断 + 网络体系级议会提案（从"~20 轮后必然滑向暧昧"的真实对话现场，⏳评审中）
+### 阶段 30 — "seeking 吸引盆"诊断 + 网络体系级议会评审（从"~20 轮后必然滑向暧昧"的真实对话现场｜议会 NEEDS-CHANGES）
 
 真实 `--chat`（deepseek-v4-pro）现场：**情绪读数全程平滑（不翻号、不跳变），却在 ~20 轮后系统性滑入暧昧**（约饭→定时间→"我该怎么认出你"→"迟到就打电话"），且**与对话内容脱钩**。用户判断"这不符合内容、是更深层的心理情绪探索"。主程做**确定性根因核验**（纯 `affect_math`、无 LLM、可复跑）后定性为**动力系统的吸引子问题，非噪声**——不改运行代码，产一份网络体系级议会提案。
 
@@ -321,8 +321,34 @@
 - **根因（区别于阶段 26 已修的"attitude 缺 reversion 棘轮"）**：reversion 已生效、attitude 未跑飞；真问题是 **arousal 维输入被整流**（`occ_prior` 的 `0.4·|intensity|+0.6·|valence|` 全 abs + `chat_driver:152` intensity 下限 0.2）→ reversion 拉向 setpoint=0 却拉不过恒正输入 → **正直流工作点**；valence 因输入零均值稳在 0，故不对称。
 - **网络体系级：九条同向耦合环**（整流直流源→attitude 累积→emotion baseline 混合→workspace `arousal_gain` 正反馈→TD key 每句不同无跨轮学习→标签落 seeking→push 取 seeking 词→记忆尾窗 20 轮挤出"陌生"锚→LLM rapport 升级+人设无距离约束→缺习惯化）**全部推向 v+/a+，唯一负反馈 reversion=0.01 太弱** → 单一吸引子、确定性滑向暧昧；"~20 轮"= attitude 平台时标(τ≈12)×记忆窗挤出初始锚(≈20)的交汇。
 - **提案落库**：[notes/2026-07-01-arousal-baseline-dc-bias-council-proposal.md](notes/2026-07-01-arousal-baseline-dc-bias-council-proposal.md)——Q1–Q4（arousal 直流底噪/attitude 是否含唤醒维/静息点/情绪基线混合）+ 深层探索 Q5–Q7（关系多稳态·习惯化·arousal 双向性），每点标 忠实/简化/失真 待判 + 候选修法 + 归属（[工程接线] vs [议会定语义]）。
-- **议会评审（五席并行·只读·强制引文，⏳进行中）**：数学（吸引子存在性/稳定性主裁）·心理（Q2 attitude 唤醒维 + Q5 关系多稳态主裁）·神经（seeking 环路/NE 增益正反馈）·生物（自主神经静息唤醒/习惯化）·CS（守红线门）。**结论 + 落库纪要待收敛后补**（另立 `2026-07-0x-...-council.md`）。
+- **议会评审（五席·只读·强制引文）→ NEEDS-CHANGES（无 BLOCK）**：数学（吸引子主裁，确认"**单稳直流偏置≠双稳分叉**"——根治只需去直流偏置、不必引非线性）·心理（Q2/Q5 主裁：attitude 是 valence 维评价、关系应离散多稳态）·生物（**Q6 习惯化从 2026-06-29"可选"翻案为失真·必改**；seeking/CARE 神经内分泌混淆）·神经（arousal_gain 高唤醒段应**倒 U 反转**，Aston-Jones&Cohen）·CS（守红线·零 breaking 路径）。
+- **裁决与优先级**：**P1 燃眉（工程可动·env 零回归）**——Q1 去 `intensity` 下限 0.2、Q2(b) `attitude_step` 独立强 `reversion_a`∈[0.3,0.5]/`setpoint_a`、Q7 去 `abs` 整流允许 deactivation 为负；**P2** Q6 引 exposure 习惯化衰减 `η(n)=exp(-n/τ)`,τ∈[5,10]；**P3** Q3 静息值 P1 后重测；**P4** arousal_gain 倒 U；**P5** Q5 关系多稳态（最深·先出工程方案 A/B/C 再回议会）；seeking→暧昧属 LLM 层（专题下轮）。议会只给推荐**范围**、不定运行时单值；实现走 `.env.example` 零回归、落地过 `code-reviewer`。纪要（含五席引文）[notes/2026-07-01-seeking-attractor-council.md](notes/2026-07-01-seeking-attractor-council.md)。
 - **治理**：主程只读核验、不改运行代码、不介入数据产生；候选修法均在"不把 LLM/meta 塞进 affect 热路径"内（守 [analysis-results-first 红线](.claude/rules/)）。
+
+### 阶段 31 — seeking 吸引盆裁决落地：直流偏置根治 + 习惯化（P1+P2，engineer 团队 · code-reviewer PASS）
+
+按阶段 30 议会纪要走 `/engineer` 团队落地 **P1（直流偏置根治）+ P2（习惯化）**，全部 env 门控、默认=旧行为逐字零回归、代码不硬编码非空默认（推荐值走 `.env.example`）。P3/P4 待 P1 观测、P5(Q5) 只出方案不落地。
+
+- **P1-a（Q1 去直流底噪）**：`chat_driver.py` intensity 下限 → `ZERO_INTENSITY_FLOOR`（默认 0.2 零回归；纪要推荐 0）。去掉中性输入的 `0.4·下限=0.08` 恒正 arousal 底噪。
+- **P1-b（Q2b attitude 不累积唤醒）**：`affect_math.attitude_step` 加 arousal 维**独立**回归率 `reversion_a`（默认 None→同 `reversion`，零回归）；`chat_driver` 读 `ZERO_ATTITUDE_REVERSION_A`（推荐 0.3–0.5）/`ZERO_ATTITUDE_SETPOINT_A`（未设=persona.setpoint[1]）注入。设强 `reversion_a` 令 arousal 稳态≈setpoint_a≈0，功能上"态度只累积 valence"（心理席主裁），**不改二元组结构=零 breaking**（走 CS 席 Q2(b) 而非 Q2(a) 去维）。
+- **P1-c（Q7 deactivation 臂）**：`occ_prior` 加 `arousal_baseline`（默认 0.0 逐字旧整流）经 `AffectState→ConversationSession/run flags→AppraisalAgent` 穿透（同 `sample_sigma_cap`/`affect_readout` 模式）；`chat_driver` 读 `ZERO_AROUSAL_BASELINE`（推荐 -0.08）。负值让平淡低强度输入给零/负 arousal（副交感 vagal brake）；**保留 `0.6·|valence|` circumplex V 形**——未越界重定义议会没定死的公式。
+- **P2（Q6 习惯化）**：新增纯函数 `affect_math.habituation_factor(exposure, tau)=exp(-n/τ)`（τ<=0→1.0 零回归）；`chat_driver` 加 `self.exposure` 会话内计数、对喂两时间尺度的 `e` 的 arousal 分量乘 η 衰减；`ZERO_HABITUATION_TAU`（推荐 5–10，空/0=关）。重复互动 arousal 响应递减（SCR 习惯化），只作用 arousal、不违 memory-rules（纯内存计数、非写图谱）。
+- **验证**：`pytest` **385 passed / 5 skipped**（+13 新测 `test_seeking_attractor_fixes.py`：每旋钮默认关**零回归断言**[occ_prior/attitude_step 逐字相等 · habituation τ<=0→1] + 开启功能断言 + AppraisalAgent 穿透）；`ruff check`+`format`+`mypy src/`（49 文件）全绿。纯函数冒烟证：中性默认逐字不变、baseline<0 令平淡 arousal→0/负、reversion_a 拉低 arousal 平台、exposure 衰减压低累积。
+- **治理**：`code-reviewer` 独立门（实现者≠审查者）**PASS / 0 BLOCK**，7 项核验（热路径无 LLM/meta·零回归·穿透一致·习惯化落点·节点契约·层封装·Q7 未越界）全过；4 WARN——W1（`ZERO_ATTITUDE_SETPOINT_A` 文档漏项）+W3（测试断言加固）+W4（假 session 补 `recalled_facts` 键）**已修**，W2（4 旋钮 in-step 读 env vs 构造期读的风格不一致）记 **follow-up**（与既有 `w`/`noise_std` in-step 惯例一致，不本轮扩面）。
+- **P5(Q5) 交回议会**：关系多稳态 A/B/C 三路径工程方案（A `rate` 随熟悉度衰减最轻 / B familiarity 只作 LLM 距离标签 / C 离散态或 tanh 双稳最重）+ 耦合估算 + 推荐"A+B 先行、C 立项" + 待定 Q5-α/β/γ/δ 语义：[notes/2026-07-01-q5-relationship-multistability-engineering-plan.md](notes/2026-07-01-q5-relationship-multistability-engineering-plan.md)。
+- **未落地（议会已排后）**：P3（Q3 静息值 P1 观测后重测）· P4（arousal_gain 倒 U，神经席）· seeking→暧昧 LLM 层专题——均待下轮。
+
+### 阶段 32 — seeking 第二轮：P3 关闭 / P4-d cap / Q5 关系止血（议会二轮四席 NEEDS-CHANGES→分项 PASS，engineer 落地）
+
+承接阶段 31，工程师先出 **P3/P4 只读观测探针**（修复态：seeking 6/24→0/24；30 轮纯中性 arousal 均值 -0.017 趋静息；24 轮强情绪峰仅 +0.278、进 >0.5 危险区 0/24），再回**科学家议会第二轮**（数学/心理/神经/CS 四席 + moderator）裁排后项。纪要 [notes/2026-07-02-p4-q5-council-round2.md](notes/2026-07-02-p4-q5-council-round2.md)、二轮提案 [notes/2026-07-01-p4-arousal-gain-q5-relationship-council-proposal-round2.md](notes/2026-07-01-p4-arousal-gain-q5-relationship-council-proposal-round2.md)。全 env 门控、默认逐字零回归。
+
+- **议会二轮裁决（四席高度收敛）**：**P3 关闭**（三席一致 a*≈0=安静清醒基线，gain=1.0 已隐式吸收清醒 tonic，无需正 setpoint）；**P4-a 完整倒 U** `1+c·a·(1-a)`（c∈[1.5,2.5]，峰 a=0.5，α2A/α1 双侧衰减）为语义正确选择但**排后**（实测未进 >0.5 危险区，倒 U 与线性差<15%），先落**廉价 cap 防御**；**Q5-α C1 离散状态机**，**C2 tanh 双稳永久排除**（心理构念无据[Gottman 双稳是"稳定幸福/不幸"非"陌生/亲密"] + 数学参数辨识差 + 升级≠降级不对称，三重失真）；Q5-δ 熟悉/信任/亲密三独立构念、若加一维**信任维正交性最强**；Q5-γ 跨会话持久化是 C1 必要条件。
+- **P4-d 廉价 cap（落地）**：`affect_core.py` `arousal_gain` 后 `min(gain,1+cap)`；`AffectState.arousal_gain_cap: float|None=None`（默认不 cap=零回归）经 state→runner/session flags→affect_core 穿透（对齐 `arousal_baseline`）；`ZERO_AROUSAL_GAIN_CAP`∈[0.3,0.6]。`AROUSAL_GAIN` 常量不动。
+- **Q5-A 熟悉度门控 rate 衰减（止血·落地）**：复用阶段 31 的 `self.exposure` 派生 `familiarity=1-habituation_factor(exposure,τ_f)`，`rate_eff=ATTITUDE_RATE·(1-k·familiarity)` 传 `attitude_step`；`ZERO_ATTITUDE_RATE_DECAY_K`(默认0=关)/`ZERO_FAMILIARITY_TAU`(默认20)。**单不动点·仅减缓漂移·非真多稳态**（代码注释明标"止血非已解决"）。
+- **Q5-B 关系距离软提示（止血·落地）**：`chat_driver._relationship_hint(exposure)` **确定性纯函数**按曝光三档（对齐议会 N_up 3-5/10-15）给字符串；经 `ConversationModel.converse` 新增 `relationship_hint:str=""` 注入 `OpenAILanguageModel` 的 `_CONVERSE_SYS`；`ZERO_RELATIONSHIP_STAGE_HINT` 默认关→""→逐字零回归。**关系标签确定性派生、不经 LLM 判跃迁、不反馈 affect 数值**（守议会"LLM 判跃迁→BLOCK"警戒线）。
+- **验证**：`pytest` **390 passed / 5 skipped**（+5 新测：cap 默认 None 零回归[map 读出逐字相等] + cap 降后验精度 / Q5-A K=0 零回归 + K>0 减缓 attitude 形成 / Q5-B 默认关→"" + 开启三档）；`ruff`+`format`+`mypy src/`（49 文件）全绿。收尾修 3 处 E501 + 再撞 formatter 删未用 import（[[formatter-strips-unused-imports]]，已处置）。
+- **立项排后（议会二轮前置条件已给）**：P4-a 完整倒 U（触发条件 arousal>0.5 达 N=3/24 实测）· **Q5-C1 离散关系状态机**（三阶段/计数器门控/信任维/跨会话持久化；前置：Checkpointer 迁移 + memory-rules 合规设计）· P4-c 负段弱衰减（与 Q7 deactivation 联立）。
+- **治理**：`code-reviewer` 独立门（实现者≠审查者）**PASS / 0 BLOCK**，7 项核验（热路径无 LLM/meta·三项零回归·穿透一致·协议契约·止血定性·节点契约·工具链）全过。**W1**（Q5-A `familiarity` 与 P2 习惯化共用 `self.exposure` 但取值差 1）**已修**——把自增移到 step 末尾，使 habituation/familiarity/relationship_hint 三处同读「本轮前曝光计数 n」（首轮 n=0=不习惯化+完全陌生，语义对齐）；**I4**（state cap 注释易读成"有 guard"）+ **W3**（.env 空串=关、0 有效）**已修**；**W4**（每轮 `os.getenv` vs 构造期读）记 follow-up（与既有 `w`/`noise_std` in-step 惯例一致）。复验 `pytest 390 passed`、ruff/mypy 全绿。
 
 ## 成果与验证
 

@@ -43,6 +43,10 @@ class AffectCoreAgent:
             # 显著度门控全局工作空间（v3）：并行流 (name, μ, Π) 竞争 → ignition 广播。
             # NE/唤醒增益：唤醒越高，评价·价值流的精度（投票权）越大（精度=神经调质增益）。
             arousal_gain = 1.0 + AROUSAL_GAIN * max(0.0, state.prior_mu[1])
+            # P4-d（议会二轮·廉价 cap 防御）：默认 None → 不 cap（线性无界，零回归）；设 cap 则钳
+            # arousal_gain≤1+cap，防高唤醒段 LC-NE 正反馈无界（完整倒 U 立项排后）。纯标量。
+            if state.arousal_gain_cap is not None:
+                arousal_gain = min(arousal_gain, 1.0 + state.arousal_gain_cap)
             prior_prec = (
                 arousal_gain / max(MIN_SIGMA, state.prior_sigma[0]) ** 2,
                 arousal_gain / max(MIN_SIGMA, state.prior_sigma[1]) ** 2,

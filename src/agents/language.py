@@ -70,6 +70,7 @@ class ConversationModel(Protocol):
         retrieved: str = "",
         *,
         push: bool = False,
+        relationship_hint: str = "",
     ) -> str:
         """生成一轮对话回应。
 
@@ -77,6 +78,7 @@ class ConversationModel(Protocol):
         affect: 当前情绪坐标 (valence, arousal)。
         retrieved: 召回的背景上下文（空串时不注入，行为与改前一致）。
         push: 皮层下不随意通路——情绪经用词倾向漏进输出而非显式指令。
+        relationship_hint: 关系距离语境（Q5-B，空串=不注入=零回归）——给 LLM 软约束别越距离亲密。
         """
         ...
 

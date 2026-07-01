@@ -22,7 +22,13 @@ import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from src.agents.affect_math import attitude_step, clamp, emotion_decay_step
+from src.agents.affect_math import (
+    ATTITUDE_RATE,
+    attitude_step,
+    clamp,
+    emotion_decay_step,
+    habituation_factor,
+)
 from src.agents.emotion_lexicon import affect_label
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
@@ -96,6 +102,22 @@ def _inject_recalled_as_system(
     return system_entries + window
 
 
+def _relationship_hint(exposure: int) -> str:
+    """Q5-B：按曝光轮次映射关系距离标签（供 converse 软约束），env 门控默认关。
+
+    `ZERO_RELATIONSHIP_STAGE_HINT` 未设/为假 → 返回 ""（converse 不注入=逐字零回归）。开启时按
+    曝光三档（阈值对齐议会 N_up 陌生→初识 3-5 / 初识→朋友 10-15）给字符串锚。此为"止血"软提示，
+    非真关系状态机（Q5-C1 立项）——只给 LLM 分寸参考，不进 affect 热路径、不反馈引擎数值。纯函数。
+    """
+    if os.getenv("ZERO_RELATIONSHIP_STAGE_HINT", "").lower() not in ("1", "true", "yes", "on"):
+        return ""
+    if exposure < 5:
+        return "初次接触、刚认识不久，还很陌生"
+    if exposure < 15:
+        return "认识了一阵、但还称不上熟"
+    return "已经比较熟络"
+
+
 class ChatDriver:
     """对话驱动：持有跨轮状态（history / emotion / attitude），每调一次 `step` 推进一轮。
 
@@ -133,6 +155,9 @@ class ChatDriver:
         self.seed_key = seed_key  # 种子记忆写入的 user 作用域 key（= user_id = thread）
         self.first_contact = first_contact  # 首次接触此人（空 transcript）才播种关系
         self.seeded = False  # L3 种子记忆只在首轮写一次的守卫
+        self.exposure = (
+            0  # P2（Q6）：对此对话对象的累计曝光轮次，喂 habituation_factor 衰减 arousal
+        )
         # 情绪噪声 RNG（P5 可复现，议会建议）：给了 seed → 专属 Random（跨轮推进、跨进程可复现）；
         # None → 用模块级 random（逐字旧行为、零回归，且保留既有 monkeypatch 测试可控）。
         self.rng = random.Random(rng_seed) if rng_seed is not None else None
@@ -148,15 +173,26 @@ class ChatDriver:
             v, a = lexicon_appraise(user_text)
         # 快照：进入本轮时的态度（attitude_step 在 step 之后才更新）
         attitude_prior = self.attitude[0]
+        # P1-a（议会 Q1·失真必改）：intensity 下限旋钮。旧硬编码 0.2 是与内容无关的 arousal 直流
+        # 底噪源（占 occ_prior arousal 的 0.4·|intensity|=0.08 常量），中性对话也被抬唤醒。默认 0.2
+        # =逐字旧行为（零回归）；纪要推荐 0 走 .env.example，下限越低中性越能回落静息。
+        intensity_floor = float(os.getenv("ZERO_INTENSITY_FLOOR", "0.2"))
         stim = Stimulus(
             name=user_text[:40],
             text=user_text,
             goal_congruence=v,
             attitude_appeal=self.attitude[0],
-            intensity=min(1.0, max(0.2, abs(a))),
+            intensity=min(1.0, max(intensity_floor, abs(a))),
         )
         step_out = await self.session.step(stim)
         e = step_out["valence_arousal"] or (0.0, 0.0)
+        # P2（议会 Q6·失真必改）：习惯化——对同一对话对象累计曝光衰减 arousal 输入（新奇响应递减，
+        # Groves&Thompson / Schultz DA-RPE 可预期奖励响应回零）。τ via ZERO_HABITUATION_TAU（推荐
+        # 5–10）；未设/<=0 → η=1 不衰减（零回归）。只衰 arousal 维、喂两时间尺度。
+        hab_tau = float(os.getenv("ZERO_HABITUATION_TAU", "0"))
+        # self.exposure = 本轮前累计曝光数 n（于 step 末尾统一自增）：habituation(P2)/familiarity
+        # (Q5-A)/relationship_hint(Q5-B) 三处同读 n，首轮 n=0=不习惯化+完全陌生，语义对齐（W1）。
+        e = (e[0], e[1] * habituation_factor(self.exposure, hab_tau))
         # 语义召回上下文（recall_enabled 时图内 memory_recall 节点填充；无语义后端则空）
         recalled: list[str] = step_out.get("recalled_context") or []
         recalled_str = " | ".join(r[:120] for r in recalled) if recalled else ""
@@ -164,7 +200,27 @@ class ChatDriver:
         recalled_facts: list[Fact] = step_out.get("recalled_facts") or []
         # 慢：态度按 e* 缓慢累积 + 向个体 setpoint 弱回归（attitude_step 内含 reversion 防棘轮）。
         # setpoint = persona 气质基线（L2，默认中性 → 与改前逐字一致）。
-        self.attitude = attitude_step(self.attitude, e, setpoint=self.persona.setpoint)
+        # P1-b（议会 Q2b）：arousal 维独立回归率 reversion_a（未设 → None → 同 reversion，零回归）
+        # + 独立 setpoint_a（未设 → 取 persona 气质 arousal 基线）。设 reversion_a≫reversion（推荐
+        # 0.3–0.5）令 attitude 不累积 arousal 直流偏置（心理席：态度是 valence 维评价）。
+        rev_a_env = os.getenv("ZERO_ATTITUDE_REVERSION_A")
+        reversion_a = float(rev_a_env) if rev_a_env else None
+        setpoint_a_env = os.getenv("ZERO_ATTITUDE_SETPOINT_A")
+        setpoint = (
+            self.persona.setpoint
+            if setpoint_a_env is None
+            else (self.persona.setpoint[0], float(setpoint_a_env))
+        )
+        # Q5-A（议会二轮·止血，非真多稳态）：熟悉度门控 rate 衰减——越熟态度形成越慢（近似"陌生态
+        # 更稳"）。familiarity=1−exp(−exposure/τ_f)；rate_eff=rate·(1−k·familiarity)。K=0（默认）→
+        # rate_eff=rate 逐字零回归。单不动点仅减缓漂移，非真多稳态（真关系态见 C1 立项）。
+        decay_k = float(os.getenv("ZERO_ATTITUDE_RATE_DECAY_K", "0"))
+        fam_tau = float(os.getenv("ZERO_FAMILIARITY_TAU", "20"))
+        familiarity = 1.0 - habituation_factor(self.exposure, fam_tau)
+        rate_eff = ATTITUDE_RATE * (1.0 - decay_k * familiarity)
+        self.attitude = attitude_step(
+            self.attitude, e, rate=rate_eff, setpoint=setpoint, reversion_a=reversion_a
+        )
         # 快：情绪向「基线」衰退恢复 + 当前 e* 冲击 + 噪声（短时）。
         # 议会 B（必改）：基线不是纯 attitude——它被持续正刺激推高后，纯 attitude 基线会让情绪
         # 永远停在高位（emotion 的家随 attitude 上漂、无中性拉力）。改为 attitude 与个体 setpoint
@@ -203,8 +259,13 @@ class ChatDriver:
             inject_min = float(os.getenv("ZERO_RECALL_INJECT_MIN", "0.5"))
             window = _u_shape_history(self.history, primacy_k, window_n)
             window = _inject_recalled_as_system(window, recalled_facts, inject_min)
+            # Q5-B（议会二轮·止血）：关系距离标签（按曝光轮次三档，对齐议会 N_up 3-5/10-15）注入
+            # LLM 软约束别越距离。ZERO_RELATIONSHIP_STAGE_HINT 默认关 → 空串 → converse 零回归。
+            relationship_hint = _relationship_hint(self.exposure)
             # push 通路：情绪经用词倾向自然漏进输出；retrieved 回灌召回背景（与 system 条目并存）
-            reply = await self.lm.converse(window, self.emotion, recalled_str, push=True)
+            reply = await self.lm.converse(
+                window, self.emotion, recalled_str, push=True, relationship_hint=relationship_hint
+            )
         else:
             reply = f"（{word}）嗯，我在听，你接着说。"
         self.history.append({"role": "assistant", "content": reply})
@@ -239,6 +300,7 @@ class ChatDriver:
             self.attitude[0],
             self.attitude[1],
         )
+        self.exposure += 1  # 本轮末尾统一自增（见上：三处 exposure 用法同读本轮前计数 n，W1）
         return ChatTurn(
             reply=reply,
             appraised=(v, a),
@@ -320,6 +382,13 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     rng_seed = int(seed_env) if seed_env else None
     # 情绪读出模式（P4 议会 α）：'map'=后验均值 e*=post_mu（消逐轮翻号）；默认 'sample'=旧行为。
     affect_readout = os.getenv("ZERO_AFFECT_READOUT", "sample")
+    # arousal 证据基准平移（P1-c 议会 Q7）：默认 0.0=旧整流行为（零回归）；负值启 deactivation
+    # （平淡输入把 arousal 拉向静息/负）。经 session→state→AppraisalAgent→occ_prior。
+    arousal_baseline = float(os.getenv("ZERO_AROUSAL_BASELINE", "0"))
+    # arousal_gain 增益上限（P4-d 议会二轮·廉价 cap）：未设 → None → 不 cap（零回归）；设 [0.3,0.6]
+    # 则 arousal_gain 钳到 1+cap，防高唤醒正反馈无界。经 session→state→AffectCoreAgent。
+    gain_cap_env = os.getenv("ZERO_AROUSAL_GAIN_CAP")
+    arousal_gain_cap = float(gain_cap_env) if gain_cap_env else None
     # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
     # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
     session = ConversationSession(
@@ -332,6 +401,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         sample_sigma_cap=sample_sigma_cap,  # 「防抖」旋钮（ZERO_SAMPLE_SIGMA_MAX；None=零回归）
         rng_seed=rng_seed,  # P5：引擎采样可复现（ZERO_CHAT_RNG_SEED；None=零回归）
         affect_readout=affect_readout,  # P4：'map' 均值读出（ZERO_AFFECT_READOUT；默认 sample）
+        arousal_baseline=arousal_baseline,  # P1-c(Q7)：ZERO_AROUSAL_BASELINE；0=零回归
+        arousal_gain_cap=arousal_gain_cap,  # P4-d：ZERO_AROUSAL_GAIN_CAP；None=不 cap 零回归
     )
     return ChatDriver(
         thread=resolved_thread,

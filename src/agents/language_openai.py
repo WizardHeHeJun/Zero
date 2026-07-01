@@ -131,6 +131,7 @@ class OpenAILanguageModel:
         retrieved: str = "",
         *,
         push: bool = False,
+        relationship_hint: str = "",
     ) -> str:
         """自然多轮对话：带完整历史。`generate`(强制 VAD+双向回路) 之外的连贯不戏剧化路径。
 
@@ -144,6 +145,12 @@ class OpenAILanguageModel:
         sys = _CONVERSE_SYS.format(feeling=affect_label(*affect))
         if self.persona:
             sys = f"{self.persona}\n\n{sys}"  # L1：人设卡前置于情绪行为框架（空串时不变=零回归）
+        if relationship_hint:
+            # Q5-B（议会二轮·止血）：关系距离软约束，给 LLM 分寸锚（空串=零回归）。
+            sys += (
+                f"\n（你和对方目前的关系：{relationship_hint}。"
+                "按这个分寸把握亲疏，别越过、别自来熟。）"
+            )
         if retrieved:
             sys += f"\n你还记得以下背景：{retrieved}"
         bias_kwargs: dict[str, Any] = {}

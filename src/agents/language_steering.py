@@ -148,6 +148,7 @@ class SteeringLanguageModel:
         retrieved: str = "",
         *,
         push: bool = False,
+        relationship_hint: str = "",
     ) -> str:
         """满足 ConversationModel 协议；与 generate 同路径，需注入 backend 或提供 model_name，
         否则同样抛 ValueError；当前主路径无调用、供未来对话注入。
@@ -155,6 +156,7 @@ class SteeringLanguageModel:
         情感经隐状态 steering 注入（VA 子空间 delta），而非 prompt-level push 指令；
         push/retrieved 参数在 steering 路径中均以 best-effort 处理：retrieved 拼入生成
         提示（同 generate 路径），push 被忽略（steering 天然经隐状态传情感，无需 prompt 层再推）。
+        relationship_hint（Q5-B）在 steering 路径亦 best-effort 拼入 context（空串=不注入=零回归）。
         history 取最后一条 user 内容作 context（best-effort），delta 由当前情绪坐标算。
         """
         context = ""
