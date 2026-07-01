@@ -12,8 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from src.observability import setup_logging
-from src.observability.logging_setup import HANDLER_FLAG, _resolve_level
+from src.observability import setup_conversation_log, setup_logging
+from src.observability.logging_setup import (
+    CONVERSATION_LOGGER_NAME,
+    HANDLER_FLAG,
+    _resolve_level,
+)
 
 
 @pytest.fixture
@@ -115,3 +119,78 @@ def test_logging_setup_is_entrypoint_and_layer_agnostic() -> None:
     assert "import main" not in source
     for layer in ("src.agents", "src.orchestration", "src.memory", "src.storage"):
         assert layer not in source, f"日志设施不应 import 业务层 {layer}"
+
+
+@pytest.fixture
+def isolated_conversation_logger() -> Iterator[logging.Logger]:
+    """隔离 ``zero.conversation`` logger：保存/还原 handlers·level·propagate。
+
+    setup_conversation_log 改的是这个具名 logger 的全局状态（挂 handler、置 propagate=False），
+    必须隔离否则串到其它测试；FileHandler 还持有打开的文件句柄，Windows 下不 close 会锁 tmp_path。
+    """
+    conv = logging.getLogger(CONVERSATION_LOGGER_NAME)
+    saved_handlers = conv.handlers[:]
+    saved_level = conv.level
+    saved_propagate = conv.propagate
+    conv.handlers.clear()
+    try:
+        yield conv
+    finally:
+        for handler in conv.handlers:
+            handler.close()
+        conv.handlers.clear()
+        conv.handlers.extend(saved_handlers)
+        conv.setLevel(saved_level)
+        conv.propagate = saved_propagate
+
+
+def test_conversation_log_on_writes_content(
+    isolated_conversation_logger: logging.Logger,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认开：建出含 conversation 的 .log，logger 内容落文件、propagate 关（不灌主日志）。"""
+    monkeypatch.delenv("ZERO_CONVERSATION_LOG", raising=False)
+    path = setup_conversation_log(log_dir=str(tmp_path))
+    assert path is not None
+    assert path.parent == tmp_path
+    assert "conversation" in path.name and path.suffix == ".log"
+    assert isolated_conversation_logger.propagate is False
+    isolated_conversation_logger.info("第1轮\n  你 > 你好-埋点")
+    for handler in isolated_conversation_logger.handlers:
+        handler.flush()
+    assert "你好-埋点" in path.read_text(encoding="utf-8")
+
+
+def test_conversation_log_off_returns_none_and_suppresses(
+    isolated_conversation_logger: logging.Logger,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ZERO_CONVERSATION_LOG=0：返回 None、无 FileHandler（内容彻底不落日志文件）。"""
+    monkeypatch.setenv("ZERO_CONVERSATION_LOG", "0")
+    path = setup_conversation_log(log_dir=str(tmp_path))
+    assert path is None
+    file_handlers = [
+        h for h in isolated_conversation_logger.handlers if isinstance(h, logging.FileHandler)
+    ]
+    assert not file_handlers
+    assert not list(tmp_path.glob("conversation-*.log"))
+
+
+def test_conversation_log_idempotent(
+    isolated_conversation_logger: logging.Logger,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同进程重复调：复用同一文件、只挂一个 FileHandler。"""
+    monkeypatch.delenv("ZERO_CONVERSATION_LOG", raising=False)
+    first = setup_conversation_log(log_dir=str(tmp_path))
+    second = setup_conversation_log(log_dir=str(tmp_path))
+    assert first == second
+    managed_file_handlers = [
+        h
+        for h in isolated_conversation_logger.handlers
+        if getattr(h, HANDLER_FLAG, False) and isinstance(h, logging.FileHandler)
+    ]
+    assert len(managed_file_handlers) == 1

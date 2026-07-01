@@ -4,6 +4,6 @@
 import；业务层按需用 ``logging.getLogger(__name__)`` 产生日志，无需 import 本包。
 """
 
-from src.observability.logging_setup import setup_logging
+from src.observability.logging_setup import setup_conversation_log, setup_logging
 
-__all__ = ["setup_logging"]
+__all__ = ["setup_conversation_log", "setup_logging"]

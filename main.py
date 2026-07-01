@@ -30,7 +30,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from src.observability import setup_logging
+from src.observability import setup_conversation_log, setup_logging
 
 
 def _load_dotenv() -> None:
@@ -52,6 +52,10 @@ async def _chat_repl() -> None:
     import os
 
     _load_dotenv()  # 入口负责加载 .env（库/编排层不读 .env）
+    # 「带对话内容」的专用日志：每轮 step 末尾写 logs/conversation-*.log（含 user/reply + 引擎
+    # trace）。放 .env 加载后才能读到 ZERO_CONVERSATION_LOG（默认开，设 0 关）；仅对话路径接线，
+    # 避免非对话模式产出空文件。
+    setup_conversation_log()
     # chat 入口策略（属入口/部署选择，非对话核心）：本地落盘后端开箱即用（缺 .[db] 回退内存）+
     # 压制项目自身噪声日志。放入口而非 build_chat_driver，保编排层工厂纯装配、无全局副作用。
     os.environ.setdefault("ZERO_CHECKPOINT_BACKEND", "sqlite")
