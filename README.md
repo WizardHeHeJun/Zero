@@ -41,6 +41,7 @@
 - **快变 `emotion`** — 短时情绪，被 e\* 冲击后**几轮内向基线衰退**（怒火飙起后会回落；衰退太慢反而是病理性的情绪惯性）。对外表达取的是它；
 - **慢变 `attitude`** — 对**特定对象**的长期态度，按情绪缓慢累积、多轮才成形，是快变情绪衰退回归的基线。**持续**被冒犯才会真的变冷，偶尔被呛一下会过去。**只有态度被持久化**，重启后情绪归于态度基线。
 - **稳态回弹** — 情绪与态度都带一份**回到平静的拉力**（向个体中性基线弱回归）：再热烈或再低落，只要没有持续刺激就会慢慢回稳，不会"越聊越上头"或陷在某个极端里出不来（affective homeostasis；情绪基线本身也是态度与中性的混合，不随态度无限上漂）。
+- **唤醒双向 · 习惯化 · 分寸** — 唤醒（arousal）也是**双极**的：平淡对话会主动**降到静息**（不只是不涨）、重复互动会**习惯化**（新鲜感递减）、对刚认识的人有**分寸感**（不因聊久了就无端亲密）——从根上防「与内容无关地越聊越暧昧」（科学家议会 seeking 吸引盆两轮裁决；默认关、按需开旋钮，见配置全表）。
 
 于是对话有了"脾气"：被骂会不快、道歉能缓和、但一时的情绪不会永久定义这段关系，也不会因一路投入就单调滑向极端。
 
@@ -152,13 +153,13 @@ Zero/
 │   ├── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
 │   │   ├── checkpointer.py  #   memory / sqlite(异步 AsyncSqliteSaver) / postgres(待异步接线)
 │   │   ├── graph_store.py   #   门面 + 工厂
+│   │   ├── conversation_log.py  #   --chat 对话运行态：transcript + 跨重启 attitude 落本地 SQLite
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   └── observability/       # 横切：统一日志 setup_logging（每启动落 logs/、级别可配、入口无关）
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py + 验证 verify_*.py（如 verify_affect_readout 实测 map 读出消翻号）
 ├── tools/                   # 运维脚本（reset_db.py 清库）
-├── docs/                    # 对外框架图（详见 docs/README.md）
-├── diagrams/                # 架构设计图谱系
+├── docs/                    # 对外框架图（v1/v2 谱系 + 运作流程图，详见 docs/README.md）
 ├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
 ├── .env.example                                     # 配置模板（cp 为 .env 启用）
 ├── personas/                                        # --chat 人格卡目录：*.example.json 模板随仓库共享 / 个人 *.json 走 gitignore；放多份 persona 改 ZERO_PERSONA_FILE 即切换
