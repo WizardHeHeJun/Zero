@@ -361,9 +361,9 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `ZERO_HPC_LAYERS` · `_COUPLING` | 1 · 0 | **层级预测编码**：把单层融合升级为 2 层（感觉层→核心情感层）预测编码；`1`/`0`=平层零回归、`coupling∈[0.3,0.8]` 启用（`>1`/`<0` 报错） |
-| `ZERO_CORTISOL_ENABLED`（+ `_AROUSAL_GATE`/`_ATTITUDE_GATE`/`_TAU`/`_IMPULSE`/`_*_ALPHA`/`_THETA_*`） | 关 | **HPA 皮质醇慢回路**：应激（目标受阻+高强度）后**分钟-小时级余震**——抬 arousal 基线 / 放大态度形成；触发解耦防 runaway；运行态跨会话持久（durable 后端）、**绝不入记忆图谱** |
-| `ZERO_CONTAGION_ALPHA` · `ZERO_CARE_BIAS_ALPHA` · `ZERO_VICARIOUS_ALPHA`（+ `_VICARIOUS_THRESHOLD`） | 0 · 0 · 0 | **ToM 社会情绪**：感知对方情绪（**图外**确定性估计、不入热路径）并共情——情绪传染 / 对方难过则关怀（CARE）/ 对方开心则替代喜悦；上界 contagion≤0.3、三系数和≤0.6 |
+| `ZERO_HPC_LAYERS` · `_COUPLING` | 1·0 | **层级预测编码**：把单层融合升级为 2 层（感觉层→核心情感层）预测编码；`1`/`0`=平层零回归、`coupling∈[0.3,0.8]` 启用（`>1`/`<0` 报错） |
+| `ZERO_CORTISOL_ENABLED`<br>（+8 子旋钮 `_TAU`/`_IMPULSE`<br>/`_*_GATE`/`_*_ALPHA`/`_THETA_*`） | 关 | **HPA 皮质醇慢回路**：应激（目标受阻+高强度）后**分钟-小时级余震**——抬 arousal 基线 / 放大态度形成；触发解耦防 runaway；运行态跨会话持久（durable 后端）、**绝不入记忆图谱** |
+| `ZERO_CONTAGION_ALPHA`<br>`ZERO_CARE_BIAS_ALPHA`<br>`ZERO_VICARIOUS_ALPHA`<br>（+ `_VICARIOUS_THRESHOLD`） | 0·0·0 | **ToM 社会情绪**：感知对方情绪（**图外**确定性估计、不入热路径）并共情——情绪传染 / 对方难过则关怀（CARE）/ 对方开心则替代喜悦；上界 contagion≤0.3、三系数和≤0.6 |
 
 **⑤ 内核精度 / 评价机制·进阶旋钮**（workspace 精度重构、评价补充；各经**科学家议会设计门**·**默认全关、逐字零回归**，多为研究级、日常不必动；`.env.example` 有一行速记）
 
@@ -375,7 +375,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_IGNITION_BETA` | — | ignite 软门控陡度 β（荐 20–50）；空/注释=硬 step 零回归，β 连续近似 GNW all-or-none |
 | `ZERO_VA_COUPLING_POS` · `_NEG` | 0.6 · 0.6 | 正 / 负效价侧 V-A 耦合系数（荐 pos 0.4–0.6、neg 0.6–0.8 体现 negativity bias，Kuppens 2013）；也可在 persona JSON 配、persona 优先 |
 | `ZERO_ATTITUDE_AROUSAL_WEIGHT` | 0 | 高唤醒 stimulus 放大态度累积率（McGaugh 2004）；`0`=关 |
-| `ZERO_HABITUATION_SENSITIZATION_GAIN` · `ZERO_SENSITIZATION_THRESHOLD` | 0 · 0.5 | 习惯化+敏化双过程：强刺激（\|arousal\|>阈）叠加敏化增益（A-P3-D）；gain `0`=纯习惯化 |
+| `ZERO_HABITUATION_SENSITIZATION_GAIN`<br>`ZERO_SENSITIZATION_THRESHOLD` | 0·0.5 | 习惯化+敏化双过程：强刺激（\|arousal\|>阈）叠加敏化增益（A-P3-D）；gain `0`=纯习惯化 |
 | `ZERO_STANDARD_COMPLIANCE` | 关（恒 0） | 确定性词典桥从用户话读社会规范违反/遵从 ∈[-1,1]，通电 OCC 分支 B（pride/shame/reproach 等）；词表初版、语义待议会 P0-A 细化；`1` 开启 |
 | `ZERO_PANKSEPP_DISTINGUISH_FEAR` | 关 | `(-v,+a)` 象限按 arousal 阈值分 fear/rage；**⚠ 议会 2026-07-02 判失真**（纯 arousal 无神经生理依据区分 RAGE/FEAR），**建议保持关闭** |
 | `ZERO_MOOD_PRECISION` | 内置常量 | mood 流精度加权（介于主评价流与 `SURVIVAL_PRECISION=0.4` 之间）；调小=降低心境流投票权 |
