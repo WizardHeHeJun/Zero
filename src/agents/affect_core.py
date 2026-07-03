@@ -14,14 +14,15 @@ import random
 
 from src.agents.affect_math import (
     AROUSAL_GAIN,
+    MIN_PRECISION,
     MIN_SIGMA,
-    MOOD_PRECISION,
-    TEXT_AFFECT_PRECISION,
     evidence_from_value,
     fast_survival_prior,
     fuse_terms,
     gaussian_fuse,
+    hierarchical_fuse,
     ignite,
+    precision_da,
     sample_affect,
 )
 from src.orchestration.state import AffectState
@@ -52,19 +53,72 @@ class AffectCoreAgent:
                 arousal_gain / max(MIN_SIGMA, state.prior_sigma[1]) ** 2,
             )
             surv_mu, surv_prec = fast_survival_prior(state.features)
+
+            # A-P1-A（议会裁决·神经席 M5+数学席 M6）：precision_split 门控。
+            # True → value 流证据精度用 precision_da(rpe)（仅 DA 路径 |δ|，消 β·V 混同）；
+            # False → 逐字旧行为 pi*arousal_gain（零回归）。
+            rpe_for_da = state.rpe if state.rpe is not None else 0.0
+            if state.precision_split:
+                pi_da = precision_da(rpe_for_da) * arousal_gain
+            else:
+                pi_da = pi * arousal_gain
+
+            # A-P0-B（议会裁决·数学席 M1）：fuse_independence_correct 门控。
+            # value 流 valence 维与 appraisal/survival 共线（均依赖 goal_congruence）→
+            # 条件独立假设失立 → 精度相加过度自信。
+            # True → valence 维精度置 MIN_PRECISION（仅保留 arousal 维 π_DA，独立信号）；
+            # False → 逐字旧行为（两维同精度，零回归）。
+            # 评价流（appraisal）精度 = prior_prec，即 arousal_gain 加成后的 NE 路径 pi_ne。
+            if state.fuse_independence_correct:
+                value_prec: tuple[float, float] = (MIN_PRECISION, pi_da)  # valence 维极小
+            else:
+                value_prec = (pi_da, pi_da)
+
             streams: list[tuple[str, tuple[float, float], tuple[float, float]]] = [
                 ("survival", surv_mu, surv_prec),  # 快生存流（低精度、可单独点燃）
-                ("appraisal", state.prior_mu, prior_prec),  # 慢评价流（OCC）
-                ("value", evidence, (pi * arousal_gain, pi * arousal_gain)),  # 价值流（RPE）
+                (
+                    "appraisal",
+                    state.prior_mu,
+                    prior_prec,
+                ),  # 慢评价流（OCC）；精度=arousal_gain/σ²，即 NE 路径 pi_ne
+                ("value", evidence, value_prec),  # 价值流（RPE）
             ]
             if state.mood_enabled and state.mood is not None:
-                streams.append(("mood", state.mood, (MOOD_PRECISION, MOOD_PRECISION)))
+                streams.append(("mood", state.mood, (state.mood_precision, state.mood_precision)))
             if state.text_affect is not None:
                 streams.append(
-                    ("text", state.text_affect, (TEXT_AFFECT_PRECISION, TEXT_AFFECT_PRECISION))
+                    (
+                        "text",
+                        state.text_affect,
+                        (state.text_affect_precision, state.text_affect_precision),
+                    )
                 )
-            terms, ignited = ignite(streams)
-            post_mu, post_sigma = fuse_terms(terms)
+            terms, ignited = ignite(
+                streams,
+                survival_fallback=state.ignition_survival_fallback,
+                soft_beta=state.ignition_beta,
+            )
+            # P3 层级预测编码（HPC v1）：门控关（默认 layers=1 或 coupling=0.0）→
+            # 走现 fuse_terms 路径逐字不变（hierarchical_fuse 内部退化旁路保证零回归）。
+            # 开启（layers>=2 且 coupling>0）→ 重建带 name 的流列表传给 hierarchical_fuse。
+            # v1 在 ignite 之后做层级融合（保守取向；神经席「各流先层级、再进 GNW 竞争」的精确拓扑
+            # 留 v2）。named_terms 用 ignite 输出的 terms（已含 soft_beta gate 调制后的精度，
+            # soft_beta=None 时即原始精度）与 ignited 名单同序对齐重建——与软门控叠加时
+            # 精度语义自洽（gate 先于 HPC）；soft_beta=None（默认）时精度不变，零回归。
+            if state.hierarchical_layers >= 2 and state.hierarchical_coupling > 0.0:
+                named_terms: list[tuple[str, tuple[float, float], tuple[float, float]]] = [
+                    (name, mu, prec) for name, (mu, prec) in zip(ignited, terms, strict=True)
+                ]
+                if named_terms:
+                    post_mu, post_sigma = hierarchical_fuse(
+                        named_terms,
+                        layers=state.hierarchical_layers,
+                        coupling=state.hierarchical_coupling,
+                    )
+                else:
+                    post_mu, post_sigma = fuse_terms(terms)
+            else:
+                post_mu, post_sigma = fuse_terms(terms)
         elif state.mood_enabled:
             # 把「已在的心境」作为第三个精度加权先验并入融合（当前被过去弯折）
             prev_mood = state.mood if state.mood is not None else (0.0, 0.0)
@@ -76,7 +130,7 @@ class AffectCoreAgent:
                 [
                     (state.prior_mu, prior_prec),
                     (evidence, (pi, pi)),
-                    (prev_mood, (MOOD_PRECISION, MOOD_PRECISION)),
+                    (prev_mood, (state.mood_precision, state.mood_precision)),
                 ]
             )
         else:

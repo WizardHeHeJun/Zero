@@ -37,13 +37,27 @@ def _is_commitment(text: str) -> bool:
 
 
 class SupervisorAgent:
-    """任务完成节点：标记完成并节流 flush 记忆。"""
+    """任务完成节点：标记完成并节流 flush 记忆。
+
+    salience 相关旋钮在构造期一次从 env 读取，存 self.*，不在每次 __call__ 热路径重读。
+    """
 
     def __init__(self, memory: MemoryClient) -> None:
         self.memory = memory
-        self.seen_episode_keys: set[str] = (
-            set()
-        )  # D5：已写过 episode 的 key，判 first_contact（primacy）
+        # D5：已写过 episode 的 key，判 first_contact（primacy）。
+        # TODO(multi-worker): 进程内 set，单进程/单 worker 可接受；
+        #   多 worker / 重启下同一 user key 可被多标（first_contact 会重复打）。
+        #   当前单进程 --chat 场景多标一次可接受（first_contact ×1.2 对同 key 第二个
+        #   episode 少量误伤），仅多 worker 部署前须下沉持久层（如查语义库该 user 是否
+        #   已有 episode），不能依赖进程内 set。
+        self.seen_episode_keys: set[str] = set()
+        # salience 旋钮（构造期一次解析，默认值与旧 getenv 逐字一致）
+        # D6：ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD 开启时让 value 量级补偿 salience 门（默认 0=关）
+        self.salience_affective_add = os.getenv(
+            "ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD", "0"
+        ).lower() not in ("0", "", "false")
+        # salience 写 episode 最低门（ZERO_EPISODE_SALIENCE_MIN 默认 0.15）
+        self.ep_threshold = float(os.getenv("ZERO_EPISODE_SALIENCE_MIN", "0.15"))
 
     def _is_first_contact(self, key: str) -> bool:
         """首次为该 key 写 episode 时返回 True（并登记），之后恒 False。
@@ -74,13 +88,9 @@ class SupervisorAgent:
             )
             # D6：低唤醒高语义内容 precision 低、rpe≈0 易漏写。可调低阈值或开
             # ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD 让 value 量级补偿门控（默认 0=关，零回归）。
-            if os.getenv("ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD", "0").lower() not in (
-                "0",
-                "",
-                "false",
-            ):
+            if self.salience_affective_add:
                 salience += 0.3 * abs(value)
-            ep_threshold = float(os.getenv("ZERO_EPISODE_SALIENCE_MIN", "0.15"))
+            ep_threshold = self.ep_threshold
             user_text = (state.stimulus.text or "") if state.stimulus is not None else ""
             # 议会 A 语义写入通道：承诺/日程内容即便低 salience 也写（独立于 McGaugh 情绪门）
             is_commitment = _is_commitment(user_text)
@@ -88,8 +98,10 @@ class SupervisorAgent:
 
             # 长期情绪倾向：user 作用域。确定性后端 add_fact 按 (scope,key) 时序失效
             # （memory-rules#4），活跃 disposition 恒为最新一条、不胀活跃集；且写在 supervisor
-            # 任务完成节点（合 memory-rules#1）。chat 长对话的增长在 episode 侧，由 salience 门 +
-            # dedup + 容量上限收口，不在此误伤 disposition→召回闭环。
+            # 任务完成节点（合 memory-rules#1）——此处「任务」粒度 = 单轮对话（图末端节点），
+            # 与「长任务里每步写」的 memory-rules#1 禁止情形不同（后者才是高频刷图谱的坑）。
+            # chat 长对话的增长在 episode 侧，由 salience 门 + dedup + 容量上限收口，
+            # 不在此误伤 disposition→召回闭环。
             await self.memory.write(
                 f"disposition stimulus={stim_name} value={value:.3f}",
                 scope=Scope.USER,

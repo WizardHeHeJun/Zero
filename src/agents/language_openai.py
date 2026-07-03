@@ -171,7 +171,7 @@ class OpenAILanguageModel:
         except Exception:
             # 某些代理/模型不支持 logit_bias（或 token id 不匹配）→ 退回不带 bias；
             # push 仍经 prompt 用词倾向生效，不致命。
-            logger.debug("converse 带 logit_bias 调用失败，退回无 bias 重试", exc_info=True)
+            logger.warning("converse 带 logit_bias 调用失败，退回无 bias 重试", exc_info=True)
             resp = await self.client.chat.completions.create(
                 model=self.model, temperature=temperature, messages=messages
             )
@@ -207,6 +207,7 @@ class OpenAILanguageModel:
                 for tid in enc.encode(word):
                     out[tid] = clamp(PUSH_LOGIT_SCALE * delta, -6.0, 6.0)
             except Exception:
+                logger.debug("push logit_bias: token 编码失败 word=%s，跳过", word, exc_info=True)
                 continue
         return out
 

@@ -2,6 +2,9 @@
 
 用假 session 注入固定 e*、lm=None 走词典回退，把噪声 gauss monkeypatch 成 0 求确定性，
 验证「评价→引擎→两时间尺度情绪→生成→落盘」一轮链路与状态推进（行为零回归的护栏）。
+
+旋钮参数迁构造期后，测试策略：直接传参（ChatDriver(..., noise_std=0.05)）验证旋钮有效，
+不再依赖构造后 setenv（monkeypatch 对已固化的 self.* 无效）。
 """
 
 from __future__ import annotations
@@ -33,9 +36,17 @@ def _make_driver(
     *,
     lm: Any = None,
     attitude: tuple[float, float] = (0.0, 0.0),
+    noise_std: float = 0.0,  # 默认关噪声使测试确定性；需测噪声时显式传值
 ) -> ChatDriver:
     return ChatDriver(
-        thread="t", lm=lm, log=log, session=session, history=[], attitude=attitude, mode="test"
+        thread="t",
+        lm=lm,
+        log=log,
+        session=session,
+        history=[],
+        attitude=attitude,
+        mode="test",
+        noise_std=noise_std,
     )
 
 
@@ -77,32 +88,54 @@ async def test_attitude_prior_is_pre_step_snapshot(monkeypatch: pytest.MonkeyPat
     log.close()
 
 
-async def test_emotion_noise_std_env_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_EMOTION_NOISE_STD 未设 → 噪声标准差默认 0.05（逐字旧行为）。"""
-    monkeypatch.delenv("ZERO_EMOTION_NOISE_STD", raising=False)
-    sigmas: list[float] = []
-    monkeypatch.setattr(
-        "src.orchestration.chat_driver.random.gauss",
-        lambda mu, sigma: sigmas.append(sigma) or 0.0,
-    )
+async def test_emotion_noise_std_default_005() -> None:
+    """构造期 noise_std 默认 0.05：self.noise_std 值断言（构造层传参验证，替代原 monkeypatch）。"""
     log = ConversationLog(":memory:")
-    await _make_driver(log, _FakeSession((0.6, 0.4))).step("x")
-    assert sigmas and all(s == 0.05 for s in sigmas)  # 默认 0.05
+    session = _FakeSession((0.6, 0.4))
+    driver = ChatDriver(
+        thread="t",
+        lm=None,
+        log=log,
+        session=session,
+        history=[],
+        attitude=(0.0, 0.0),
+        mode="test",
+        # 不传 noise_std → 使用默认值
+    )
+    assert driver.noise_std == 0.05  # 默认 0.05（逐字旧行为）
     log.close()
 
 
-async def test_emotion_noise_std_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_EMOTION_NOISE_STD=0 → 噪声关闭（gauss 以 sigma=0 调用，旋钮真生效）。"""
-    monkeypatch.setenv("ZERO_EMOTION_NOISE_STD", "0")
+async def test_emotion_noise_std_override_zero() -> None:
+    """noise_std=0 → 构造后 self.noise_std 为 0，step 中 gauss 以 sigma=0 调用（旋钮真生效）。"""
     sigmas: list[float] = []
-    monkeypatch.setattr(
-        "src.orchestration.chat_driver.random.gauss",
-        lambda mu, sigma: sigmas.append(sigma) or 0.0,
-    )
-    log = ConversationLog(":memory:")
-    await _make_driver(log, _FakeSession((0.6, 0.4))).step("x")
-    assert sigmas and all(s == 0.0 for s in sigmas)
-    log.close()
+
+    import src.orchestration.chat_driver as _mod
+
+    original_gauss = _mod.random.gauss
+
+    def capture_gauss(mu: float, sigma: float) -> float:
+        sigmas.append(sigma)
+        return 0.0
+
+    _mod.random.gauss = capture_gauss  # type: ignore[assignment]
+    try:
+        log = ConversationLog(":memory:")
+        driver = ChatDriver(
+            thread="t",
+            lm=None,
+            log=log,
+            session=_FakeSession((0.6, 0.4)),
+            history=[],
+            attitude=(0.0, 0.0),
+            mode="test",
+            noise_std=0.0,
+        )
+        await driver.step("x")
+        assert sigmas and all(s == 0.0 for s in sigmas)
+        log.close()
+    finally:
+        _mod.random.gauss = original_gauss  # type: ignore[assignment]
 
 
 async def test_emotion_noise_reproducible_with_rng_seed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,6 +151,7 @@ async def test_emotion_noise_reproducible_with_rng_seed(monkeypatch: pytest.Monk
         attitude=(0.0, 0.0),
         mode="test",
         rng_seed=123,
+        noise_std=0.05,
     )
     db = ChatDriver(
         thread="t",
@@ -128,6 +162,7 @@ async def test_emotion_noise_reproducible_with_rng_seed(monkeypatch: pytest.Monk
         attitude=(0.0, 0.0),
         mode="test",
         rng_seed=123,
+        noise_std=0.05,
     )
     seq_a = [(await da.step("x")).emotion for _ in range(5)]
     seq_b = [(await db.step("x")).emotion for _ in range(5)]
@@ -159,3 +194,32 @@ async def test_step_emits_conversation_log(monkeypatch: pytest.MonkeyPatch) -> N
     assert "我很开心" in message  # user 原文
     assert turn.reply in message  # Zero 回复原文
     assert "第1轮" in message  # 轮次标注
+
+
+async def test_build_chat_driver_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """工厂正确从 env 读取旋钮并透传给 ChatDriver.self.*（构造前 setenv → 构造 → 断言 self.*）。"""
+    from src.orchestration.chat_driver import build_chat_driver
+
+    monkeypatch.setenv("ZERO_EMOTION_NOISE_STD", "0.01")
+    monkeypatch.setenv("ZERO_INTENSITY_FLOOR", "0.1")
+    monkeypatch.setenv("ZERO_HABITUATION_TAU", "7")
+    monkeypatch.setenv("ZERO_HISTORY_PRIMACY_K", "3")
+    monkeypatch.setenv("ZERO_HISTORY_WINDOW", "20")
+    monkeypatch.setenv("ZERO_RECALL_INJECT_MIN", "0.6")
+    monkeypatch.setenv("ZERO_RECALL_IMPORTANCE_SCALE", "50")
+    monkeypatch.setenv("ZERO_ATTITUDE_RATE_DECAY_K", "0.5")
+    monkeypatch.setenv("ZERO_FAMILIARITY_TAU", "15")
+    monkeypatch.setenv("ZERO_EMOTION_BASELINE_ATTITUDE_W", "0.8")
+    # 不设 ZERO_OPENAI_API_KEY / ZERO_OPENAI_MODEL → lm=None（无网络）
+
+    driver = build_chat_driver(thread="test-env-read")
+    assert driver.noise_std == pytest.approx(0.01)
+    assert driver.intensity_floor == pytest.approx(0.1)
+    assert driver.hab_tau == pytest.approx(7.0)
+    assert driver.primacy_k == 3
+    assert driver.window_n == 20
+    assert driver.inject_min == pytest.approx(0.6)
+    assert driver.importance_scale == pytest.approx(50.0)
+    assert driver.decay_k == pytest.approx(0.5)
+    assert driver.fam_tau == pytest.approx(15.0)
+    assert driver.baseline_w == pytest.approx(0.8)

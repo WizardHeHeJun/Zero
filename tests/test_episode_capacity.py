@@ -103,3 +103,51 @@ async def test_search_does_not_trim(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     await store.search("q", scope="user", key="u1", sim_threshold=0.0)
     assert _count(store, "user", "u1") == before, "search 不应改变 episode 数量"
+
+
+async def test_aclose_closes_connection_and_safe_to_call_twice() -> None:
+    """aclose 后连接关闭（后续 conn.execute 应抛 ProgrammingError）；重复调用不崩。
+
+    SqliteVectorStore.aclose 是 E-P2-C 要求：to_thread 桥接关连接，async 上下文安全。
+    """
+    import sqlite3
+
+    store = SqliteVectorStore(":memory:")
+    # 首次 aclose：关闭连接
+    await store.aclose()
+    # 连接已关：直接访问 conn 执行 SQL 应抛 ProgrammingError
+    try:
+        store.conn.execute("SELECT 1")
+        closed = False
+    except sqlite3.ProgrammingError:
+        closed = True
+    assert closed, "aclose 后 conn 应已关闭"
+
+    # 重复调用 aclose 不应崩（幂等性）
+    await store.aclose()  # 不抛即通过
+
+
+async def test_memory_client_aclose_delegates_to_semantic() -> None:
+    """MemoryClient.aclose 委托 semantic.aclose（duck-typing，有该方法才调）。"""
+    from src.memory.client import MemoryClient
+
+    store = SqliteVectorStore(":memory:")
+    mem = MemoryClient(semantic=store)
+    await mem.aclose()
+    # store 连接应已关闭
+    import sqlite3
+
+    try:
+        store.conn.execute("SELECT 1")
+        closed = False
+    except sqlite3.ProgrammingError:
+        closed = True
+    assert closed, "MemoryClient.aclose 应委托 semantic.aclose 关闭连接"
+
+
+async def test_memory_client_aclose_noop_without_semantic() -> None:
+    """MemoryClient.aclose 在无 semantic 时 no-op，不抛异常（零回归）。"""
+    from src.memory.client import MemoryClient
+
+    mem = MemoryClient()  # semantic=None
+    await mem.aclose()  # 不抛即通过

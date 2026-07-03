@@ -109,6 +109,26 @@ class MemoryClient:
             )
             return
 
+    async def aclose(self) -> None:
+        """关闭底层语义后端连接（duck-typing，异步优先）。
+
+        检测顺序：优先 aclose（SqliteVectorStore）→ 回退 close 且为 coroutinefunction
+        （async def close，如 GraphitiGraphStore）→ 均无则 no-op。
+        确保两种后端（SqliteVectorStore/GraphitiGraphStore）都能被正确关闭。
+        """
+        import inspect
+
+        if self.semantic is None:
+            return
+        if hasattr(self.semantic, "aclose"):
+            await self.semantic.aclose()  # type: ignore[union-attr]
+            logger.debug("memory_client aclose delegated to semantic.aclose")
+        elif hasattr(self.semantic, "close") and inspect.iscoroutinefunction(
+            self.semantic.close  # type: ignore[union-attr]
+        ):
+            await self.semantic.close()  # type: ignore[union-attr]
+            logger.debug("memory_client aclose delegated to semantic.close (async)")
+
     async def recall(
         self,
         query: str,

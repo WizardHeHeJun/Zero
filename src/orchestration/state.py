@@ -73,6 +73,36 @@ class AffectState(BaseModel):
     # Mood（A.7 慢变心境：时间深度/滞后）—— 运行态，进 Checkpointer，不入图谱
     mood: tuple[float, float] | None = None
 
+    # HPA/皮质醇慢回路（P3 1-B；运行态慢变量）—— 进 Checkpointer，**绝不写入长期记忆图谱**
+    # cortisol_state: 归一皮质醇水平 ∈ [0, 1]（同 mood 先例：Checkpointer 持久，非图谱）
+    # cortisol_updated_at: 上次更新的 UTC epoch 秒（float，非 datetime——msgpack 原生/无时区歧义）
+    # cortisol_enabled=False 门控关 → 现路径逐字不变（零回归）
+    cortisol_state: float = 0.0
+    cortisol_updated_at: float | None = None  # UTC epoch 秒；None=首次未初始化
+    cortisol_enabled: bool = False  # 总门控（默认关=零回归）
+    cortisol_arousal_gate: bool = False  # cortisol→arousal 基线抬升（默认关=零回归）
+    cortisol_attitude_gate: bool = False  # cortisol→ATTITUDE_RATE 放大（默认关=零回归）
+    cortisol_arousal_alpha: float = 0.0  # 默认 0 → offset=0 → 零回归
+    cortisol_attitude_alpha: float = 0.0  # 默认 0 → rate_eff=ATTITUDE_RATE × 1 → 零回归
+    # 动力学常数（None → AppraisalAgent 回退 affect_math 议会推荐常量=零回归；env 设值则覆盖）
+    cortisol_tau: float | None = None  # 衰减 τ 秒；None→CORTISOL_TAU_DECAY(≈5400)
+    cortisol_impulse: float | None = None  # 单次应激脉冲量；None→CORTISOL_IMPULSE
+    cortisol_theta_goal: float | None = None  # 触发目标阈；None→CORTISOL_THETA_GOAL
+    cortisol_theta_intensity: float | None = None  # 触发强度阈；None→CORTISOL_THETA_INTENSITY
+
+    # P3 1-C ToM / 社会情绪：对方情绪 VAD 估计（图外 appraise_text 确定性词典法产出后注入；
+    # 非自身 OCC goal_congruence——语义独立、字段独立，同 recalled_disposition 标量注入模式）。
+    # None = 门控关 = 零回归（不影响自身先验）；估计在 chat_driver 图外，不进确定性节点内部。
+    interlocutor_affect: tuple[float, float] | None = None
+    # 情绪传染 w_c（差分式·双维；默认 0=零回归；硬上界 ≤0.3 由 .env 注释约束）
+    contagion_alpha: float = 0.0
+    # CARE 动机先验抬高（对方 v_i<0 触发；默认 0=零回归；推荐 ≤0.4）
+    care_bias_alpha: float = 0.0
+    # 替代喜悦（对方 v_i>threshold 且 a_i>0 触发·v1 只做 joy；默认 0=零回归；推荐 ≤0.2）
+    vicarious_alpha: float = 0.0
+    # 替代喜悦触发阈（默认 0.3；与 care_bias 互斥触发：v<0 走 CARE、v>threshold 走替代）
+    vicarious_threshold: float = 0.3
+
     # MemoryRecall：长期 user 情绪倾向回灌（MemoryRecallAgent 读 → AppraisalAgent 用）
     recalled_disposition: float | None = None
     # 语义召回（Graphiti 等语义记忆侧信道）的相关事实串 → 喂 LanguageAgent 检索；
@@ -115,4 +145,50 @@ class AffectState(BaseModel):
     # 防正反馈无界放大。完整倒 U 立项排后（值得升级的实测触发 arousal>0.5）。仅 workspace 路径用；
     # 标量、不入 LLM 热路径。
     arousal_gain_cap: float | None = None
+    # precision_split（A-P1-A 议会裁决）：True 时 value 流证据精度用 precision_da(rpe)（消 β·V，
+    # DA 路径仅由 |δ| 决定精度）；False=默认旧行为（零回归）。仅 workspace 路径用。
+    precision_split: bool = False
+    # fuse_independence_correct（A-P0-B 议会裁决）：True 时 value 流 valence 维精度置极小
+    # （MIN_PRECISION），保留其 arousal 维精度；消去与 appraisal/survival 共线的 valence 冗余、
+    # 防后验过度自信。False=默认旧行为（零回归）。仅 workspace 路径用。
+    fuse_independence_correct: bool = False
+    # ignition_survival_fallback（张力 4 裁决·神经席 M3）：True 时全弱刺激（无流过阈）改以
+    # survival 流作兜底广播（皮层下生存信号始终有输出，与 GNW 亚阈=停留局部一致）；
+    # 若 streams 无 survival 流则退回 max by salience（不崩）。
+    # False=默认旧行为（全弱刺激保留 salience 最高流，零回归）。仅 workspace 路径用。
+    ignition_survival_fallback: bool = False
+    # ignition_beta（议会 2026-07-02 Item 2 · 软门控陡度）：None=硬 step 零回归（默认）；
+    # 非 None → ignite() 用 logistic gate(sᵢ;θ,β)=σ(β·(sᵢ−θ)) 调制各流精度（连续近似
+    # GNW all-or-none）。推荐区间 [20,50]，典型值 20；β<1 无意义。仅 workspace 路径用。
+    # 由 ZERO_IGNITION_BETA env → chat_driver/runner → 此字段 → affect_core 透传。
+    ignition_beta: float | None = None
+    # P3 层级预测编码（1-A HPC v1）：默认 1=平层零回归（等价现 fuse_terms），2=启用 2 层 HPC。
+    # 仅 workspace 路径的 fuse_terms 调用点消费；非 workspace 路径不触及（守零回归）。
+    # 由 ZERO_HPC_LAYERS env → chat_driver/runner → 此字段 → affect_core 透传。
+    hierarchical_layers: int = 1
+    # P3 层间耦合强度 w∈[0,1]（HPC v1）：0=退平层（coupling=0 → 退化 fuse_terms(all)=零回归）；
+    # 推荐 [0.3,0.8]；>1 hardcode raise ValueError（破坏凸组合稳定性，类 seeking 双稳坑）；
+    # coupling 是 env 注入的**固定浮点标量**，非状态函数（禁 learning / 动态更新 / 运行期自适应）。
+    # 由 ZERO_HPC_COUPLING env → chat_driver/runner → 此字段 → affect_core 透传。
+    hierarchical_coupling: float = 0.0
+    # mood_precision（悬而未决 T6-a · mood 流精度加权旋钮）：默认 0.8=MOOD_PRECISION 常量，
+    # 介于主评价流与 SURVIVAL_PRECISION(0.4) 之间合理（Friston 2009 初始固定精度）。
+    # 由 ZERO_MOOD_PRECISION env（默认注释关）→ chat_driver/runner → 此字段 → affect_core 透传。
+    # 默认值=现常量 → 逐字零回归（不改行为）；可调 mood 流投票权。
+    mood_precision: float = 0.8
+    # text_affect_precision（悬而未决 T6-b · 文本语义流精度旋钮）：默认 0.3=TEXT_AFFECT_PRECISION
+    # 常量（固定低值，显式低于 occ_prior 动态精度；Friston 2009 初版固定精度合理起点）。
+    # 由 ZERO_TEXT_AFFECT_PRECISION env（默认注释关）→ chat_driver/runner → 此字段
+    # → affect_core 透传。
+    # 默认值=现常量 → 逐字零回归（不改行为）；未来可从回归器残差动态估计时替换此旋钮。
+    text_affect_precision: float = 0.3
+    # C（A-P2-A）：va_coupling 非对称系数。None → AppraisalAgent 调 occ_prior 时
+    # 用默认 0.6/0.6（零回归）；非 None → 传入，启用 Kuppens 2013 negativity bias。
+    # 经 build_chat_driver/runner → state → AppraisalAgent → occ_prior 贯通。
+    va_coupling_pos: float | None = None
+    va_coupling_neg: float | None = None
+    # E（WARN-4 / A-P1-D）：Panksepp RAGE/FEAR 次级区分开关。默认 False → (-v,+a) 一律 rage
+    # （零回归）；True → motivational_system 按 arousal 阈值在该象限分 fear/rage。仅
+    # _appraisal_summary（appraisal_conditioning 开时）消费；精确阈值/坐标待议会 P1-D。
+    panksepp_distinguish_fear: bool = False
     task_complete: bool = False

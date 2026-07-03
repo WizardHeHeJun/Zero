@@ -32,6 +32,18 @@ INTENSITY_STRONG = 0.8
 DEFAULT_BIAS_BETA = 1.0
 # 情绪时间包络的 sigmoid 陡度
 ENVELOPE_STEEPNESS = 6.0
+# ⚠ TOMBSTONE（议会 2026-07-02 判失真）：纯 arousal 阈值在 VA 二维区分 RAGE/FEAR
+# 无神经生理依据——二者均处 (-v,+a) 象限、arousal 相当；0.6 无文献支撑、方向可能相反
+# （高 arousal 的 FEAR=逃跑；RAGE 的 arousal 可低于冻结态 FEAR）。真正分野在动机方向
+# （趋近/回避）+ PAD Dominance 维（RAGE 高支配/FEAR 顺从），超出当前纯 VA 管线。
+# 神经+生物两席共识：二者同处 (-v,+a)、arousal 相当，真正分野在动机方向/回避-趋近 +
+# PAD Dominance；0.6 无文献支撑、方向可能相反。
+# 引文：Panksepp 1998/2011（Ch.10 RAGE/Ch.11 FEAR 解剖与神经化学分离）；
+#        Carver & Harmon-Jones 2009（Psychol. Bull. 135:183，RAGE=趋近左额叶/FEAR=回避右额叶）；
+#        Wacker et al. 2003（Emotion 3:167，EEG 直接证明 anger/fear 动机方向神经可分）。
+# 生产不建议启用 distinguish_fear=True；未来接入 Dominance/趋近-回避维度可替换此纯 arousal 逻辑。
+# 仅在 motivational_system(distinguish_fear=True) 时生效；默认门控关闭，零回归。
+PANKSEPP_FEAR_AROUSAL_THRESHOLD = 0.6
 
 # VA 极坐标 8 扇区（角度从 +valence 轴逆时针，y=arousal）→ 三档强度词（弱/中/强）。
 # 词为中文（与语言层中文生成一致）。扇区中心角：0,45,…,315。
@@ -78,13 +90,45 @@ def affect_label(valence: float, arousal: float) -> str:
     return words[_intensity_tier(r)]
 
 
-def motivational_system(valence: float, arousal: float) -> str:
+def motivational_system(
+    valence: float,
+    arousal: float,
+    *,
+    distinguish_fear: bool = False,
+) -> str:
     """VA → Panksepp 主导情绪系统标签（动机色彩）。
 
     映射（r<NEUTRAL_RADIUS 为 neutral）：
-      (+v,+a)→seeking（探索/渴求/玩乐） (+v,-a)→care（照护/亲和/满足）
-      (-v,+a)→rage（愤怒/威胁；FEAR 同处该象限，VA 欠定，取 rage 为主导近似）
-      (-v,-a)→panic_grief（失落/悲伤/分离）
+      (+v,+a) → seeking（多巴胺能动机/探索/期待；注意 SEEKING 是动机系统而非情感结果，
+                VA 二维对其欠定，Panksepp 2011；此映射为工程近似）
+      (+v,-a) → care（照护/亲和/满足）
+      (-v,+a) → rage（愤怒/威胁）  ← 默认，**动机系统主导近似、非 RAGE/FEAR 神经判别器**。
+                  RAGE 与 FEAR 均处 (-v,+a) 象限，VA 二维无法判别——这是架构上已知的欠定，
+                  而非实现缺陷。真正分野在动机方向（趋近/回避）+ PAD Dominance 维（RAGE
+                  高支配/FEAR 顺从），超出当前纯 VA 管线（Carver & Harmon-Jones 2009；
+                  Wacker et al. 2003）。取 rage 为默认仅因 RAGE 在 (-v,+a) 中更常见/显著，
+                  **非基于 arousal 判别 FEAR**。
+                  distinguish_fear=True 时按 arousal 阈值次级区分（实验旋钮，议会 2026-07-02
+                  判无可辩护阈值，见 PANKSEPP_FEAR_AROUSAL_THRESHOLD tombstone）。
+      (-v,-a) → panic_grief（失落/悲伤/分离）
+
+    注记（议会 2026-07-02 · 神经+生物席共识）：RAGE 与 FEAR 是独立皮层下回路
+    （Panksepp 1998 Ch.10/11），二者均处 (-v,+a) 象限、arousal 相当；纯 arousal 阈值
+    无神经生理依据区分二者（Barrett 2017：fear/anger 共享 core affect，无单一神经指纹）。
+    此函数的 (-v,+a) → rage 是**动机系统主导近似**，不声称为 RAGE/FEAR 神经判别器。
+
+    参数
+    ----
+    distinguish_fear : bool
+        默认 False——保持旧行为（(-v,+a) 一律→ rage），**零回归**。
+        True 时按 arousal 阈值（PANKSEPP_FEAR_AROUSAL_THRESHOLD）次级区分 fear/rage。
+        ⚠ 议会 2026-07-02 判该阈值无可辩护文献依据，生产不建议开启。
+
+    env 贯通状态：已接 ZERO_PANKSEPP_DISTINGUISH_FEAR（默认关=零回归）。经
+    chat_driver/runner → SessionConfig → AffectState.panksepp_distinguish_fear →
+    language.py::_appraisal_summary 读 state 传入（仅 appraisal_conditioning 开时经该摘要可见）。
+    on/off 开关已贯通；精确阈值/坐标（PANKSEPP_FEAR_AROUSAL_THRESHOLD）仍待议会 P1-D 定论。
+
     返回小写枚举串，便于下游条件化与单测。
     """
     r, _ = _polar(valence, arousal)
@@ -92,7 +136,12 @@ def motivational_system(valence: float, arousal: float) -> str:
         return "neutral"
     if valence >= 0.0:
         return "seeking" if arousal >= 0.0 else "care"
-    return "rage" if arousal >= 0.0 else "panic_grief"
+    # (-v, +a) 象限
+    if arousal >= 0.0:
+        if distinguish_fear and arousal >= PANKSEPP_FEAR_AROUSAL_THRESHOLD:
+            return "fear"
+        return "rage"
+    return "panic_grief"
 
 
 def affect_descriptor(valence: float, arousal: float) -> str:
@@ -126,7 +175,14 @@ SEED_VAD_LEXICON: dict[str, tuple[float, float]] = {
     "恼火": (-0.6, 0.5),
     "愤怒": (-0.8, 0.7),
     "暴怒": (-0.9, 0.9),
-    "惊讶": (0.1, 0.7),
+    # 惊讶效价中性化（A-P2-D）：Russell/Scherer 指惊讶效价不稳定，改为中性 (0.0, 0.7)。
+    # 细分词：正向惊讶("惊喜") / 负向惊讶("惊吓") 独立词条。
+    "惊讶": (0.0, 0.7),
+    # 惊喜：Russell 1980 astonished ~69.8°（v+），0.6 偏强 → 精化为 0.5（议会 2026-07-02）。
+    "惊喜": (0.5, 0.7),
+    # 惊吓：Russell 1980 alarmed ~96.5°，与恐惧 (-0.7,0.7) 拉开距离；负效价弱、唤醒略升
+    #       (-0.3, 0.8)（议会 2026-07-02 精化；旧 (-0.6,0.7) 与恐惧仅差 0.1 区分度不足）。
+    "惊吓": (-0.3, 0.8),
 }
 
 
@@ -188,6 +244,126 @@ def appraise_text(
         return (0.0, 0.0)
     n = len(hits)
     return (sum(v for v, _ in hits) / n, sum(a for _, a in hits) / n)
+
+
+# ---------------------------------------------------------------------------
+# 社会规范遵从评价桥（B6·OCC 分支 B 通电）
+# ---------------------------------------------------------------------------
+# 议会 2026-07-02 精化（Item 1）：词表升级为三级加权 dict + 自指过滤。
+# 纯确定性词典/规则，绝不调 LLM/embedding（守热路径红线）。
+
+# 规范违反词：三级权重（轻度 0.5 / 标准 1.0 / 强烈 1.5）
+# 议会依据：OCC praiseworthiness 有强度差（Ortony et al. 1988 Ch.4）；轻度贬义 ≠ 脏话威胁。
+_VIOLATION_WEIGHTS: dict[str, float] = {
+    # 轻度消极描述（0.5）
+    "蠢": 0.5,
+    "笨": 0.5,
+    "丑": 0.5,
+    "无聊": 0.5,
+    # 标准辱骂/命令式威胁（1.0）
+    "白痴": 1.0,
+    "废物": 1.0,
+    "垃圾": 1.0,
+    "滚": 1.0,
+    "闭嘴": 1.0,
+    "混蛋": 1.0,
+    "bitch": 1.0,
+    "asshole": 1.0,
+    # 强烈脏话/死亡威胁（1.5）
+    "去死": 1.5,
+    "死": 1.5,
+    "他妈的": 1.5,
+    "fuck": 1.5,
+    "nmsl": 1.5,
+    "草": 1.5,
+}
+
+# 规范遵从词：三级权重（轻度礼貌 0.5 / 标准致谢道歉 1.0 / 强烈赞许钦佩 1.5）
+_COMPLIANCE_WEIGHTS: dict[str, float] = {
+    # 轻度礼貌（0.5）
+    "请": 0.5,
+    "麻烦": 0.5,
+    "劳烦": 0.5,
+    "please": 0.5,
+    "kindly": 0.5,
+    # 标准致谢/道歉（1.0）
+    "谢谢": 1.0,
+    "感谢": 1.0,
+    "对不起": 1.0,
+    "抱歉": 1.0,
+    "sorry": 1.0,
+    "thank you": 1.0,
+    "thanks": 1.0,
+    "my apologies": 1.0,
+    # 强烈赞许/钦佩（1.5）
+    "太感谢": 1.5,
+    "非常感谢": 1.5,
+    "佩服": 1.5,
+    "钦佩": 1.5,
+    "excellent": 1.5,
+    "amazing": 1.5,
+    "well done": 1.5,
+}
+
+# 信号强度上限（防堆词刷分），非 OCC praiseworthiness 理论值（Ortony et al. 1988 Ch.4）
+_MAX_SIGNALS = 4
+
+# 自指上下文窗口宽度（命中词前的字符数）：覆盖「我太蠢了」「自己真笨」等短句
+_SELF_REF_WINDOW = 5
+
+
+def _is_self_referential(text: str, word: str) -> bool:
+    """命中 violation 词前 ~_SELF_REF_WINDOW 字窗口内含自指标记 → 判自指，不计为攻击。
+
+    避免把「我太蠢了」（OCC shame/self-reproach）误判为对他人 reproach/攻击。
+    纯正则/字符串扫描，确定性，无外部依赖。
+
+    自指标记：「我」「自己」「本人」或正则「我.*?(蠢|笨|白痴|废物)」跨词匹配。
+    """
+    import re  # stdlib，仅本函数用，lazy import 避免模块级副作用
+
+    pos = text.find(word)
+    if pos < 0:
+        return False
+    # 窗口：命中词前最多 _SELF_REF_WINDOW 字
+    window_start = max(0, pos - _SELF_REF_WINDOW)
+    window = text[window_start:pos]
+    if any(marker in window for marker in ("我", "自己", "本人")):
+        return True
+    # 宽松跨词匹配：「我……蠢/笨/白痴/废物」句式
+    if re.search(r"我.{0,10}(蠢|笨|白痴|废物)", text[: pos + len(word)]):
+        return True
+    return False
+
+
+def appraise_standard_compliance(text: str) -> float:
+    """从用户文本确定性估计社会规范遵从度，返回 ∈[-1, 1]。
+
+    规范违反（辱骂/命令式威胁/贬低/脏话）→ 负；
+    规范遵从（致谢/道歉/礼貌/赞许）→ 正；
+    无信号 → 0.0。
+
+    算法（议会 2026-07-02 精化）：
+    1. 自指过滤：violation 词命中且上下文含自指（我/自己/本人）→ 不计分
+       （防止「我太蠢了」OCC shame 被误判为对他人 reproach）。
+    2. 三级加权求和：v_raw = Σ weight(violation 命中且非自指)；
+                      c_raw = Σ weight(compliance 命中)。
+    3. 钳制归一：v_score = min(v_raw, _MAX_SIGNALS) / _MAX_SIGNALS ∈ [0,1]；同理 c_score。
+    4. net = clamp(c_score - v_score, -1, 1)。
+
+    纯词典/规则，确定性，torch/LLM-free（守红线）。
+    """
+    lower = text.lower()
+    v_raw = sum(
+        w
+        for word, w in _VIOLATION_WEIGHTS.items()
+        if word in lower and not _is_self_referential(lower, word)
+    )
+    c_raw = sum(w for word, w in _COMPLIANCE_WEIGHTS.items() if word in lower)
+    v_score = min(v_raw, _MAX_SIGNALS) / _MAX_SIGNALS  # [0, 1]
+    c_score = min(c_raw, _MAX_SIGNALS) / _MAX_SIGNALS  # [0, 1]
+    net = c_score - v_score  # ∈ [-1, 1]
+    return float(clamp(net, -1.0, 1.0))
 
 
 def intensity_envelope(

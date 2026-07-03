@@ -157,28 +157,28 @@ async def test_language_unaffected_without_context() -> None:
 
 def test_coerce_dt_guards_kuzu_datetime_formats() -> None:
     dt = datetime(2026, 1, 1, tzinfo=UTC)
-    assert gs._coerce_dt(dt) is dt  # datetime 原样
-    assert gs._coerce_dt("2026-01-01T00:00:00+00:00") == dt  # ISO 字符串解析
-    assert gs._coerce_dt("not-a-date") is None  # 不可解析 → None（按无界处理，不抛）
-    assert gs._coerce_dt(None) is None
-    assert gs._coerce_dt(12345) is None  # 非预期类型 → None
+    assert gs.coerce_dt(dt) is dt  # datetime 原样
+    assert gs.coerce_dt("2026-01-01T00:00:00+00:00") == dt  # ISO 字符串解析
+    assert gs.coerce_dt("not-a-date") is None  # 不可解析 → None（按无界处理，不抛）
+    assert gs.coerce_dt(None) is None
+    assert gs.coerce_dt(12345) is None  # 非预期类型 → None
 
 
 def test_group_id_sanitizes_for_graphiti() -> None:
     # Graphiti 只允许 [A-Za-z0-9_-]；冒号等非法字符须替换为 _（否则 GroupIdValidationError）
-    assert gs._group_id("user", "verify-user") == "user_verify-user"
-    assert gs._group_id("user", None) == "user"
-    assert gs._group_id("user", "a:b c") == "user_a_b_c"  # 冒号/空格 → _
-    assert ":" not in gs._group_id("session", "tid:1")
+    assert gs.group_id("user", "verify-user") == "user_verify-user"
+    assert gs.group_id("user", None) == "user"
+    assert gs.group_id("user", "a:b c") == "user_a_b_c"  # 冒号/空格 → _
+    assert ":" not in gs.group_id("session", "tid:1")
 
 
 # ---------------- 轻量 SQLite 向量后端（无图库，确定性本机测试） ---------------- #
 
 
 def test_cosine_similarity() -> None:
-    assert gs._cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
-    assert gs._cosine([1.0, 0.0], [0.0, 1.0]) == 0.0
-    assert gs._cosine([1.0, 0.0], [0.0, 0.0]) == 0.0  # 零向量 → 0，不抛
+    assert gs.cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
+    assert gs.cosine([1.0, 0.0], [0.0, 1.0]) == 0.0
+    assert gs.cosine([1.0, 0.0], [0.0, 0.0]) == 0.0  # 零向量 → 0，不抛
 
 
 async def test_sqlite_vector_store_ranks_and_filters(monkeypatch) -> None:
