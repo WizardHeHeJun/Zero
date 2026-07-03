@@ -33,6 +33,8 @@
 - **显著度门控点燃** — 各流各出一个 `(均值, 精度)`，由显著网络打分，只有**过阈的流被"点燃"广播**进全局工作空间（全局工作空间理论的 ignition），其余停留局部、不空播；
 - **精度加权融合 + 后验采样** — 点燃的流按精度加权融合，采样出此刻的**瞬时情绪 e\***（随机性让同一刺激也有细微波动）；读出也可切**稳定模式**（取后验均值而非单次采样），让情绪只跟刺激走、不被单样本噪声带得逐轮乱跳（见配置 `ZERO_AFFECT_READOUT`）。
 
+![工作空间点燃：并行流竞争 → 过阈广播 → 精度加权融合出 e*](docs/v2/workspace-ignition.png)
+
 ### 3. 三时间尺度：情绪会退、态度会沉淀
 
 人的情绪不是一锤子，而是**多个时间尺度叠加**：
@@ -42,6 +44,8 @@
 - **慢变 `attitude`** — 对**特定对象**的长期态度，按情绪缓慢累积、多轮才成形，是快变情绪衰退回归的基线。**持续**被冒犯才会真的变冷，偶尔被呛一下会过去。**只有态度被持久化**，重启后情绪归于态度基线。
 - **稳态回弹** — 情绪与态度都带一份**回到平静的拉力**（向个体中性基线弱回归）：再热烈或再低落，只要没有持续刺激就会慢慢回稳，不会"越聊越上头"或陷在某个极端里出不来（affective homeostasis；情绪基线本身也是态度与中性的混合，不随态度无限上漂）。
 - **唤醒双向 · 习惯化 · 分寸** — 唤醒（arousal）也是**双极**的：平淡对话会主动**降到静息**（不只是不涨）、重复互动会**习惯化**（新鲜感递减）、对刚认识的人有**分寸感**（不因聊久了就无端亲密）——从根上防「与内容无关地越聊越暧昧」（科学家议会 seeking 吸引盆两轮裁决；默认关、按需开旋钮，见配置全表）。
+
+![三时间尺度冲击-响应：单次冲击不记恨 / 反复刺激才沉淀（affect_math 真方程轨迹）](docs/v2/timescales-dynamics.png)
 
 于是对话有了"脾气"：被骂会不快、道歉能缓和、但一时的情绪不会永久定义这段关系，也不会因一路投入就单调滑向极端。
 
@@ -127,6 +131,8 @@
 
 三层架构，依赖**单向**：编排 → 记忆 → 存储。
 
+![三层架构与依赖方向：只能自上而下调用，observability 横切](docs/v2/layered-architecture.png)
+
 ```text
 Zero/
 ├── main.py                  # CLI 入口：默认 python main.py 即进对话；--workspace / --llm / --trace
@@ -148,20 +154,21 @@ Zero/
 │   │   ├── persona.py       #   指定人格：人设卡(L1)+气质底色(L2)+预置关系(L3)，默认中性零回归
 │   │   ├── emotion_lexicon.py    #   细粒度情绪词 / 动机系统 / VAD 词典桥 / 时间包络
 │   │   ├── language_steering.py  #   VA steering 适配器（开放权重）
-│   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text）
-│   │   └── datasets/        #   DataLoader：synthetic / ravdess / wesad / emobank / facs
+│   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text + composite 复合）
+│   │   └── datasets/        #   DataLoader：synthetic / ravdess / wesad / emobank(+st 句向量版) / facs
 │   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流、后端失败隔离 + Fact.sim）
 │   ├── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
 │   │   ├── checkpointer.py  #   memory / sqlite(异步 AsyncSqliteSaver) / postgres(待异步接线)
 │   │   ├── graph_store.py   #   门面 + 工厂
 │   │   ├── conversation_log.py  #   --chat 对话运行态：transcript + 跨重启 attitude 落本地 SQLite
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
-│   └── observability/       # 横切：统一日志 setup_logging（每启动落 logs/、级别可配、入口无关）
+│   └── observability/       # 横切：统一日志 setup_logging + 对话人读日志 setup_conversation_log（每启动落 logs/、级别可配）
 ├── tests/                   # 单测 + 行为/记忆回归
-├── scripts/                 # 训练脚本 train_*.py + 端到端 demo_pipeline.py + 验证 verify_*.py（如 verify_affect_readout 实测 map 读出消翻号）
-├── tools/                   # 运维脚本（reset_db.py 清库）
-├── docs/                    # 对外框架图（v1/v2 谱系 + 运作流程图，详见 docs/README.md）
-├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（情感数学·文本输出·工作空间·路线图·记忆路由…）
+├── scripts/                 # 训练 train_*.py + demo（demo_modes 承接 main.py 三模式 / demo_pipeline 端到端 / demo_text_input 文本输入）+ 验证 verify_*.py
+├── tools/                   # 运维/文档工具（reset_db.py 清库 · plot_timescales.py 生成动力学曲线图）
+├── docs/                    # 对外架构图（框架 / 运作流程 / 记忆架构 / 人格注入，v1/v2 谱系，详见 docs/README.md）
+├── notes/                   # 研究笔记 / 科学家议会决策 / 工程实践（本地维护、不入库）
+├── DATASETS.md              # 真网络化数据集获取指南（RAVDESS / WESAD / EmoBank / FACS）
 ├── .env.example                                     # 配置模板（cp 为 .env 启用）
 ├── personas/                                        # --chat 人格卡目录：*.example.json 模板随仓库共享 / 个人 *.json 走 gitignore；放多份 persona 改 ZERO_PERSONA_FILE 即切换
 ├── Dockerfile · docker-compose.yml                  # 容器化部署
@@ -214,7 +221,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 > **不想自己训练？直接用现成权重**：真实数据训练好的权重已随 Release 提供，拿来即用——从 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件是同一份）下载 5 个 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore），各 `load_*` / `scripts/*`（如 `demo_pipeline`）自动加载；缺某通道回退内置默认 / 占位、不影响其它。
 > - 五通道：`text_affect_regressor.pt` / `text_affect_regressor_st.pt`（文本→(v,a)，词袋 / 句向量，EmoBank）· `prosody_decoder.pt`（(v,a)→韵律，RAVDESS）· `physiology_decoder.pt`（(v,a)→生理，WESAD）· `expression_decoder.pt`（(v,a)→表情 FACS，demo）。
 
-> **日志与排障**：每次启动落一份 `logs/zero-<时间戳>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。对话另落一份**人读日志** `logs/conversation-<时间戳>.log`（每轮 user/Zero 原文 + 评价/情绪/态度 trace，默认开、`ZERO_CONVERSATION_LOG=0` 关且不落任何对话内容）。
+> **日志与排障**：每次启动落一份 `logs/zero-<时间戳>-<pid>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。对话另落一份**人读日志** `logs/conversation-<时间戳>-<pid>.log`（每轮 user/Zero 原文 + 评价/情绪/态度 trace，默认开、`ZERO_CONVERSATION_LOG=0` 关且不落任何对话内容）。
 
 > **开发/测试**：`pytest`（全套回归）· `ruff check . && ruff format .`（风格）· `mypy src`（类型）——保存时基础检查自动跑。
 
@@ -227,18 +234,22 @@ python -m scripts.demo_pipeline                                    # 端到端�
 **怎么读 `.env`（三类）**：
 
 - **【必填】** 只有 `ZERO_OPENAI_API_KEY` + `ZERO_OPENAI_MODEL`（接真 LLM 用；缺了 `--chat` 自动回退词典+模板，仍能跑）。
-- **后端选择**（顶部各组）：`.env.example` 里给出的赋值就是**各自默认值**，写不写效果一样，想切落盘/真库才改。
-- **可选旋钮**（底部）：默认**注释掉** = 用内置默认；取消注释才覆盖。其中 ⭐ 是**数字人推荐开**——`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号），两个足矣；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
+- **后端选择**（顶部各组）：`.env.example` 里的赋值多数就是**内置默认**，写不写效果一样，想切落盘/真库才改；少数是**示例 / 推荐值**——必填的 `ZERO_OPENAI_MODEL`、语义侧信道 `ZERO_SEMANTIC_BACKEND=sqlite_vec`（`--chat` 的默认，其它入口内置默认为关）与 `ZERO_GRAPHITI_MODEL` / `_EMBED_MODEL`——以下面各表「默认」列为准。
+- **可选旋钮**（底部，分两类）：**数字人对话 / 记忆组**已直接给出推荐赋值——复制即数字人推荐配置，注释掉某行 = 回内置默认；**研究级组**（workspace 精度 / HPA / ToM / 层级融合等）保持**注释** = 默认关 = 零回归，取消注释才覆盖。最小推荐仍是两个：`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号）；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
 
 ### 运行后端
 
 运行态 Checkpointer 与 长期记忆图谱**各自独立选后端**，可任意组合；默认都在内存，落盘 / 真后端按需开。
 
+> **`--chat` 例外**：对话入口为让记忆开箱即跨会话生效，未显式设值时自动落盘——`ZERO_CHECKPOINT_BACKEND=sqlite` · `ZERO_MEMORY_BACKEND=sqlite` · `ZERO_SEMANTIC_BACKEND=sqlite_vec`（`main.py` 入口 setdefault，相应依赖缺失时优雅降级）；在 `.env` 显式设值即可覆盖。
+
+![--chat 数据落点地图：一轮对话的数据各落哪个存储、归哪个变量管](docs/v2/chat-persistence-map.png)
+
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ZERO_CHECKPOINT_BACKEND` | `memory` | 运行态后端：`memory` / `sqlite` / `postgres` |
+| `ZERO_CHECKPOINT_BACKEND` | `memory` | 运行态后端：`memory` / `sqlite` / `postgres`（postgres 暂未接线、预留） |
 | `ZERO_CHECKPOINT_DB` | `data/checkpoints.sqlite3` | sqlite 后端的库文件路径 |
-| `ZERO_PG_DSN` | — | postgres 后端 DSN |
+| `ZERO_PG_DSN` | — | postgres 后端 DSN（随 postgres 后端预留，暂未接线） |
 | `ZERO_MEMORY_BACKEND` | `memory` | 长期记忆图谱（确定性 `(scope,key)` 失效）：`memory` / `sqlite`（落盘）/ `neo4j`（需 `db` extra） |
 | `ZERO_GRAPH_DB` | `data/graph.sqlite3` | sqlite 图谱的库文件路径 |
 | `ZERO_NEO4J_URI` · `_USER` · `_PASSWORD` | `bolt://localhost:7687` · `neo4j` · `password` | neo4j 连接（`ZERO_MEMORY_BACKEND=neo4j` 或 Graphiti 用 neo4j 图库时生效） |
@@ -250,19 +261,21 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `ZERO_OPENAI_API_KEY` | — | 必填 |
-| `ZERO_OPENAI_MODEL` | `qwen-flash` | **必填**，须是 key 有权限的真实模型 id（`limited` 等权限标签不是模型名、会 400；可用 `/v1/models` 列出，如 `qwen-flash` / `deepseek-v4-flash` / `gpt-5.5`） |
+| `ZERO_OPENAI_MODEL` | —（无代码默认） | **必填**，须是 key 有权限的真实模型 id（`limited` 等权限标签不是模型名、会 400；可用 `/v1/models` 列出，如 `qwen-flash` / `deepseek-v4-flash` / `gpt-5.5`） |
 | `ZERO_OPENAI_BASE_URL` | `https://api.openai.com/v1` | 可指向 OpenAI / 本地 vLLM / Ollama / 第三方网关，留空用 SDK 默认 |
 
 ### 语义记忆侧信道（默认关）
 
-确定性图谱之外，可叠一条**语义召回**侧信道（向量相似召回）；默认关，**侧信道失败绝不拖垮主对话**。
+确定性图谱之外，可叠一条**语义召回**侧信道（向量相似召回）；默认关（`--chat` 对话入口例外、默认开 `sqlite_vec`，见上），**侧信道失败绝不拖垮主对话**。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ZERO_SEMANTIC_BACKEND` | 关 | `sqlite_vec`（轻量、推荐）/ `graphiti`（深度集成，需 `graphiti` extra） |
+| `ZERO_SEMANTIC_BACKEND` | 关（`--chat` 默认 `sqlite_vec`） | `sqlite_vec`（轻量、推荐）/ `graphiti`（深度集成，需 `graphiti` extra） |
 | `ZERO_GRAPHITI_DB` | `neo4j` | Graphiti 图库，复用上面 `NEO4J_*` |
-| `ZERO_GRAPHITI_MODEL` | `deepseek-v4-pro` | Graphiti 抽取实体 / 关系入图谱用的对话/推理 LLM |
-| `ZERO_GRAPHITI_EMBED_MODEL` | `gemini-embedding-001` | 向量嵌入模型（`sqlite_vec` / `graphiti` 都用它做相似召回，须是 embedding 模型） |
+| `ZERO_GRAPHITI_MODEL` | —（未设走 Graphiti 库默认） | Graphiti 抽取实体 / 关系入图谱用的对话/推理 LLM（`.env.example` 给的是示例值） |
+| `ZERO_GRAPHITI_EMBED_MODEL` | `text-embedding-3-small` | 向量嵌入模型（`sqlite_vec` / `graphiti` 都用它做相似召回，须是 key 有权限的 embedding 模型；`.env.example` 给的是示例值） |
+
+> **自查脚本**：`python -m scripts.verify_graphiti_local`——graphiti 后端闭环 smoke（写 episode → 语义召回 → `recalled_context` 非空即通），需 `graphiti` extra + LLM key + 图库服务（`ZERO_GRAPHITI_DB` 默认 `neo4j`）。
 
 > **文本情感回归**（输入侧，默认走词典 / LLM 评价桥）：置 `ZERO_TEXT_AFFECT_BACKEND=st` 改用训练好的回归头，须同时给 `ZERO_TEXT_AFFECT_MODEL_PATH`（如 `artifacts/text_affect_regressor_st.pt`）。
 
@@ -300,7 +313,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 ### 微调旋钮·全表
 
-默认开箱即用（仅 `HISTORY_*` / `EMOTION_BASELINE_ATTITUDE_W` 的默认改变 `--chat`，其余默认零回归 / 关）；设计依据见 [notes/](notes/) 议会纪要。
+默认开箱即用（仅 `HISTORY_*` / `EMOTION_BASELINE_ATTITUDE_W` 的默认改变 `--chat`，其余默认零回归 / 关）；设计依据为科学家议会纪要（`notes/`，本地维护、不随仓库分发）。
 
 **① 数字人情绪 / 对话**
 
@@ -313,7 +326,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_CHAT_RNG_SEED` | — | 固定随机种子，贯穿引擎采样 + 情绪噪声，便于 eval 复现（留空=每次随机） |
 | `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」占比；`<1` 给回中性的拉力、防越聊越上头（`1`=旧行为） |
 
-**② 治「越聊越暧昧 / 关系无端升温」**（科学家议会 seeking 吸引盆两轮裁决；默认全逐字零回归、荐值走注释，⭐=数字人推荐开）
+**② 治「越聊越暧昧 / 关系无端升温」**（科学家议会 seeking 吸引盆两轮裁决；默认全逐字零回归，`.env.example` 已按荐值直接赋值，⭐=数字人推荐开）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
@@ -344,7 +357,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD` | 0 | 低唤醒高语义补偿 `salience+=0.3·\|value\|`（`1` 开启） |
 | `ZERO_EPISODE_DEDUP_MAX` | 0.92 | 情景写入去重余弦阈（高于此视为近义跳过） |
 
-**④ 实验性 v1：社会认知 / 生理节律 / 层级融合**（Follow-up 1 三项研究级方向，各经**科学家议会设计门**·**默认全关、逐字零回归**；确定性热路径纯标量无 LLM/torch，细节见 `PRP/P3*`）
+**④ 实验性 v1：社会认知 / 生理节律 / 层级融合**（Follow-up 1 三项研究级方向，各经**科学家议会设计门**·**默认全关、逐字零回归**；确定性热路径纯标量无 LLM/torch，细节见 `PRP/P3*`——本地维护、不随仓库分发）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
@@ -368,6 +381,14 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_MOOD_PRECISION` | 内置常量 | mood 流精度加权（介于主评价流与 `SURVIVAL_PRECISION=0.4` 之间）；调小=降低心境流投票权 |
 | `ZERO_TEXT_AFFECT_PRECISION` | 内置常量 | 文本语义流精度（固定低值，Friston 2009 初始固定精度）；调小=进一步压制文本流权重 |
 
+**⑥ 日志**
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_LOG_DIR` | `logs` | 日志目录（应用日志与人读对话日志共用） |
+| `ZERO_LOG_LEVEL` | `INFO` | 文件与项目 logger 级别；排障设 `DEBUG` 看每轮 `e*`、记忆读写、LLM 请求详情 |
+| `ZERO_CONVERSATION_LOG` | 开 | 每轮对话落人读日志 `logs/conversation-<时间戳>-<pid>.log`（user/Zero 原文 + 引擎 trace）；设 `0` 关且不落任何对话内容 |
+
 > **其它进阶变量**（`.env.example` 未列）：`ZERO_CHAT_THREAD` 切对话线程 id，隔离不同会话的历史/态度/记忆 scope、防串味；`ZERO_PUSH_LOGIT_BIAS` 让 push 通路叠加 OpenAI `logit_bias`（需兼容 tokenizer，缺则优雅退回纯 prompt 用词倾向）。
 > 想还原更早的行为逐项设回旧值即可（如窗口设回 `20`、`ZERO_EMOTION_BASELINE_ATTITUDE_W=1`）。
 
@@ -377,4 +398,4 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 - **[docs/](docs/README.md)** — 对外框架图 + 运作流程图（whiteboard-cli 渲染）
 - **[DATASETS.md](DATASETS.md)** — 真网络化所需数据集清单（获取方式 / 许可）
-- **[notes/](notes/)** — 研究笔记：情感数学、文本输出情绪、并行脑路与工作空间、数字人路线图
+- **`notes/`** — 研究笔记：情感数学、文本输出情绪、并行脑路与工作空间、数字人路线图（本地维护、不随仓库分发）

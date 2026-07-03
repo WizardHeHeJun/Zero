@@ -1,0 +1,14 @@
+flowchart TB
+  orch["编排层 src/orchestration + src/agents<br/>StateGraph 装配·Supervisor·各 Worker 节点"]:::engine
+  mem["记忆层 src/memory<br/>读写 API·显式 scope·任务完成节流·后端失败隔离"]:::memory
+  sto["存储层 src/storage<br/>Checkpointer·确定性图谱·语义向量·ConversationLog"]:::storage
+  obs["横切 src/observability<br/>统一日志(入口接线·业务层不依赖)"]:::log
+
+  orch -->|"只能向下调用"| mem
+  mem -->|"只能向下调用"| sto
+  obs -.-> orch & mem & sto
+
+  classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
+  classDef memory fill:#DFF5E5,stroke:#509863,color:#1F2329
+  classDef storage fill:#EAE2FE,stroke:#8569CB,color:#1F2329
+  classDef log fill:#FFF9E6,stroke:#D4B45B,color:#8A6D1B

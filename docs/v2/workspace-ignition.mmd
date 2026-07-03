@@ -1,0 +1,20 @@
+flowchart LR
+  occ["OCC 评价流 (μ,π)"]:::stream
+  val["TD 价值流 (μ,π)"]:::stream
+  sur["快生存流·低精度<br/>可单独点燃 (μ,π)"]:::stream
+  moo["心境 mood 流 (μ,π)<br/>(--chat 下关闭)"]:::muted
+  sem["文本语义流·低精度先验 (μ,π)"]:::stream
+  sal{"显著网络打分<br/>过阈？"}:::gate
+  gw["全局工作空间<br/>点燃广播 → 精度加权高斯融合"]:::engine
+  loc["未过阈 → 留局部·不广播"]:::muted
+  estar(["后验读出 e*<br/>sample 采样(默认) / map 均值(稳)"]):::terminal
+
+  occ & val & sur & moo & sem --> sal
+  sal -->|"ignite"| gw --> estar
+  sal -.-> loc
+
+  classDef stream fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef gate fill:#FEF1CE,stroke:#D4B45B,color:#1F2329
+  classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
+  classDef muted fill:#F8F9FA,stroke:#868E96,stroke-dasharray:5 5,color:#5C6370
+  classDef terminal fill:#F1F3F5,stroke:#868E96,color:#1F2329

@@ -1,10 +1,10 @@
 flowchart LR
   persona["🎭 Persona(人格定义)<br/>load_persona()：ZERO_PERSONA_FILE(人格 JSON·唯一入口)<br/>默认中性 Persona() == 逐字现有行为(零回归)"]:::persona
   l1["L1 人设卡 card<br/>身份/背景/口吻/与用户关系<br/>空卡 → system prompt 逐字现状"]:::persona
-  l2["L2 气质底色<br/>setpoint / reactivity / recovery<br/>情绪基线·反应快慢·恢复速度<br/>大五→PAD数值映射交议会"]:::persona
+  l2["L2 气质底色<br/>setpoint / reactivity / recovery + va_coupling非对称<br/>big_five(OCEAN)→PAD 自动推导(Mehrabian 1996·已落地)<br/>显式值优先·persona 优先于 env"]:::persona
   l3["L3 预置关系<br/>initial_attitude(初见即有的态度)<br/>+ seed_memories(预灌共同记忆)<br/>仅空transcript首次接触播种"]:::persona
   lang["🗣️ 语言<br/>converse：人设卡前置于_CONVERSE_SYS(仅对话路径)"]:::language
-  engine["🧠 情感引擎<br/>attitude_step(setpoint=)<br/>emotion_decay_step(recovery=,reactivity=)<br/>引擎本就关键字参数·零改"]:::engine
+  engine["🧠 情感引擎<br/>attitude_step(setpoint=)<br/>emotion_decay_step(recovery=,reactivity=)<br/>occ_prior(va_coupling±)·引擎关键字参数·零改"]:::engine
   mem[("🗄️ 记忆/态度<br/>初始attitude起步 + write_episode种子<br/>USER scope·seeded守卫只写一次")]:::memory
 
   persona -->|"身份"| l1

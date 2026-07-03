@@ -18,7 +18,9 @@ flowchart LR
   persona -->|"人设卡"| converse
   persona -->|"气质setpoint"| timescales
   persona -->|"首次接触种子"| memory
-  reply -.->|"下一轮·mood/态度/记忆跨轮持久"| user
+  memory -.->|"长期倾向偏置评价先验"| engine
+  timescales -.->|"态度先验attitude_appeal"| engine
+  reply -.->|"下一轮·emotion(会话内)/attitude(落盘)/记忆跨轮持久"| user
 
   classDef terminal fill:#F1F3F5,stroke:#868E96,color:#1F2329
   classDef appraise fill:#F0F4FC,stroke:#5178C6,color:#1F2329

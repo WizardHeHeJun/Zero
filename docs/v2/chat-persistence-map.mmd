@@ -1,0 +1,18 @@
+flowchart LR
+  chat(["💬 --chat 一轮对话"]):::terminal
+  translog[("📜 对话运行态<br/>transcript + 对人长期态度<br/>data/chat_history.sqlite3·固定落盘")]:::memory
+  ckpt[("⏱️ 图运行态 Checkpointer<br/>ZERO_CHECKPOINT_BACKEND<br/>memory / sqlite(chat默认) / postgres(预留)")]:::memory
+  graphdb[("🗄️ 确定性长期记忆<br/>disposition·时序失效(新使旧失效)<br/>ZERO_MEMORY_BACKEND：memory / sqlite(chat默认) / neo4j")]:::memory
+  vec[("🔎 语义召回侧信道 episode<br/>ZERO_SEMANTIC_BACKEND：sqlite_vec(chat默认) / graphiti<br/>失败绝不拖垮主对话")]:::sidechan
+  logs[("🪵 logs/(ZERO_LOG_DIR)<br/>应用日志 + 人读对话日志<br/>ZERO_CONVERSATION_LOG=0 可关")]:::log
+
+  chat -->|"每轮 transcript+态度"| translog
+  chat -->|"运行态快照"| ckpt
+  chat -->|"任务完成节流写"| graphdb
+  chat -.->|"语义episode(叠加·可关)"| vec
+  chat -->|"每轮"| logs
+
+  classDef terminal fill:#F1F3F5,stroke:#868E96,color:#1F2329
+  classDef memory fill:#DFF5E5,stroke:#509863,color:#1F2329
+  classDef sidechan fill:#F0F4FC,stroke:#5178C6,stroke-dasharray:5 5,color:#1F2329
+  classDef log fill:#FFF9E6,stroke:#D4B45B,color:#8A6D1B
