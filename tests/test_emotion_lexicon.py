@@ -9,6 +9,7 @@ import pytest
 
 from src.agents.emotion_lexicon import (
     NEUTRAL_RADIUS,
+    PANKSEPP_FEAR_AROUSAL_THRESHOLD,
     SEED_VAD_LEXICON,
     affect_descriptor,
     affect_label,
@@ -18,6 +19,80 @@ from src.agents.emotion_lexicon import (
     motivational_system,
     suggest_affect_words,
 )
+
+# ---------------------------------------------------------------------------
+# A-P1-D Panksepp RAGE/FEAR 门控测试
+# ---------------------------------------------------------------------------
+
+
+def test_motivational_system_distinguish_fear_off_zero_regression() -> None:
+    """distinguish_fear=False（默认）时行为与改前完全一致，严格零回归断言。"""
+    # (-v,+a) 无论 arousal 高低，一律 rage
+    assert motivational_system(-0.6, 0.6) == "rage"
+    assert motivational_system(-0.5, 0.9) == "rage"  # 极高 arousal 仍 rage
+    assert motivational_system(-0.3, PANKSEPP_FEAR_AROUSAL_THRESHOLD) == "rage"
+    # 其余象限不受影响
+    assert motivational_system(0.6, 0.6) == "seeking"
+    assert motivational_system(0.6, -0.6) == "care"
+    assert motivational_system(-0.6, -0.6) == "panic_grief"
+    assert motivational_system(0.0, 0.0) == "neutral"
+
+
+def test_motivational_system_distinguish_fear_on_high_arousal_fear() -> None:
+    """distinguish_fear=True 且 arousal ≥ 阈值 → fear。"""
+    # arousal 恰好等于阈值（边界含入）
+    assert (
+        motivational_system(-0.5, PANKSEPP_FEAR_AROUSAL_THRESHOLD, distinguish_fear=True) == "fear"
+    )
+    # arousal 明显超阈值
+    assert motivational_system(-0.5, 0.9, distinguish_fear=True) == "fear"
+    assert motivational_system(-0.8, 0.8, distinguish_fear=True) == "fear"
+
+
+def test_motivational_system_distinguish_fear_on_mid_arousal_rage() -> None:
+    """distinguish_fear=True 且 arousal < 阈值（但仍 ≥ 0）→ rage。"""
+    below = PANKSEPP_FEAR_AROUSAL_THRESHOLD - 0.1  # 0.5
+    assert motivational_system(-0.5, below, distinguish_fear=True) == "rage"
+    assert motivational_system(-0.6, 0.3, distinguish_fear=True) == "rage"
+
+
+def test_motivational_system_distinguish_fear_other_quadrants_unchanged() -> None:
+    """开启门控不影响其他象限的输出。"""
+    assert motivational_system(0.6, 0.6, distinguish_fear=True) == "seeking"
+    assert motivational_system(0.6, -0.6, distinguish_fear=True) == "care"
+    assert motivational_system(-0.6, -0.6, distinguish_fear=True) == "panic_grief"
+    assert motivational_system(0.0, 0.0, distinguish_fear=True) == "neutral"
+
+
+# ---------------------------------------------------------------------------
+# A-P2-D 惊讶词条中性化测试
+# ---------------------------------------------------------------------------
+
+
+def test_surprise_valence_neutral() -> None:
+    """惊讶效价中性化：(0.0, 0.7)（失真修正，非零回归）。"""
+    v, a = SEED_VAD_LEXICON["惊讶"]
+    assert v == pytest.approx(0.0)
+    assert a == pytest.approx(0.7)
+
+
+def test_surprise_variants_in_lexicon() -> None:
+    """惊喜/惊吓两条细分词存在且效价方向正确（议会 2026-07-02 精化坐标）。"""
+    v_xi, a_xi = SEED_VAD_LEXICON["惊喜"]
+    v_xia, a_xia = SEED_VAD_LEXICON["惊吓"]
+    assert v_xi > 0.0, "惊喜应为正效价"
+    assert v_xia < 0.0, "惊吓应为负效价"
+    # 惊喜：(0.5, 0.7)；Russell 1980 astonished ~69.8°，旧 0.6 偏强
+    assert v_xi == pytest.approx(0.5)
+    assert a_xi == pytest.approx(0.7)
+    # 惊吓：(-0.3, 0.8)；Russell 1980 alarmed ~96.5°，与恐惧 (-0.7,0.7) 拉开距离
+    assert v_xia == pytest.approx(-0.3)
+    assert a_xia == pytest.approx(0.8)
+
+
+# ---------------------------------------------------------------------------
+# 原有测试（下方不变）
+# ---------------------------------------------------------------------------
 
 
 def test_affect_label_neutral_deadzone() -> None:

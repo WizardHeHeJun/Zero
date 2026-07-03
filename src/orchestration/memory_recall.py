@@ -55,21 +55,33 @@ def parse_importance(content: str) -> float:
         return 0.5
 
 
-def normalized_importance(content: str) -> float:
+def normalized_importance(content: str, scale: float = 30.0) -> float:
     """把无界的写入精度（affect_precision=方差倒数，实测 ~28–72）归一到 (0,1)，供三维打分/注入门。
 
     用 Hill 饱和 `p/(p+C)`（与 Kalman 增益/逆方差加权同构、单调有界、边际递减；数学席 D8）：
     与 `sim∈[0,1]`、`recency=Δt^(-d)∈(0,1]` 同量纲，α/β/γ 等权才恢复语义；否则原始 precision
-    几十倍碾压另两维（dogfood 实测）。C 走 env `ZERO_RECALL_IMPORTANCE_SCALE`（默认 30，匹配实测
-    量级使 INJECT_MIN=0.5 成为「高质量门」）。纯数值、无 LLM。C 固定（非自适应集合统计）以守
-    可复现/确定性（CS 席 D8 红线）。precision 字段缺失时 parse 返 0.5 → 归一后 ~低位（未知不优先）。
+    几十倍碾压另两维（dogfood 实测）。scale（=C）默认 30，匹配实测量级使 INJECT_MIN=0.5 成为
+    「高质量门」；由调用方（MemoryRecallAgent）从 env 读取一次后传入——纯函数、可直接单测。
+    C 固定（非自适应集合统计）以守可复现/确定性（CS 席 D8 红线）。
+    precision 字段缺失时 parse 返 0.5 → 归一后 ~低位（未知不优先）。
     """
     p = parse_importance(content)
-    c = float(os.getenv("ZERO_RECALL_IMPORTANCE_SCALE", "30"))
+    c = scale
     return p / (p + c) if (p + c) > 0 else 0.0
 
 
-def _rank_episodes(facts: list[Fact], now: datetime, *, arousal: float = 0.0) -> list[Fact]:
+def _rank_episodes(
+    facts: list[Fact],
+    now: datetime,
+    *,
+    arousal: float = 0.0,
+    decay_d: float = 0.5,
+    alpha: float = 0.33,
+    beta: float = 0.34,
+    gamma: float = 0.33,
+    arousal_mod: bool = False,
+    importance_scale: float = 30.0,
+) -> list[Fact]:
     """三维加权和重排（D3）：`score = α·Δt^(-d) + β·sim + γ_eff·importance`。
 
     - recency：`Δt = max(1.0, (now-valid_at)/天)`，幂律 `Δt^(-d)`（Wixted&Ebbesen 1991，
@@ -78,35 +90,45 @@ def _rank_episodes(facts: list[Fact], now: datetime, *, arousal: float = 0.0) ->
     - importance：写入时 precision 显著度（`_parse_importance`）；命中 `first_contact=True`
       时 ×1.2（D5 首因加权，对应系列位置效应 primacy）。
     加权和而非乘积（任一维为 0 不归零）；**禁 rpe 当第四维**（salience 已含 |rpe|，防 double
-    counting）。`γ_eff = γ·(1+0.5·clamp(arousal,0,1))` 仅当 `ZERO_RECALL_AROUSAL_MOD` 开启
-    （默认关，唤醒做 NE 调制代理）。纯数值无 LLM；返回按 score 降序的新列表，不改元素。
+    counting）。`γ_eff = γ·(1+0.5·clamp(arousal,0,1))` 仅当 arousal_mod=True 时生效
+    （对应 ZERO_RECALL_AROUSAL_MOD，默认关，唤醒做 NE 调制代理）。
+    纯数值无 LLM，所有旋钮由调用方传入；返回按 score 降序的新列表，不改元素。
     """
     if not facts:
         return []
-    d = float(os.getenv("ZERO_RECALL_DECAY_D", "0.5"))
-    alpha = float(os.getenv("ZERO_RECALL_ALPHA", "0.33"))
-    beta = float(os.getenv("ZERO_RECALL_BETA", "0.34"))
-    gamma = float(os.getenv("ZERO_RECALL_GAMMA", "0.33"))
-    if os.getenv("ZERO_RECALL_AROUSAL_MOD", "0").lower() not in ("0", "", "false"):
-        gamma = gamma * (1.0 + 0.5 * max(0.0, min(1.0, arousal)))
+    gamma_eff = gamma * (1.0 + 0.5 * max(0.0, min(1.0, arousal))) if arousal_mod else gamma
 
     def score(fact: Fact) -> float:
         valid_at = fact.valid_at if fact.valid_at.tzinfo else fact.valid_at.replace(tzinfo=UTC)
         delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
-        recency = delta_days ** (-d)
-        importance = normalized_importance(fact.content)  # D8：Hill 归一到 (0,1)，量纲对齐
+        recency = delta_days ** (-decay_d)
+        importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一到 (0,1)
         if "first_contact=True" in fact.content:
             importance *= 1.2
-        return alpha * recency + beta * fact.sim + gamma * importance
+        return alpha * recency + beta * fact.sim + gamma_eff * importance
 
     return sorted(facts, key=score, reverse=True)
 
 
 class MemoryRecallAgent:
-    """读 user 长期倾向 → recalled_disposition（偏置 appraisal）。注入 client，不直连图谱。"""
+    """读 user 长期倾向 → recalled_disposition（偏置 appraisal）。注入 client，不直连图谱。
+
+    旋钮参数在构造期一次从 env 读取，存 self.*，不在每次 __call__ 热路径重读。
+    """
 
     def __init__(self, memory: MemoryClient) -> None:
         self.memory = memory
+        # 召回三维权重旋钮（构造期一次解析，默认值与旧 getenv 逐字一致）
+        self.decay_d = float(os.getenv("ZERO_RECALL_DECAY_D", "0.5"))
+        self.alpha = float(os.getenv("ZERO_RECALL_ALPHA", "0.33"))
+        self.beta = float(os.getenv("ZERO_RECALL_BETA", "0.34"))
+        self.gamma = float(os.getenv("ZERO_RECALL_GAMMA", "0.33"))
+        self.arousal_mod = os.getenv("ZERO_RECALL_AROUSAL_MOD", "0").lower() not in (
+            "0",
+            "",
+            "false",
+        )
+        self.importance_scale = float(os.getenv("ZERO_RECALL_IMPORTANCE_SCALE", "30"))
 
     async def __call__(self, state: AffectState) -> dict:
         if not state.recall_enabled:
@@ -134,7 +156,17 @@ class MemoryRecallAgent:
             # D3 三维重排：recency×sim×importance 加权和。arousal 取已携带的 mood 唤醒——
             # 召回节点在 affect_core 之前，本轮 affect_sample 尚未算出，故用 mood[1] 作 NE 代理。
             arousal = state.mood[1] if state.mood is not None else 0.0
-            ranked = _rank_episodes(recalled, datetime.now(UTC), arousal=arousal)
+            ranked = _rank_episodes(
+                recalled,
+                datetime.now(UTC),
+                arousal=arousal,
+                decay_d=self.decay_d,
+                alpha=self.alpha,
+                beta=self.beta,
+                gamma=self.gamma,
+                arousal_mod=self.arousal_mod,
+                importance_scale=self.importance_scale,
+            )
             out["recalled_context"] = [f.content for f in ranked]
             out["recalled_facts"] = ranked  # D1：供 chat_driver 按 importance 注入 history
             entry["recalled_context_n"] = len(ranked)

@@ -30,10 +30,12 @@ def affect_to_vector(valence: float, arousal: float) -> list[float]:
         clamp(-valence, 0.0, 1.0) if valence < 0 else 0.0,  # AU15
         clamp(abs(arousal), 0.0, 1.0),  # au_intensity
         clamp(arousal, 0.0, 1.0),  # hr_n
-        clamp(arousal, 0.0, 1.0),  # gsr
+        clamp(
+            abs(arousal), 0.0, 1.0
+        ),  # gsr（议会 B-2/A-P0-D：EDA 随 |arousal|，与 decode_channels 一致）
         clamp(arousal, 0.0, 1.0),  # pupil_n
         (clamp(arousal, -1.0, 1.0) + 1.0) / 2.0,  # speech_rate_n
-        (valence + 1.0) / 2.0,  # pitch_n
+        (clamp(arousal, -1.0, 1.0) + 1.0) / 2.0,  # pitch_n（议会 B-8/A-P0-C：F0 随唤醒非效价）
         clamp(0.5 + 0.5 * arousal, 0.0, 1.0),  # energy
     ]
 

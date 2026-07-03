@@ -109,84 +109,92 @@ class _StimCapSession:
 
 
 def _driver(
-    log: ConversationLog, session: Any, attitude: tuple[float, float] = (0.0, 0.0)
+    log: ConversationLog,
+    session: Any,
+    attitude: tuple[float, float] = (0.0, 0.0),
+    *,
+    intensity_floor: float = 0.2,
+    hab_tau: float = 0.0,
+    reversion_a: float | None = None,
+    decay_k: float = 0.0,
+    noise_std: float = 0.0,
 ) -> ChatDriver:
+    """辅助构造 ChatDriver，旋钮参数直接传入（不依赖 env monkeypatch）。"""
     return ChatDriver(
-        thread="t", lm=None, log=log, session=session, history=[], attitude=attitude, mode="test"
+        thread="t",
+        lm=None,
+        log=log,
+        session=session,
+        history=[],
+        attitude=attitude,
+        mode="test",
+        intensity_floor=intensity_floor,
+        hab_tau=hab_tau,
+        reversion_a=reversion_a,
+        decay_k=decay_k,
+        noise_std=noise_std,
     )
 
 
-async def test_intensity_floor_default_is_020(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_INTENSITY_FLOOR 未设 → 中性输入 intensity 仍被钉在下限 0.2（逐字旧行为）。"""
-    monkeypatch.delenv("ZERO_INTENSITY_FLOOR", raising=False)
-    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+async def test_intensity_floor_default_is_020() -> None:
+    """intensity_floor 默认 0.2 → 中性输入 intensity 被钉在下限 0.2（构造层传参验证）。"""
     log = ConversationLog(":memory:")
     session = _StimCapSession((0.0, 0.0))
-    await _driver(log, session).step("嗯")  # 中性词典评价 a≈0 < 下限
+    await _driver(log, session, intensity_floor=0.2).step("嗯")  # 中性词典评价 a≈0 < 下限
     assert session.stims[0].intensity == pytest.approx(0.2)
     log.close()
 
 
-async def test_intensity_floor_env_override_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_INTENSITY_FLOOR=0 → 中性输入 intensity 落到 |a|≈0（旋钮真生效，去直流底噪）。"""
-    monkeypatch.setenv("ZERO_INTENSITY_FLOOR", "0")
-    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+async def test_intensity_floor_override_zero() -> None:
+    """intensity_floor=0 → 中性输入 intensity 落到 |a|≈0（旋钮真生效，去直流底噪）。"""
     log = ConversationLog(":memory:")
     session = _StimCapSession((0.0, 0.0))
-    await _driver(log, session).step("嗯")
+    await _driver(log, session, intensity_floor=0.0).step("嗯")
     assert session.stims[0].intensity < 0.2  # 不再被 0.2 兜底
     log.close()
 
 
-async def test_habituation_default_off_no_decay(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_HABITUATION_TAU 未设 → η 恒 1，多轮同输入 attitude arousal 单调累积（零回归）。"""
-    monkeypatch.delenv("ZERO_HABITUATION_TAU", raising=False)
-    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+async def test_habituation_default_off_no_decay() -> None:
+    """hab_tau=0（默认）→ η 恒 1，多轮同输入 attitude arousal 单调累积（零回归）。"""
     log = ConversationLog(":memory:")
-    d = _driver(log, _StimCapSession((0.0, 0.8)))
+    d = _driver(log, _StimCapSession((0.0, 0.8)), hab_tau=0.0)
     atts = [(await d.step("x")).attitude[1] for _ in range(6)]
     assert atts == sorted(atts)  # 无衰减 → 单调不降
     assert atts[-1] > atts[0]  # 且真正向累积（arousal 直流偏置爬升，旧行为）
     log.close()
 
 
-async def test_habituation_env_on_suppresses_arousal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_HABITUATION_TAU 开启 → 同一对象重复输入的 arousal 累积被显著压低（对照默认关）。"""
-    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+async def test_habituation_on_suppresses_arousal() -> None:
+    """hab_tau>0 → 同一对象重复输入的 arousal 累积被显著压低（对照 hab_tau=0）。"""
 
-    async def run() -> float:
+    async def run(hab_tau: float) -> float:
         log = ConversationLog(":memory:")
-        d = _driver(log, _StimCapSession((0.0, 0.8)))
+        d = _driver(log, _StimCapSession((0.0, 0.8)), hab_tau=hab_tau)
         att = (0.0, 0.0)
         for _ in range(6):
             att = (await d.step("x")).attitude
         log.close()
         return att[1]
 
-    monkeypatch.delenv("ZERO_HABITUATION_TAU", raising=False)
-    arousal_off = await run()
-    monkeypatch.setenv("ZERO_HABITUATION_TAU", "3")
-    arousal_on = await run()
+    arousal_off = await run(0.0)
+    arousal_on = await run(3.0)
     assert arousal_on < arousal_off  # 习惯化把 arousal 累积压低
 
 
-async def test_attitude_reversion_a_env_lowers_arousal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ZERO_ATTITUDE_REVERSION_A 强回归 → 多轮后 attitude arousal 平台显著低于默认（Q2b 生效）。"""
-    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+async def test_attitude_reversion_a_lowers_arousal() -> None:
+    """reversion_a 强回归 → 多轮后 attitude arousal 平台显著低于默认 None（Q2b 生效）。"""
 
-    async def run() -> float:
+    async def run(reversion_a: float | None) -> float:
         log = ConversationLog(":memory:")
-        d = _driver(log, _StimCapSession((0.0, 0.8)))
+        d = _driver(log, _StimCapSession((0.0, 0.8)), reversion_a=reversion_a)
         att = (0.0, 0.0)
         for _ in range(8):
             att = (await d.step("x")).attitude
         log.close()
         return att[1]
 
-    monkeypatch.delenv("ZERO_ATTITUDE_REVERSION_A", raising=False)
-    arousal_def = await run()
-    monkeypatch.setenv("ZERO_ATTITUDE_REVERSION_A", "0.5")
-    arousal_strong = await run()
+    arousal_def = await run(None)
+    arousal_strong = await run(0.5)
     assert arousal_strong < arousal_def
 
 
@@ -226,23 +234,20 @@ def test_arousal_gain_cap_lowers_precision() -> None:
 # ---------- 议会二轮：Q5-A 熟悉度门控 rate 衰减 ----------
 
 
-async def test_rate_decay_default_off_and_slows_formation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """K 未设 → rate_eff=rate（零回归）；K>0 → 熟悉度衰减 rate → 同轮次 attitude 形成更慢。"""
-    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+async def test_rate_decay_default_off_and_slows_formation() -> None:
+    """decay_k=0（默认）→ rate_eff=rate（零回归）；decay_k>0 → 熟悉度衰减 rate → 态度形成更慢。"""
 
-    async def run() -> float:
+    async def run(decay_k: float) -> float:
         log = ConversationLog(":memory:")
-        d = _driver(log, _StimCapSession((0.6, 0.0)))
+        d = _driver(log, _StimCapSession((0.6, 0.0)), decay_k=decay_k)
         att = (0.0, 0.0)
         for _ in range(10):
             att = (await d.step("x")).attitude
         log.close()
         return att[0]
 
-    monkeypatch.delenv("ZERO_ATTITUDE_RATE_DECAY_K", raising=False)
-    v_off = await run()
-    monkeypatch.setenv("ZERO_ATTITUDE_RATE_DECAY_K", "0.9")
-    v_on = await run()
+    v_off = await run(0.0)
+    v_on = await run(0.9)
     assert v_on < v_off  # 越熟态度形成越慢（近似"陌生态更稳"），单不动点仅减缓漂移
 
 

@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -54,6 +57,7 @@ def build_graph(
     *,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
+    now_fn: Callable[[], float] = time.time,
 ) -> CompiledStateGraph:
     """装配并编译情感表达 StateGraph。
 
@@ -64,11 +68,13 @@ def build_graph(
     回路（带 `language_max_iters` 终止上限）。
     expression_decoder / language_model：可选注入的真通道解码器/语言模型（鸭子类型，
     编排层不依赖 torch / anthropic）。
+    now_fn：时钟注入（默认 time.time）。供 AppraisalAgent 的 HPA 皮质醇更新节点读取
+    wall-clock，纯函数 cortisol_step 不触碰时钟（P3 1-B CS 红线）；测试可注入确定性时钟。
     """
     graph: StateGraph = StateGraph(AffectState)
     graph.add_node("memory_recall", MemoryRecallAgent(memory))
     graph.add_node("perception", PerceptionAgent())
-    graph.add_node("appraisal", AppraisalAgent())
+    graph.add_node("appraisal", AppraisalAgent(now_fn=now_fn))
     graph.add_node("value", ValueAgent())
     graph.add_node("affect_core", AffectCoreAgent())
     graph.add_node("mood", MoodAgent())

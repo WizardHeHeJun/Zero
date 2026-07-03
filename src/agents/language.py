@@ -125,7 +125,11 @@ def _appraisal_summary(state: AffectState) -> str:
         return ""
     v = state.appraisal.get("valence")
     a = state.appraisal.get("arousal")
-    system = motivational_system(v, a) if v is not None and a is not None else "?"
+    system = (
+        motivational_system(v, a, distinguish_fear=state.panksepp_distinguish_fear)
+        if v is not None and a is not None
+        else "?"
+    )
     return (
         f"目标一致性={stim.goal_congruence:+.2f}, 标准契合={stim.standard_compliance:+.2f}, "
         f"对象喜好={stim.attitude_appeal:+.2f}, 强度={stim.intensity:.2f}; 动机系统={system}"

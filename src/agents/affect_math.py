@@ -34,6 +34,11 @@ TEXT_AFFECT_PRECISION = 0.3  # 文本语义流精度（固定低值，显式低�
 # 未来可从回归器残差动态估计（议会悬而未决 #1）。
 SALIENCE_THRESHOLD = 0.18  # ignition 阈值：salience 低于此的流不点燃（停留局部）
 AROUSAL_GAIN = 1.0  # NE/唤醒对评价·价值流精度的增益系数（唤醒越高投票权越大）
+# ignite 软门控陡度（议会 2026-07-02 Item 2）：None=硬 step 零回归（默认）；
+# 非 None → logistic gate(sᵢ;θ,β)=σ(β·(sᵢ−θ)) 软化 GNW all-or-none 近似。
+# 推荐区间 [20,50]（神经/数学席交集），典型值 20；β<1 无意义（gate 趋 0.5 均匀融合）。
+# 由 ZERO_IGNITION_BETA env（默认注释关）→ state.ignition_beta → ignite(soft_beta=...) 注入。
+IGNITION_BETA: float | None = None
 LANG_BASE_PRECISION = 1.0  # 精度加权再入里语言侧的基准精度（与内核后验精度竞争）
 
 # 情绪时间尺度分层（affective chronometry + ALMA/WASABI）：快变情绪向「态度基线」衰退、被刺激冲击；
@@ -53,6 +58,14 @@ ATTITUDE_SETPOINT = (0.0, 0.0)  # 个体习惯性情感基线（无偏人格；a
 REAPPRAISAL_ANCHOR = 0.1  # 重评把负/低效价重新解释、向其拉拢的「积极锚」
 REAPPRAISAL_LIFT = 0.7  # 向积极锚拉拢的比例（重评改变体验，不只是表达）
 REAPPRAISAL_CALM = 0.4  # 重评对唤醒的平复系数（威胁被重构 → 唤醒下降）
+
+# HPA/皮质醇慢回路（P3 1-B；推荐值；实际运行经 env 注入，代码常量仅为初始化参考）
+# 生物席（Herman 2016；Becker & Rohleder 2019；PMC8139339）：血浆半衰期 60-70min → τ≈86-100min≈5400s
+CORTISOL_TAU_DECAY: float = 5400.0  # 衰减时间常数（秒）；~90min 对应血浆半衰期/ln2
+CORTISOL_IMPULSE: float = 0.7  # 单次应激脉冲注入量（归一 [0,1]；0.6-0.8 生物席推荐）
+CORTISOL_CAP: float = 1.0  # 皮质醇上界（归一；对应肾上腺分泌生理上限）；防 runaway 兜底
+CORTISOL_THETA_GOAL: float = 0.3  # 触发判据：目标不一致性阈值（Dickerson & Kemeny 2004）
+CORTISOL_THETA_INTENSITY: float = 0.5  # 触发判据：强度阈值（同引用；不可控性+高强度=HPA激活）
 
 
 def sigmoid(x: float) -> float:
@@ -75,12 +88,16 @@ def occ_prior(
     intensity: float,
     *,
     arousal_baseline: float = 0.0,
+    va_coupling_pos: float = 0.6,
+    va_coupling_neg: float = 0.6,
 ) -> tuple[tuple[float, float], tuple[float, float], float]:
     """OCC 评价 → (prior_mu, prior_sigma, reward)。
 
     valence 由目标/标准/态度一致性线性合成；arousal 由强度与 |效价| 合成；
     sigma 随显著度上升而下降（越显著越确定）；reward = 目标一致性（闭合 2↔3）。
     `arousal_baseline`（默认 0.0，零回归）平移 arousal 证据基准，设负值启用 deactivation（Q7）。
+    A-P2-A：`va_coupling_pos/neg`（均默认 0.6，零回归）拆自原 `0.6·|valence|`，允许负效价侧
+    使用更高系数（Kuppens 2013 negativity bias；推荐 neg=0.7/pos=0.5，但不改默认，走配置注入）。
     """
     valence = clamp(
         0.5 * goal_congruence + 0.3 * standard_compliance + 0.2 * attitude_appeal,
@@ -90,8 +107,17 @@ def occ_prior(
     # P1-c（议会 Q7·失真必改）：`arousal_baseline` 让平淡输入可给零/负 arousal 证据（副交感
     # deactivation 臂；circumplex 下半区）。默认 0.0 = 逐字旧行为（arousal 恒正整流，零回归）；
     # 设负值（如 -0.08 抵消 0.4·下限）则低强度低 |valence| 的平淡对话把 arousal 拉向静息/负。
-    # `0.6·|valence|`（circumplex V 形，Kuppens 2013）保留——强情绪两端仍抬唤醒。纯参数、无 env。
-    arousal = clamp(0.4 * abs(intensity) + 0.6 * abs(valence) + arousal_baseline, -1.0, 1.0)
+    # A-P2-A va_coupling 非对称（Kuppens 2013 negativity bias：负效价侧 arousal 斜率更陡）：
+    # `va_coupling_neg*max(-valence,0) + va_coupling_pos*max(valence,0)` 拆自原 `0.6*|valence|`。
+    # 默认 0.6/0.6 = 逐字旧行为（零回归）；推荐 neg>pos（如 0.7/0.5）但不改默认，走后续配置。
+    arousal = clamp(
+        0.4 * abs(intensity)
+        + va_coupling_neg * max(-valence, 0.0)
+        + va_coupling_pos * max(valence, 0.0)
+        + arousal_baseline,
+        -1.0,
+        1.0,
+    )
     conf = clamp(0.3 + 0.5 * abs(intensity), 0.0, 1.0)
     sigma = max(MIN_SIGMA, 0.5 * (1.0 - conf))
     reward = clamp(goal_congruence, -1.0, 1.0)
@@ -125,6 +151,17 @@ def precision(
 ) -> float:
     """精度 π = σ(α·|δ| + β·V)：RPE 强度与价值确定性共同决定证据权重。"""
     return max(MIN_PRECISION, sigmoid(alpha * abs(delta) + beta * value_estimate))
+
+
+def precision_da(delta: float, *, alpha: float = 1.0) -> float:
+    """DA 路径精度 π_DA = σ(α·|δ|)：消去 β·V，仅由 RPE 幅度决定证据权重。
+
+    议会裁决 A-P1-A（神经席 M5 + 数学席 M6）：`precision(δ, V)` 原式 σ(α|δ|+β·V) 把
+    DA 精度与价值混同，β·V 无神经依据。此函数只保留 DA 通路真正编码的信号——预测误差
+    幅度 |δ|；value_estimate 项移除。精度下界与 `precision` 保持一致（MIN_PRECISION 钳制）。
+    纯函数、无 I/O、无 env（守热路径红线）。
+    """
+    return max(MIN_PRECISION, sigmoid(alpha * abs(delta)))
 
 
 def evidence_from_value(reward: float, delta: float) -> tuple[float, float]:
@@ -176,6 +213,112 @@ def fuse_terms(
             den += p
         post_mu.append(clamp(num / den, -1.0, 1.0))
         post_sigma.append(clamp(math.sqrt(1.0 / den), MIN_SIGMA, MAX_SAMPLE_SIGMA))
+    return (post_mu[0], post_mu[1]), (post_sigma[0], post_sigma[1])
+
+
+def hierarchical_fuse(
+    named_terms: list[tuple[str, tuple[float, float], tuple[float, float]]],
+    *,
+    layers: int = 1,
+    coupling: float = 0.0,
+    low_names: frozenset[str] = frozenset({"survival", "mood"}),
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """层级预测编码融合（v1 = 2 层，设计门定稿：design.md 六-bis / 数学席二轮）。
+
+    架构：
+      L0（感觉-唤醒层）= name ∈ low_names 的项（survival + mood 粗 VA，精度较低、时标快）；
+      L1（核心情感层）= 其余项（appraisal / value / text 竞争层）。
+    输出 e* = L1 核心情感层后验（Barrett 2017 前岛叶 / ACC 整合预测，输出取整合层非最低层）。
+
+    五步闭式（w = coupling，逐维 d∈{0,1} 独立，Friston 2008 精度加权预测误差调制）：
+      ① L0 融合：   π_L0  = Σ_{i∈L0} π_i ;  μ_L0  = Σ_{i∈L0} π_i·μ_i / π_L0
+      ② L1 证据：   π_L1e = Σ_{j∈L1} π_j ;  μ_L1e = Σ_{j∈L1} π_j·μ_j / π_L1e
+      ③ 误差：      ε = μ_L0 − w·μ_L1e            （bottom-up，供观测；不单独入后验）
+      ④ L0→L1 误差项：均值 = μ_L0，精度 = w²·π_L0  （平方耦合精度调制）
+      ⑤ 核心后验：  π_core = π_L1e + w²·π_L0
+                    μ_core = (π_L1e·μ_L1e + w²·π_L0·μ_L0) / π_core
+                    σ_core = sqrt(1/π_core) → clamp(MIN_SIGMA, MAX_SAMPLE_SIGMA)
+                    μ_core → clamp(-1, 1)
+
+    双退化（逐字等价 fuse_terms(all_terms)，<1e-9 零浮点误差）：
+      - layers == 1 → 无层间递推，直接 fuse_terms（平层零回归）
+      - coupling == 0.0 → 关层级，退平层（L1 排除 survival+mood 则不等价 fuse_terms(all)；
+        定义 coupling=0 = 关层级，走同一 fuse_terms 代码路径，零浮点误差）
+
+    边界：
+      - L0 空 → fallback fuse_terms(all)（等价 layers=1）
+      - L1 空 → fallback fuse_terms(all)（保分母非零）
+      - coupling > 1.0 → raise ValueError（硬拒不 clamp；>1 破坏凸组合 → 类 seeking 单侧锁定）
+
+    有界性/稳定性（数学席证）：
+      μ_core 是 μ_L1e 与 μ_L0 的精度加权凸组合（w≤1 → w²·π_L0/π_core≤1），
+      ∈[-1,1] 天然成立（仍保留 clamp 防御）；谱半径 ρ≤1，无发散不动点。
+
+    coupling 约束（CS 红线）：
+      coupling 是 env 注入的**固定浮点标量**，非情感状态 (v,a) 的函数。
+      **禁止可学习 / 动态 / 运行期自适应 / 状态相关耦合**（否则非线性 feedback 破稳定性）。
+    """
+    # ── 退化旁路（最先判，两条均走 fuse_terms 同一代码路径，<1e-9 零浮点误差）──
+    all_terms = [(mu, prec) for _, mu, prec in named_terms]
+    if layers == 1 or coupling == 0.0:
+        return fuse_terms(all_terms)
+
+    # ── 入口校验（硬拒不 clamp；coupling==0.0 已被上方退化旁路吃掉，此处 coupling>0）──
+    if coupling < 0.0 or coupling > 1.0:
+        raise ValueError(
+            f"coupling={coupling} 超出语义范围 [0, 1]（design w∈(0,1]）；"
+            f"负值=反向 top-down 语义不明；>1.0 破坏凸组合稳定性（谱半径 >1，类 seeking 锁定）；"
+            f"请将 ZERO_HPC_COUPLING 设为 [0, 1]（推荐 [0.3, 0.8]）。"
+        )
+
+    # ── 分桶：L0（感觉层）/ L1（核心情感层）──
+    l0: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    l1: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for name, mu, prec in named_terms:
+        if name in low_names:
+            l0.append((mu, prec))
+        else:
+            l1.append((mu, prec))
+
+    # ── 边界：L0 空 / L1 空 → fallback fuse_terms(all)（保分母非零）──
+    if not l0 or not l1:
+        return fuse_terms(all_terms)
+
+    # ── 五步闭式（逐维 d∈{0,1} 独立）──
+    w = coupling
+    w2 = w * w
+
+    post_mu: list[float] = []
+    post_sigma: list[float] = []
+    for d in range(2):
+        # ① L0 融合
+        num_l0 = 0.0
+        den_l0 = 0.0
+        for mu_item, prec_item in l0:
+            p = max(MIN_PRECISION, prec_item[d])
+            num_l0 += p * mu_item[d]
+            den_l0 += p
+        pi_l0 = max(MIN_PRECISION, den_l0)
+        mu_l0 = num_l0 / pi_l0
+
+        # ② L1 证据融合
+        num_l1 = 0.0
+        den_l1 = 0.0
+        for mu_item, prec_item in l1:
+            p = max(MIN_PRECISION, prec_item[d])
+            num_l1 += p * mu_item[d]
+            den_l1 += p
+        pi_l1e = max(MIN_PRECISION, den_l1)
+        mu_l1e = num_l1 / pi_l1e
+
+        # ⑤ 核心后验（④ L0→L1 误差项精度 = w²·π_L0，均值 = μ_L0；直接合并入 ⑤）
+        pi_core = pi_l1e + w2 * pi_l0
+        pi_core = max(MIN_PRECISION, pi_core)
+        mu_core_raw = (pi_l1e * mu_l1e + w2 * pi_l0 * mu_l0) / pi_core
+        post_mu.append(clamp(mu_core_raw, -1.0, 1.0))
+        sigma_core = math.sqrt(1.0 / pi_core)
+        post_sigma.append(clamp(sigma_core, MIN_SIGMA, MAX_SAMPLE_SIGMA))
+
     return (post_mu[0], post_mu[1]), (post_sigma[0], post_sigma[1])
 
 
@@ -289,14 +432,15 @@ def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
     # 3) 生理信号模拟：arousal 驱动交感输出
     physiology = {
         "heart_rate_bpm": 70.0 + 40.0 * clamp(arousal, 0.0, 1.0),
-        "skin_conductance": clamp(arousal, 0.0, 1.0),
+        "skin_conductance": clamp(abs(arousal), 0.0, 1.0),  # 议会 B-2/A-P0-D：正负高唤醒均出 SCR
         "pupil_mm": 3.0 + 2.0 * clamp(arousal, 0.0, 1.0),
     }
 
     # 4) 语音韵律：arousal→语速/能量，valence→音高基线
     prosody = {
         "speech_rate": 1.0 + 0.5 * clamp(arousal, -1.0, 1.0),
-        "pitch": 1.0 + 0.3 * valence,
+        "pitch": 1.0
+        + 0.3 * clamp(arousal, -1.0, 1.0),  # 议会 B-8/A-P0-C：F0 主随唤醒(喉肌交感张力)非效价
         "energy": clamp(0.5 + 0.5 * arousal, 0.0, 1.0),
     }
 
@@ -311,11 +455,14 @@ def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
 def fast_survival_prior(
     features: list[float],
 ) -> tuple[tuple[float, float], tuple[float, float]]:
-    """快生存流（上丘-丘脑枕-杏仁核捷径 / LeDoux 生存回路）：从原始特征出粗 (μ, Π)。
+    """快生存流（快速皮层下/防御回路，仿 LeDoux 生存回路思路）：从原始特征出粗 (μ, Π)。
 
     亚符号、低精度、最快：只用目标一致性符号定效价方向、强度定唤醒，不做 OCC 多维细评
     （那是慢评价流的事）。features = [goal, standard, attitude, intensity]（PerceptionAgent）。
     精度固定为 SURVIVAL_PRECISION（粗快=不确定），逐维返回。纯函数、无副作用。
+    注（议会 B-1/M2）：具体解剖通路（上丘→丘脑枕→杏仁核"捷径"）在人类证据仍有争议
+    （Pessoa & Adolphs 2010, NRN 11:773；LeDoux & Brown 2017），此处仅作快速显著性评估的
+    工程近似，不承诺特定解剖底物。
     """
     goal = features[0] if features else 0.0
     intensity = features[3] if len(features) > 3 else 1.0
@@ -338,18 +485,61 @@ def ignite(
     streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
     *,
     threshold: float = SALIENCE_THRESHOLD,
+    survival_fallback: bool = False,
+    soft_beta: float | None = IGNITION_BETA,
 ) -> tuple[list[tuple[tuple[float, float], tuple[float, float]]], list[str]]:
     """GNW ignition：salience ≥ threshold 的流点燃进入全局广播，亚阈流停留局部。
 
-    若无流过阈（全弱刺激）则保留 salience 最高者，保证总有输出（不空播）。
+    若无流过阈（全弱刺激）：
+    - `survival_fallback=False`（默认）：保留 salience 最高者（逐字旧行为，零回归）。
+    - `survival_fallback=True`：优先保留 name=="survival" 的流作兜底（皮层下常播，
+      与 GNW 一致——亚阈刺激停留局部、但皮层下生存信号始终广播）；若 streams 中无
+      survival 流，则退回 max by salience（不崩）。
+
+    有流过阈时两分支行为完全一致，`survival_fallback` 不影响结果。
+
+    软门控（议会 2026-07-02 Item 2 · [工程可动] · 已实现）：
+    `soft_beta=None`（默认）→ 逐字硬 step 旧行为，零回归。
+    `soft_beta` 非 None → 对每条流用 logistic gate 软化 all-or-none：
+        gate(sᵢ; θ, β) = σ(β·(sᵢ − θ))
+        π_effᵢ = (prec[0]·gate, prec[1]·gate)
+    所有流均参与 fuse_terms（gate>0 自动保证不空播）；高 salience 流精度大量保留、
+    亚阈流精度压至近 0（连续近似 Dehaene & Changeux 2011 bifurcation 双稳）。
+    β<1 无意义（gate 趋 0.5 成均匀融合），推荐区间 [20,50]（神经/数学席交集）。
+    复用本模块既有 `sigmoid`。
+
     streams = [(name, μ, Π), ...]；返回 (点燃流的 [(μ, Π)] 供 fuse_terms, 点燃流名列表)。
     纯函数、无副作用。
     """
     scored = [(name, mu, prec, stream_salience(mu, prec)) for name, mu, prec in streams]
+
+    if soft_beta is not None:
+        # 软门控分支：所有流参与融合，精度按 logistic gate 调制
+        terms = []
+        names = []
+        for name, mu, prec, sal in scored:
+            gate = sigmoid(soft_beta * (sal - threshold))
+            pi_eff: tuple[float, float] = (prec[0] * gate, prec[1] * gate)
+            terms.append((mu, pi_eff))
+            names.append(name)
+        return terms, names
+
+    # 硬 step 分支（soft_beta=None）：逐字旧行为，零回归
     fired = [(name, mu, prec) for name, mu, prec, s in scored if s >= threshold]
     if not fired:
-        top = max(scored, key=lambda item: item[3])
-        fired = [(top[0], top[1], top[2])]
+        if survival_fallback:
+            surv = next(
+                ((name, mu, prec) for name, mu, prec, _ in scored if name == "survival"),
+                None,
+            )
+            if surv is not None:
+                fired = [surv]
+            else:
+                top = max(scored, key=lambda item: item[3])
+                fired = [(top[0], top[1], top[2])]
+        else:
+            top = max(scored, key=lambda item: item[3])
+            fired = [(top[0], top[1], top[2])]
     terms = [(mu, prec) for _, mu, prec in fired]
     names = [name for name, _, _ in fired]
     return terms, names
@@ -363,10 +553,12 @@ def attitude_step(
     reversion: float = ATTITUDE_REVERSION,
     setpoint: tuple[float, float] = ATTITUDE_SETPOINT,
     reversion_a: float | None = None,
+    arousal_weight: float = 0.0,
 ) -> tuple[float, float]:
     """慢变态度/印象：按 stimulus 缓慢累积 + 向个体基线弱回归（evaluative conditioning）。
 
-    `a' = (1-rate)·a + rate·stimulus − reversion·(a − setpoint)`。rate 小（多轮才成形）→ 长期、
+    `a' = (1-rate_eff)·a + rate_eff·stimulus − reversion·(a − setpoint)`。
+    rate 小（多轮才成形）→ 长期、
     稳定、对象指向的评价（Scherer/Frijda 的 sentiment/attitude 层）。`reversion` 项是议会必改：
     无它则持续同向 stimulus 把 attitude 单调推到极端（affective homeostasis 缺失 / 慢性应激无负
     反馈，Russell 2003 · Kuppens 2010）；有它则恒定刺激下稳态 a*≈rate·s/(rate+reversion)、被钳在
@@ -376,35 +568,58 @@ def attitude_step(
     两维同构=逐字旧行为、零回归）。心理席主裁：attitude 是 valence 维评价，"对某人的长期唤醒基线"
     无文献先例。设 `reversion_a`≫`reversion`（纪要推荐 0.3–0.5）使 arousal 稳态 a*≈setpoint_a≈0，
     功能上令 attitude 不再累积 arousal 直流偏置，同时不改二元组结构（零 breaking）。纯函数。
+
+    A-P2-E `arousal_weight`（默认 0.0，零回归）：高唤醒 stimulus 使累积率放大。
+    `rate_eff = rate * (1 + arousal_weight * |stimulus[1]|)`（McGaugh 2004：唤醒调制记忆巩固/
+    态度形成；唤醒越高越快收敛到 stimulus）。默认 0.0 → rate_eff = rate，逐字旧行为。
     """
     rev_a = reversion if reversion_a is None else reversion_a
+    # A-P2-E：唤醒加权有效累积率（默认 0.0 → rate_eff = rate，零回归）
+    rate_eff = rate * (1.0 + arousal_weight * abs(stimulus[1]))
     return (
         clamp(
-            (1.0 - rate) * attitude[0]
-            + rate * stimulus[0]
+            (1.0 - rate_eff) * attitude[0]
+            + rate_eff * stimulus[0]
             - reversion * (attitude[0] - setpoint[0]),
             -1.0,
             1.0,
         ),
         clamp(
-            (1.0 - rate) * attitude[1] + rate * stimulus[1] - rev_a * (attitude[1] - setpoint[1]),
+            (1.0 - rate_eff) * attitude[1]
+            + rate_eff * stimulus[1]
+            - rev_a * (attitude[1] - setpoint[1]),
             -1.0,
             1.0,
         ),
     )
 
 
-def habituation_factor(exposure: int, tau: float) -> float:
-    """习惯化衰减系数 η(n)=exp(−n/τ)（Groves & Thompson 1970 双过程；重复刺激响应递减）。
+def habituation_factor(
+    exposure: int,
+    tau: float,
+    *,
+    intensity: float = 0.0,
+    sensitization_gain: float = 0.0,
+    sensitization_threshold: float = 0.5,
+) -> float:
+    """净反应系数 η(n)：习惯化衰减 + 敏化增益双过程（Groves & Thompson 1970）。
 
-    P2（议会 Q6·失真必改）：对同一对话对象累计曝光 `exposure` 轮，给 arousal 输入乘 η∈(0,1] 衰减
-    （SCR 习惯化 5–10 次趋零 → τ≈5–10）。`tau<=0` → 返回 1.0（不衰减，零回归开关）；`exposure` 负
-    值按 0 处理。纯函数、无 I/O、无 env——衰减只由上层（chat_driver）按 env `ZERO_HABITUATION_TAU`
-    决定是否施加、施加于哪一维（守 affect_math 纯函数红线）。
+    P2（议会 Q6·失真必改）：对同一对话对象累计曝光 `exposure` 轮，给 arousal 输入乘 η 调制。
+    `tau<=0` → 返回 1.0（不衰减，零回归开关）；`exposure` 负值按 0 处理。
+
+    A-P3-D 双过程扩展（默认参数 = 零回归）：
+      η = exp(−n/τ) + sensitization_gain · max(intensity − sensitization_threshold, 0)
+    强刺激（intensity 高于 sensitization_threshold）时敏化项增益，η 可 >1 表示敏化主导。
+    默认 sensitization_gain=0.0 → η = exp(−n/τ)，逐字旧行为（Groves & Thompson 1970：
+    弱/中性刺激习惯化主导；强/厌恶刺激敏化主导，净效应=两过程竞争结果）。
+    纯函数、无 I/O、无 env——参数由上层（chat_driver）按 env 注入。
     """
     if tau <= 0.0:
         return 1.0
-    return math.exp(-max(0, exposure) / tau)
+    hab = math.exp(-max(0, exposure) / tau)
+    # A-P3-D：敏化项仅在 intensity 超过阈值时激活（默认 gain=0.0 → 旧行为，零回归）
+    sen = sensitization_gain * max(intensity - sensitization_threshold, 0.0)
+    return hab + sen
 
 
 def emotion_decay_step(
@@ -421,6 +636,14 @@ def emotion_decay_step(
     刺激停了（stimulus≈0）则 deviation 每轮 ×recovery 衰减、几轮内回到 baseline（情绪不长期累积，
     过慢衰退=emotional inertia 病理）；持续 stimulus 则稳态 = baseline + reactivity·s/(1-recovery)。
     baseline 由慢变 attitude 给出 → 怒火退去后回到「对此人的态度」而非绝对中性。逐维钳制，纯函数。
+
+    M13 嵌套 AR(1) 注：本函数 AR(1)（recovery≈0.4，对应 Kuppens 2010 情绪惯性度量）与慢变
+    attitude 基线（attitude_step 中 AR≈0.92，1-ATTITUDE_RATE=0.92）嵌套——emotion 的有效自相关
+    略高于 0.4（基线本身带历史依赖，情绪衰退目标随 attitude 漂移）。此属**已知设计意图**：
+    reversion 项（attitude_step 中的弱均值回归）压制单调漂移；两层 AR 的谱半径均 <1（recovery=0.4，
+    inertia≈0.92），系统收敛、非病态吸引子（Kuppens et al. 2010 Psychol. Sci. 21(7):984-991，
+    PMC2901421）。若需调整情绪记忆时间尺度，优先改 recovery 参数（persona.recovery），
+    而非改 AR 结构本身。
     """
     return (
         clamp(
@@ -452,3 +675,91 @@ def precision_reconcile(
     v = clamp((e_precision * e_star[0] + lang_precision * lang_affect[0]) / den, -1.0, 1.0)
     a = clamp((e_precision * e_star[1] + lang_precision * lang_affect[1]) / den, -1.0, 1.0)
     return (v, a)
+
+
+def suppress_expression(
+    affect: tuple[float, float],
+    *,
+    factor: float,
+) -> tuple[float, float]:
+    """表达抑制（Gross 1998 response-focused regulation）：按 factor 压制输出表达幅度。
+
+    A-P2-C：`factor∈[0,1]` 缩放 (valence, arousal) 的表达幅度，语义＝压制末端输出，
+    不改变内部体验 e*（与 `reappraise` 区分：重评改构念/体验，抑制仅压表达通道）。
+    调用方作用于表达通道而非内核 e*，内核保持不变（Gross 1998 process model）。
+    factor=1.0 → 无抑制（幅度不变）；factor=0.0 → 完全抑制（输出归零）。
+    逐维乘以 factor 后钳制 [-1, 1]，纯函数、无 I/O、无副作用。
+    """
+    v = clamp(affect[0] * factor, -1.0, 1.0)
+    a = clamp(affect[1] * factor, -1.0, 1.0)
+    return (v, a)
+
+
+def cortisol_step(
+    cortisol: float,
+    delta_t: float,
+    *,
+    tau_decay: float,
+    impulse: float = 0.0,
+    cap: float = 1.0,
+) -> float:
+    """HPA 皮质醇慢回路一步更新（精确 ZOH 离散化，P3 1-B design.md §一·数学席）。
+
+    方程（Zero-Order Hold 精确离散化）：
+        α = exp(−max(0, delta_t) / tau_decay)
+        c_new = clamp(α · cortisol + impulse, 0.0, cap)
+
+    **禁 Euler** `c·(1−Δt/τ)`：Δt > τ 时乘子变负、Δt > 2τ 时发散（用户隔 2h 回复
+    即 Δt≈7200s > τ≈5400s 便崩）。精确 ZOH α=exp(−Δt/τ)∈(0,1) 任意正 Δt 无条件有界。
+
+    参数：
+        cortisol: 当前皮质醇水平 ∈ [0, cap]。
+        delta_t:  自上次更新经过的秒数（由编排层节点计算后传入，**此函数体内无时钟调用**）。
+                  delta_t < 0 防御：按 0 处理（等价未经过时间，皮质醇不衰减）。
+        tau_decay: 衰减时间常数（秒）；生物席推荐 ≈5400s（血浆半衰期 ~70min / ln2）。
+        impulse:   本步脉冲注入量（触发应激时由 cortisol_trigger 给出；否则 0.0）。
+        cap:       皮质醇上界（归一 1.0；对应肾上腺分泌生理上限，防 runaway 兜底）。
+
+    红线（code-reviewer 复核）：
+        - 体内无任何 datetime.now() / time.time() 调用（破可复现·见 design §五 CS 红线）。
+        - 纯标量 Python，无 torch / LLM（守热路径红线）。
+        - cap 确保有界（design §一有界性证明）。
+    """
+    alpha = math.exp(-max(0.0, delta_t) / tau_decay)
+    return clamp(alpha * cortisol + impulse, 0.0, cap)
+
+
+def cortisol_trigger(
+    goal_congruence: float,
+    intensity: float,
+    *,
+    theta_goal: float = CORTISOL_THETA_GOAL,
+    theta_intensity: float = CORTISOL_THETA_INTENSITY,
+    impulse: float = CORTISOL_IMPULSE,
+) -> float:
+    """HPA 触发判据：目标受阻 + 高强度 → 皮质醇脉冲（触发解耦，P3 1-B design.md §三）。
+
+    判据（Dickerson & Kemeny 2004，208 项元分析；d=0.93）：
+        不可控性（goal_congruence < −theta_goal）AND 高强度（intensity > theta_intensity）
+        → HPA 激活，返回 impulse；否则 0.0。
+
+    **只读 appraisal 输入**（goal_congruence / intensity），**绝不读 arousal / emotion 状态**。
+    这是触发解耦（机制 A）的核心：∂I/∂c ≡ 0 → 回路数学开环 → 线性稳定收敛，防正反馈
+    runaway（cortisol↑→arousal↑→触发→cortisol↑ 闭合正反馈在 v1 被此解耦切断）。
+
+    生理依据（生物席）：真实 HPA 触发是杏仁核/PVN 对外部威胁的评价，非当前皮质醇水平；
+    纯高唤醒可控任务 HPA 反应弱（Dickerson & Kemeny 2004 分组对比 d 值差异）。
+
+    参数：
+        goal_congruence: appraisal 输入（Stimulus.goal_congruence），非 arousal 状态。
+        intensity:       appraisal 输入（Stimulus.intensity），非 emotion 状态。
+        theta_goal:      目标不一致阈值（推荐 0.3；实际走 env ZERO_CORTISOL_THETA_GOAL）。
+        theta_intensity: 强度阈值（推荐 0.5；实际走 env ZERO_CORTISOL_THETA_INTENSITY）。
+        impulse:         触发时注入量（推荐 0.6-0.8；实际走 env ZERO_CORTISOL_IMPULSE）。
+
+    引文：Dickerson, S. S., & Kemeny, M. E. (2004). Acute stressors and cortisol responses.
+    *Psychol. Bull.* 130(3):355-391. https://doi.org/10.1037/0033-2909.130.3.355
+    """
+    if goal_congruence < -theta_goal and intensity > theta_intensity:
+        return impulse
+    return 0.0

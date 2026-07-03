@@ -27,9 +27,9 @@ from src.storage.backends.semantic import (
     GraphitiGraphStore,
     SemanticStore,
     SqliteVectorStore,
-    _coerce_dt,  # noqa: F401  再导出：测试经 graph_store._coerce_dt 访问（Kuzu 时间格式防护）
-    _cosine,  # noqa: F401  再导出：测试经 graph_store._cosine 访问
-    _group_id,  # noqa: F401  再导出：测试经 graph_store._group_id 访问
+    coerce_dt,
+    cosine,
+    group_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,9 @@ __all__ = [
     "StoredFact",
     "build_graph_store",
     "build_semantic_store",
+    "coerce_dt",
+    "cosine",
+    "group_id",
 ]
 
 
@@ -106,6 +109,7 @@ def _sqlite_vector_store() -> SqliteVectorStore | None:
     """构造轻量 SQLite 向量后端；缺 openai（embedding 依赖）时告警回退 None。
 
     落盘路径 env `ZERO_SEMANTIC_DB`（默认 `data/semantic.sqlite3`，自动建目录；`:memory:` 不落盘）。
+    所有 env 读取集中在此工厂，SqliteVectorStore 本身通过显式参数接收配置。
     """
     try:
         import openai  # noqa: F401  仅探测 embedding 依赖是否可用
@@ -115,7 +119,21 @@ def _sqlite_vector_store() -> SqliteVectorStore | None:
     path = os.getenv("ZERO_SEMANTIC_DB", "data/semantic.sqlite3")
     if path != ":memory:":
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    return SqliteVectorStore(path)
+    api_key = os.getenv("ZERO_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("ZERO_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+    model = os.getenv("ZERO_GRAPHITI_EMBED_MODEL", "text-embedding-3-small")
+    sim_threshold = float(os.getenv("ZERO_RECALL_SIM_MIN", "0.65"))
+    dedup_max = float(os.getenv("ZERO_EPISODE_DEDUP_MAX", "0.92"))
+    max_per_key = int(os.getenv("ZERO_EPISODE_MAX_PER_KEY", "0"))
+    return SqliteVectorStore(
+        path,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        sim_threshold=sim_threshold,
+        dedup_max=dedup_max,
+        max_per_key=max_per_key,
+    )
 
 
 def build_semantic_store(backend: str | None = None) -> SemanticStore | None:
