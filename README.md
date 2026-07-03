@@ -33,7 +33,7 @@
 - **显著度门控点燃** — 各流各出一个 `(均值, 精度)`，由显著网络打分，只有**过阈的流被"点燃"广播**进全局工作空间（全局工作空间理论的 ignition），其余停留局部、不空播；
 - **精度加权融合 + 后验采样** — 点燃的流按精度加权融合，采样出此刻的**瞬时情绪 e\***（随机性让同一刺激也有细微波动）；读出也可切**稳定模式**（取后验均值而非单次采样），让情绪只跟刺激走、不被单样本噪声带得逐轮乱跳（见配置 `ZERO_AFFECT_READOUT`）。
 
-![工作空间点燃：并行流竞争 → 过阈广播 → 精度加权融合出 e*](docs/v2/workspace-ignition.png)
+<img src="docs/v2/workspace-ignition.png" alt="工作空间点燃：并行流竞争 → 过阈广播 → 精度加权融合出 e*" width="680">
 
 ### 3. 三时间尺度：情绪会退、态度会沉淀
 
@@ -131,7 +131,7 @@
 
 三层架构，依赖**单向**：编排 → 记忆 → 存储。
 
-![三层架构与依赖方向：只能自上而下调用，observability 横切](docs/v2/layered-architecture.png)
+<img src="docs/v2/layered-architecture.png" alt="三层架构与依赖方向：只能自上而下调用，observability 横切" width="520">
 
 ```text
 Zero/

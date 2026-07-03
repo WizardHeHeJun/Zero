@@ -1,9 +1,9 @@
-flowchart LR
+flowchart TB
   chat(["💬 --chat 一轮对话"]):::terminal
-  translog[("📜 对话运行态<br/>transcript + 对人长期态度<br/>data/chat_history.sqlite3·固定落盘")]:::memory
-  ckpt[("⏱️ 图运行态 Checkpointer<br/>ZERO_CHECKPOINT_BACKEND<br/>memory / sqlite(chat默认) / postgres(预留)")]:::memory
-  graphdb[("🗄️ 确定性长期记忆<br/>disposition·时序失效(新使旧失效)<br/>ZERO_MEMORY_BACKEND：memory / sqlite(chat默认) / neo4j")]:::memory
-  vec[("🔎 语义召回侧信道 episode<br/>ZERO_SEMANTIC_BACKEND：sqlite_vec(chat默认) / graphiti<br/>失败绝不拖垮主对话")]:::sidechan
+  translog[("📜 对话运行态<br/>transcript + 对人长期态度<br/>data/chat_history.sqlite3<br/>固定落盘")]:::memory
+  ckpt[("⏱️ 图运行态 Checkpointer<br/>ZERO_CHECKPOINT_BACKEND<br/>memory / sqlite(chat默认)<br/>/ postgres(预留)")]:::memory
+  graphdb[("🗄️ 确定性长期记忆<br/>disposition·时序失效<br/>ZERO_MEMORY_BACKEND<br/>memory / sqlite(chat默认) / neo4j")]:::memory
+  vec[("🔎 语义召回侧信道 episode<br/>ZERO_SEMANTIC_BACKEND<br/>sqlite_vec(chat默认) / graphiti<br/>失败绝不拖垮主对话")]:::sidechan
   logs[("🪵 logs/(ZERO_LOG_DIR)<br/>应用日志 + 人读对话日志<br/>ZERO_CONVERSATION_LOG=0 可关")]:::log
 
   chat -->|"每轮 transcript+态度"| translog
