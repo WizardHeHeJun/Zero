@@ -43,7 +43,7 @@
 - **快变 `emotion`** — 短时情绪，被 e\* 冲击后**几轮内向基线衰退**（怒火飙起后会回落；衰退太慢反而是病理性的情绪惯性）。对外表达取的是它；
 - **慢变 `attitude`** — 对**特定对象**的长期态度，按情绪缓慢累积、多轮才成形，是快变情绪衰退回归的基线。**持续**被冒犯才会真的变冷，偶尔被呛一下会过去。**只有态度被持久化**，重启后情绪归于态度基线。
 - **稳态回弹** — 情绪与态度都带一份**回到平静的拉力**（向个体中性基线弱回归）：再热烈或再低落，只要没有持续刺激就会慢慢回稳，不会"越聊越上头"或陷在某个极端里出不来（affective homeostasis；情绪基线本身也是态度与中性的混合，不随态度无限上漂）。
-- **唤醒双向 · 习惯化 · 分寸** — 唤醒（arousal）也是**双极**的：平淡对话会主动**降到静息**（不只是不涨）、重复互动会**习惯化**（新鲜感递减）、对刚认识的人有**分寸感**（不因聊久了就无端亲密）——从根上防「与内容无关地越聊越暧昧」（科学家议会 seeking 吸引盆两轮裁决；默认关、按需开旋钮，见配置全表）。
+- **唤醒双向 · 习惯化 · 分寸** — 唤醒（arousal）也是**双极**的：平淡对话会主动**降到静息**（不只是不涨）、重复互动会**习惯化**（新鲜感递减）、对刚认识的人有**分寸感**（不因聊久了就无端亲密）——从根上防「与内容无关地越聊越暧昧」（基于 seeking 吸引盆动力学、经科学家议会评审；默认关、按需开旋钮，见配置全表）。
 
 ![三时间尺度冲击-响应：单次冲击不记恨 / 反复刺激才沉淀（affect_math 真方程轨迹）](docs/v2/timescales-dynamics.png)
 
@@ -84,7 +84,7 @@
 - **气质底色** — 习惯性情绪基线、反应快慢与情绪恢复速度（偏暖还是偏冷、易激动还是沉稳），是性格的"生理底色"，落到引擎的态度 / 情绪参数上；也可直接填**大五人格（OCEAN 五维）**，自动映射成这份气质基线；
 - **预置关系** — 初见即已有的态度（一开始就熟络 / 在意某人）+ 预灌的共同记忆（"我们一起去过海边"），跳过从零相处。
 
-不指定时即**中性无偏人格**，行为与从前逐字一致。"什么性格对应怎样的情绪基线"现已按 **Mehrabian 大五→PAD 映射**落地——在人格里填 OCEAN 五维即自动推导气质基线（或直接手调旋钮）；更细的预设人格库 / 精确映射仍由科学家议会持续打磨，引擎不替算法臆断。
+不指定时即**中性无偏人格**，默认即现有行为、不改变任何表现。"什么性格对应怎样的情绪基线"现已按 **Mehrabian 大五→PAD 映射**落地——在人格里填 OCEAN 五维即自动推导气质基线（或直接手调旋钮）；更细的预设人格库 / 精确映射仍由科学家议会持续打磨，引擎不替算法臆断。
 
 ![人格注入：Persona 三层各接到哪（人设卡→语言 / 气质→引擎 / 预置关系→记忆）](docs/v2/persona-injection.png)
 
@@ -123,7 +123,7 @@
 | **输出形态** | 情绪化文本 + 通道值 | Live2D 形象 / 情感 TTS 等多模态外化 |
 | **记忆与经历** | 对话+态度落盘、情景择要落库 + 新近×相关×重要三维召回 + 首因/近因注意力窗 | 完整睡眠巩固/遗忘曲线、稳定人格/自我模型、跨会话人物画像 |
 | **运行后端** | 默认本地（内存 / SQLite） | env 一键切容器化 Postgres / Neo4j，接入真实图谱与运行态持久 |
-| **社会认知与生理节律** | 情绪只建模自身、秒→分→天三时间尺度 | **已有实验性 v1（默认关·各走 PRP）**：感知对方情绪并共情（ToM——对方难过则关怀 / 开心则替代喜悦）、应激后分钟-小时皮质醇余震（HPA 慢回路）、多层预测编码融合 |
+| **社会认知与生理节律** | 情绪只建模自身、秒→分→天三时间尺度 | **已有实验性 v1（默认关）**：感知对方情绪并共情（ToM——对方难过则关怀 / 开心则替代喜悦）、应激后分钟-小时皮质醇余震（HPA 慢回路）、多层预测编码融合 |
 
 ---
 
@@ -151,7 +151,7 @@ Zero/
 │   │   ├── mood.py          #   慢变心境双稳动力学
 │   │   ├── regulation.py · expression.py   # 掩饰 + 双通路·多通道输出
 │   │   ├── language.py · language_openai.py   # 语言生成+双向回路 / ConversationModel 协议 / 评价桥 / 自然对话
-│   │   ├── persona.py       #   指定人格：人设卡(L1)+气质底色(L2)+预置关系(L3)，默认中性零回归
+│   │   ├── persona.py       #   指定人格：人设卡(L1)+气质底色(L2)+预置关系(L3)，默认中性、行为不变
 │   │   ├── emotion_lexicon.py    #   细粒度情绪词 / 动机系统 / VAD 词典桥 / 时间包络
 │   │   ├── language_steering.py  #   VA steering 适配器（开放权重）
 │   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text + composite 复合）
@@ -235,7 +235,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 - **【必填】** 只有 `ZERO_OPENAI_API_KEY` + `ZERO_OPENAI_MODEL`（接真 LLM 用；缺了 `--chat` 自动回退词典+模板，仍能跑）。
 - **后端选择**（顶部各组）：`.env.example` 里的赋值多数就是**内置默认**，写不写效果一样，想切落盘/真库才改；少数是**示例 / 推荐值**——必填的 `ZERO_OPENAI_MODEL`、语义侧信道 `ZERO_SEMANTIC_BACKEND=sqlite_vec`（`--chat` 的默认，其它入口内置默认为关）与 `ZERO_GRAPHITI_MODEL` / `_EMBED_MODEL`——以下面各表「默认」列为准。
-- **可选旋钮**（底部，分两类）：**数字人对话 / 记忆组**已直接给出推荐赋值——复制即数字人推荐配置，注释掉某行 = 回内置默认；**研究级组**（workspace 精度 / HPA / ToM / 层级融合等）保持**注释** = 默认关 = 零回归，取消注释才覆盖。最小推荐仍是两个：`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号）；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
+- **可选旋钮**（底部，分两类）：**数字人对话 / 记忆组**已直接给出推荐赋值——复制即数字人推荐配置，注释掉某行 = 回内置默认；**研究级组**（workspace 精度 / HPA / ToM / 层级融合等）保持**注释** = 默认关 = 行为不变，取消注释才覆盖。最小推荐仍是两个：`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号）；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
 
 ### 运行后端
 
@@ -281,7 +281,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 ### 指定人格（`--chat`）
 
-给数字人指定一份人格（能力详见上文「指定人格」一节）：`ZERO_PERSONA_FILE` 指向一个**人格 JSON**（默认不设 = 中性无偏人格、逐字现有行为）。仓库自带一份「诚实陌生人」模板 `personas/persona.example.json`（与真正的 `personas/persona.json` 同处一目录），`cp personas/persona.example.json personas/persona.json` 改改即用（想要多重人格就在 `personas/` 放多份、切换时改 `ZERO_PERSONA_FILE` 指向即可）。字段全可选（L1 人设卡 + L2 气质底色 + L3 预置关系）——**只想要人设卡就只写 `card` 一个字段**，不必写全、也不用往 `.env` 塞长文本：
+给数字人指定一份人格（能力详见上文「指定人格」一节）：`ZERO_PERSONA_FILE` 指向一个**人格 JSON**（默认不设 = 中性无偏人格、即现有行为）。仓库自带一份「诚实陌生人」模板 `personas/persona.example.json`（与真正的 `personas/persona.json` 同处一目录），`cp personas/persona.example.json personas/persona.json` 改改即用（想要多重人格就在 `personas/` 放多份、切换时改 `ZERO_PERSONA_FILE` 指向即可）。字段全可选（L1 人设卡 + L2 气质底色 + L3 预置关系）——**只想要人设卡就只写 `card` 一个字段**，不必写全、也不用往 `.env` 塞长文本：
 
 ```jsonc
 {
@@ -295,7 +295,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 }
 ```
 
-> L2 的「大五人格 → PAD 具体数值映射 / 预设人格库」属科学决策，须走 `/science-council` 设计门；本接口只提供旋钮 + 中性默认，不替算法拍板具体性格参数。
+> L2 的「大五人格 → PAD 具体数值映射 / 预设人格库」属科学决策，须经跨学科科学家议会评审；本接口只提供旋钮 + 中性默认，不替算法拍板具体性格参数。
 
 ### 对话调优与排障（对症开旋钮）
 
@@ -313,7 +313,7 @@ python -m scripts.demo_pipeline                                    # 端到端�
 
 ### 微调旋钮·全表
 
-默认开箱即用（仅 `HISTORY_*` / `EMOTION_BASELINE_ATTITUDE_W` 的默认改变 `--chat`，其余默认零回归 / 关）；设计依据为科学家议会纪要（`notes/`，本地维护、不随仓库分发）。
+默认开箱即用（仅 `HISTORY_*` / `EMOTION_BASELINE_ATTITUDE_W` 的默认改变 `--chat`，其余默认行为不变 / 关）；设计依据为科学家议会纪要（`notes/`，本地维护、不随仓库分发）。
 
 **① 数字人情绪 / 对话**
 
@@ -324,9 +324,9 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_EMOTION_NOISE_STD` | 0.05 | 每轮情绪的随机噪声幅度（调小=更稳、`0`=关该噪声源） |
 | `ZERO_SAMPLE_SIGMA_MAX` | 0.5 | 后验采样的逐维抖动上限（仅 `sample` 读出下生效） |
 | `ZERO_CHAT_RNG_SEED` | — | 固定随机种子，贯穿引擎采样 + 情绪噪声，便于 eval 复现（留空=每次随机） |
-| `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」占比；`<1` 给回中性的拉力、防越聊越上头（`1`=旧行为） |
+| `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」占比；`<1` 给回中性的拉力、防越聊越上头（`1`=不加回中性拉力） |
 
-**② 治「越聊越暧昧 / 关系无端升温」**（科学家议会 seeking 吸引盆两轮裁决；默认全逐字零回归，`.env.example` 已按荐值直接赋值，⭐=数字人推荐开）
+**② 治「越聊越暧昧 / 关系无端升温」**（基于 seeking 吸引盆动力学、经科学家议会评审；默认全部保持现有行为，`.env.example` 已按荐值直接赋值，⭐=数字人推荐开）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
@@ -335,10 +335,10 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_ATTITUDE_REVERSION_A` | 同 valence(0.01) | ⭐态度 arousal 维**独立**回归率（荐 0.3–0.5）；令长期态度只累积效价、不累积唤醒偏置 |
 | `ZERO_ATTITUDE_SETPOINT_A` | persona.setpoint[1] | 态度 arousal 回归锚；未设=取气质底色的 a、`0`=中性 |
 | `ZERO_HABITUATION_TAU` | 关 | 习惯化 τ(轮，荐 5–10)：重复互动 arousal 响应按 `exp(-n/τ)` 递减（SCR 习惯化）；空/0=关 |
-| `ZERO_AROUSAL_GAIN_CAP` | 不 cap | workspace `arousal_gain` 上限（荐 0.3–0.6）；防高唤醒正反馈失稳；空=旧无界 |
-| `ZERO_ATTITUDE_RATE_DECAY_K` | 0 | 越熟态度形成越慢（关系止血 Q5-A）；`0`=关，仅减缓漂移、非真多稳态 |
+| `ZERO_AROUSAL_GAIN_CAP` | 不 cap | workspace `arousal_gain` 上限（荐 0.3–0.6）；防高唤醒正反馈失稳；空=不设上限 |
+| `ZERO_ATTITUDE_RATE_DECAY_K` | 0 | 越熟态度形成越慢；`0`=关，仅减缓漂移、非真多稳态 |
 | `ZERO_FAMILIARITY_TAU` | 20 | 熟悉度累积 τ(轮)，配合 `RATE_DECAY_K`；仅 `K>0` 时生效 |
-| `ZERO_RELATIONSHIP_STAGE_HINT` | 关 | 给 LLM 关系距离软提示（曝光三档，关系止血 Q5-B；确定性派生、不经 LLM 判跃迁）；空/0=关 |
+| `ZERO_RELATIONSHIP_STAGE_HINT` | 关 | 给 LLM 关系距离软提示（曝光三档；确定性派生、不经 LLM 判跃迁）；空/0=关 |
 
 **③ 记忆 / 注意力窗 + 召回排序**（默认已按认知科学调好，一般不用动）
 
@@ -357,27 +357,27 @@ python -m scripts.demo_pipeline                                    # 端到端�
 | `ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD` | 0 | 低唤醒高语义补偿 `salience+=0.3·\|value\|`（`1` 开启） |
 | `ZERO_EPISODE_DEDUP_MAX` | 0.92 | 情景写入去重余弦阈（高于此视为近义跳过） |
 
-**④ 实验性 v1：社会认知 / 生理节律 / 层级融合**（Follow-up 1 三项研究级方向，各经**科学家议会设计门**·**默认全关、逐字零回归**；确定性热路径纯标量无 LLM/torch，细节见 `PRP/P3*`——本地维护、不随仓库分发）
+**④ 实验性 v1：社会认知 / 生理节律 / 层级融合**（三项研究级方向，均经**科学家议会评审**·**默认全关、行为不变**；确定性热路径纯标量无 LLM/torch）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `ZERO_HPC_LAYERS` · `_COUPLING` | 1·0 | **层级预测编码**：把单层融合升级为 2 层（感觉层→核心情感层）预测编码；`1`/`0`=平层零回归、`coupling∈[0.3,0.8]` 启用（`>1`/`<0` 报错） |
+| `ZERO_HPC_LAYERS` · `_COUPLING` | 1·0 | **层级预测编码**：把单层融合升级为 2 层（感觉层→核心情感层）预测编码；`1`/`0`=平层、行为不变，`coupling∈[0.3,0.8]` 启用（`>1`/`<0` 报错） |
 | `ZERO_CORTISOL_ENABLED`<br>（+8 子旋钮 `_TAU`/`_IMPULSE`<br>/`_*_GATE`/`_*_ALPHA`/`_THETA_*`） | 关 | **HPA 皮质醇慢回路**：应激（目标受阻+高强度）后**分钟-小时级余震**——抬 arousal 基线 / 放大态度形成；触发解耦防 runaway；运行态跨会话持久（durable 后端）、**绝不入记忆图谱** |
 | `ZERO_CONTAGION_ALPHA`<br>`ZERO_CARE_BIAS_ALPHA`<br>`ZERO_VICARIOUS_ALPHA`<br>（+ `_VICARIOUS_THRESHOLD`） | 0·0·0 | **ToM 社会情绪**：感知对方情绪（**图外**确定性估计、不入热路径）并共情——情绪传染 / 对方难过则关怀（CARE）/ 对方开心则替代喜悦；上界 contagion≤0.3、三系数和≤0.6 |
 
-**⑤ 内核精度 / 评价机制·进阶旋钮**（workspace 精度重构、评价补充；各经**科学家议会设计门**·**默认全关、逐字零回归**，多为研究级、日常不必动；`.env.example` 有一行速记）
+**⑤ 内核精度 / 评价机制·进阶旋钮**（workspace 精度重构、评价补充；各经**科学家议会评审**·**默认全关、行为不变**，多为研究级、日常不必动；`.env.example` 有一行速记）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `ZERO_PRECISION_SPLIT` | 关 | `value` 流精度改用 `precision_da(\|δ\|)`，消 `β·V` 与精度的混同（A-P1-A）；`1` 开启 |
-| `ZERO_FUSE_INDEPENDENCE_CORRECT` | 关 | `value` 流 valence 维精度置极小，防共线导致过度自信（A-P0-B）；`1` 开启 |
-| `ZERO_IGNITION_SURVIVAL_FALLBACK` | 关 | 全弱刺激时由 survival 流兜底广播（张力4·M3）；`1` 开启 |
-| `ZERO_IGNITION_BETA` | — | ignite 软门控陡度 β（荐 20–50）；空/注释=硬 step 零回归，β 连续近似 GNW all-or-none |
+| `ZERO_PRECISION_SPLIT` | 关 | `value` 流精度改用 `precision_da(\|δ\|)`，消 `β·V` 与精度的混同；`1` 开启 |
+| `ZERO_FUSE_INDEPENDENCE_CORRECT` | 关 | `value` 流 valence 维精度置极小，防共线导致过度自信；`1` 开启 |
+| `ZERO_IGNITION_SURVIVAL_FALLBACK` | 关 | 全弱刺激时由 survival 流兜底广播；`1` 开启 |
+| `ZERO_IGNITION_BETA` | — | ignite 软门控陡度 β（荐 20–50）；空/注释=硬 step、行为不变，β 连续近似 GNW all-or-none |
 | `ZERO_VA_COUPLING_POS` · `_NEG` | 0.6 · 0.6 | 正 / 负效价侧 V-A 耦合系数（荐 pos 0.4–0.6、neg 0.6–0.8 体现 negativity bias，Kuppens 2013）；也可在 persona JSON 配、persona 优先 |
 | `ZERO_ATTITUDE_AROUSAL_WEIGHT` | 0 | 高唤醒 stimulus 放大态度累积率（McGaugh 2004）；`0`=关 |
-| `ZERO_HABITUATION_SENSITIZATION_GAIN`<br>`ZERO_SENSITIZATION_THRESHOLD` | 0·0.5 | 习惯化+敏化双过程：强刺激（\|arousal\|>阈）叠加敏化增益（A-P3-D）；gain `0`=纯习惯化 |
-| `ZERO_STANDARD_COMPLIANCE` | 关（恒 0） | 确定性词典桥从用户话读社会规范违反/遵从 ∈[-1,1]，通电 OCC 分支 B（pride/shame/reproach 等）；词表初版、语义待议会 P0-A 细化；`1` 开启 |
-| `ZERO_PANKSEPP_DISTINGUISH_FEAR` | 关 | `(-v,+a)` 象限按 arousal 阈值分 fear/rage；**⚠ 议会 2026-07-02 判失真**（纯 arousal 无神经生理依据区分 RAGE/FEAR），**建议保持关闭** |
+| `ZERO_HABITUATION_SENSITIZATION_GAIN`<br>`ZERO_SENSITIZATION_THRESHOLD` | 0·0.5 | 习惯化+敏化双过程：强刺激（\|arousal\|>阈）叠加敏化增益；gain `0`=纯习惯化 |
+| `ZERO_STANDARD_COMPLIANCE` | 关（恒 0） | 确定性词典桥从用户话读社会规范违反/遵从 ∈[-1,1]，通电 OCC 分支 B（pride/shame/reproach 等）；词表初版、语义待科学家议会细化；`1` 开启 |
+| `ZERO_PANKSEPP_DISTINGUISH_FEAR` | 关 | `(-v,+a)` 象限按 arousal 阈值分 fear/rage；**⚠ 经科学家议会评审判定失真**（纯 arousal 无神经生理依据区分 RAGE/FEAR），**建议保持关闭** |
 | `ZERO_MOOD_PRECISION` | 内置常量 | mood 流精度加权（介于主评价流与 `SURVIVAL_PRECISION=0.4` 之间）；调小=降低心境流投票权 |
 | `ZERO_TEXT_AFFECT_PRECISION` | 内置常量 | 文本语义流精度（固定低值，Friston 2009 初始固定精度）；调小=进一步压制文本流权重 |
 

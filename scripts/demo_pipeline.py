@@ -1,6 +1,6 @@
 """端到端 demo：合成训练 ExpressionDecoder → 注入 LangGraph 管线 → 跑刺激序列。
 
-无需外部数据集（用三-1 合成 bootstrap 训练）。展示训练好的真网络如何驱动表达输出。
+无需外部数据集（用合成数据 bootstrap 训练）。展示训练好的真网络如何驱动表达输出。
 用法：python -m scripts.demo_pipeline
 """
 

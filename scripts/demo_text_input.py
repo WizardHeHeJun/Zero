@@ -14,9 +14,8 @@
         conda run -n affective-expression --no-capture-output python -m scripts.demo_text_input
 
 --------------------------------------------------------------------------------
-已按科学家议会受约束方案 c 落地——文本作独立低精度先验流（TEXT_AFFECT_PRECISION=0.3）
-经 fuse_terms 精度加权参与后验，不进 occ_prior 入口、不污染 survival
-（见 notes/2026-06-25-text-affect-prior-routing-council.md）。
+设计定调（经跨学科科学家议会评审）：文本作独立低精度先验流（TEXT_AFFECT_PRECISION=0.3）
+经 fuse_terms 精度加权参与后验，不进 occ_prior 入口、不污染 survival。
 
 诚实标注：文本流精度低（0.3），故对 e* 是"温和拉动"而非主导；
 occ_prior（prior_mu）仍由 OCC 字段决定（文本型 stimulus 未填 OCC 字段 → 近中性先验）。
@@ -24,9 +23,9 @@ occ_prior（prior_mu）仍由 OCC 字段决定（文本型 stimulus 未填 OCC �
 作独立 term 进 fuse_terms，精度加权（TEXT_AFFECT_PRECISION=0.3）参与后验计算。
 开 workspace_enabled=True 时 ignited_streams 中会出现 "text" 流名。
 
-前置 BUG 修复状态：features 布局已恢复 OCC 下标顺序（perception.py），
+实现要点：features 布局为 OCC 下标顺序（perception.py），
 fast_survival_prior 读 features[0]=goal_congruence / features[3]=intensity，
-文本信息走 text_affect 字段、不再静默污染 survival 流（议会共识必修项已完成）。
+文本信息走 text_affect 字段、不会污染 survival 流。
 
 --------------------------------------------------------------------------------
 """
@@ -100,7 +99,7 @@ def _check_env() -> bool:
         f"\n[文本路径激活] backend=st，权重路径={model_path!r}"
         "\n  PerceptionAgent 将用 STTextAffectRegressor.predict_affect 产出 text_affect=(v,a)。"
         "\n  AffectCore 将把 text_affect 作独立低精度流（TEXT_AFFECT_PRECISION=0.3）"
-        "\n  经 fuse_terms 精度加权参与后验（受约束方案 c，不进 occ_prior 入口）。\n"
+        "\n  经 fuse_terms 精度加权参与后验（不进 occ_prior 入口）。\n"
     )
     return True
 
@@ -129,7 +128,7 @@ def _perception_from_trace(state: AffectState) -> dict[str, Any]:
 def _print_state(stim_text: str, state: AffectState, text_path_active: bool) -> None:
     """格式化打印单次管线运行的关键中间量与最终 e*。
 
-    受约束方案 c 落地后的打印内容：
+    打印内容：
     - features：OCC 布局（goal_congruence, standard_compliance, attitude_appeal, intensity）
     - text_affect：文本路径产出的独立 (v,a) 先验流（默认关时为 None）
     - ignited_streams：确认 "text" 流是否进入点燃（workspace_enabled=True 时可见）
@@ -148,7 +147,7 @@ def _print_state(stim_text: str, state: AffectState, text_path_active: bool) -> 
     # 文本型 stim 未填 OCC 字段 -> 均为 0.0（近中性），fast_survival_prior 据此安全读 features[0/3]
     print(f"  感知 features: {[round(f, 4) for f in (perc['features'] or [])]}")
     # text_affect：文本路径（backend=st_text）由回归器产出的独立 (v,a) 先验流
-    # 受约束方案 c：此值经 AffectCore 以 TEXT_AFFECT_PRECISION=0.3 进入 fuse_terms，
+    # 此值经 AffectCore 以 TEXT_AFFECT_PRECISION=0.3 进入 fuse_terms，
     # 不进 occ_prior 入口、不修改 prior_mu。默认关（OCC 路径）时为 None。
     ta_str = (
         str(tuple(round(x, 4) for x in state.text_affect))
@@ -159,7 +158,7 @@ def _print_state(stim_text: str, state: AffectState, text_path_active: bool) -> 
     # prior_mu：OCC 字段决定（文本型 stim 未填 OCC -> 近中性先验），不受文本流影响
     print(
         f"  prior_mu(OCC): {tuple(round(x, 4) for x in prior_mu) if prior_mu else 'None'}"
-        "  <- OCC 字段决定（文本型 stim 未填 OCC -> 近中性先验，受约束 c 不改此入口）"
+        "  <- OCC 字段决定（文本型 stim 未填 OCC -> 近中性先验，文本流不改此入口）"
     )
     # ignited_streams：workspace_enabled=True 时可见 "text" 流（表示文本流通过显著度门控点燃）
     print(f"  ignited 流   : {state.ignited_streams}  <- 含 'text' 表示文本流已点燃参与后验")
@@ -181,12 +180,12 @@ def _print_state(stim_text: str, state: AffectState, text_path_active: bool) -> 
         # text_path_active=True 且 backend=st_text：确认文本流生效
         if "text" in state.ignited_streams:
             print(
-                "  [方案 c 确认] ignited_streams 含 'text'：文本流通过显著度门控点燃，"
+                "  [文本流确认] ignited_streams 含 'text'：文本流通过显著度门控点燃，"
                 "以 TEXT_AFFECT_PRECISION=0.3 参与 fuse_terms 后验。"
             )
         else:
             print(
-                "  [方案 c 注意] ignited_streams 不含 'text'：文本流显著度未过 SALIENCE_THRESHOLD，"
+                "  [注意] ignited_streams 不含 'text'：文本流显著度未过 SALIENCE_THRESHOLD，"
                 "停留局部（e* 仍由其他流主导，文本流温和但可能未达门控阈值）。"
             )
 
@@ -240,11 +239,10 @@ async def _run_stimuli(
 async def run_demo(text_path_active: bool) -> None:
     """构造正负文本 stimulus，跑完整管线，打印关键中间量与最终 e*。
 
-    workspace_enabled=True：开启显著度门控全局工作空间（受约束方案 c 落地前提）。
+    workspace_enabled=True：开启显著度门控全局工作空间（文本流参与融合的前提）。
     AffectCore 将把 text_affect 作独立 term 进 fuse_terms，
     精度加权（TEXT_AFFECT_PRECISION=0.3）参与后验，
-    不进 occ_prior 入口、不污染 survival
-    （见 notes/2026-06-25-text-affect-prior-routing-council.md）。
+    不进 occ_prior 入口、不污染 survival。
 
     prior_mu 来自 AppraisalAgent 读 Stimulus.goal_congruence 等 OCC 字段。
     文本型 stimulus 未填 OCC 字段 -> prior_mu 退化为近中性 (≈0, low_arousal)。
@@ -257,7 +255,7 @@ async def run_demo(text_path_active: bool) -> None:
     neg_text = "This is terrible, I'm furious. Everything is going wrong."
 
     # 文本型 stimulus：OCC 字段保持默认（全零），text 字段携带原始文本
-    # 受约束方案 c：OCC 字段全零 -> prior_mu 退化为 (0.0, 约 0.2) 近中性先验（不被文本改变）
+    # OCC 字段全零 -> prior_mu 退化为 (0.0, 约 0.2) 近中性先验（不被文本改变）
     # 文本影响走独立 text_affect 通道 -> fuse_terms 精度加权后验（TEXT_AFFECT_PRECISION=0.3）
     stimuli = [
         Stimulus(name="positive_text", text=pos_text, intensity=0.8),
@@ -268,12 +266,12 @@ async def run_demo(text_path_active: bool) -> None:
         stimuli,
         thread_id="demo-text-input",
         rng_seed=42,
-        # workspace_enabled=True：受约束方案 c 需开启工作空间，文本流才能进入 fuse_terms
+        # workspace_enabled=True：需开启工作空间，文本流才能进入 fuse_terms
         workspace_enabled=True,
     )
 
     print("=" * 70)
-    print("  文本输入路径闭环 demo 结果（受约束方案 c，workspace_enabled=True）")
+    print("  文本输入路径闭环 demo 结果（workspace_enabled=True）")
     print("=" * 70)
     print()
 
@@ -285,18 +283,17 @@ async def run_demo(text_path_active: bool) -> None:
 
     print("=" * 70)
     if text_path_active:
-        print("  [方案 c 落地确认]")
+        print("  [文本路径确认]")
         print("    - backend=st_text: 文本路径被走到，text_affect=(v,a) 来自回归器")
         print("    - text_affect 作独立低精度流（TEXT_AFFECT_PRECISION=0.3）进 fuse_terms")
-        print("    - prior_mu 仍由 OCC 字段决定（近中性，受约束 c 不改 occ_prior 入口）")
+        print("    - prior_mu 仍由 OCC 字段决定（近中性，不改 occ_prior 入口）")
         print("    - 文本流是温和拉动（精度 0.3 低于 occ_prior/survival），非主导")
         print("    - ignited_streams 含 'text' = 文本流通过显著度门控，实际参与后验")
-        print("    参考：notes/2026-06-25-text-affect-prior-routing-council.md（议会决策文档）")
     else:
         print("  [默认关确认] backend=occ_placeholder；text_affect=None；")
         print("    features 来自 OCC 字段（均零->中性）。")
         print("    sentence-transformers / STTextAffectRegressor 未加载。")
-        print("    fuse_terms 不加文本流，行为与改动前一致（零回归）。")
+        print("    fuse_terms 不加文本流，保持默认行为。")
     print("=" * 70)
 
     # 完整 JSON 轨迹（supply further observation）—— 用 state 字段序列化

@@ -81,7 +81,7 @@
           "fillColor": "#FBE9F0", "borderColor": "#C45D8B", "borderWidth": 2, "borderRadius": 10,
           "children": [
             { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🎭 人格 Persona（可选注入）", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "人设卡 / 气质底色 / 预置关系\n默认中性=零回归（大五→PAD 数值交议会）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "人设卡 / 气质底色 / 预置关系\n默认中性=行为不变（大五→PAD·va_coupling）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
           ]
         },
         { "type": "cylinder", "id": "memory", "width": 205, "height": "fit-content", "fillColor": "#DFF5E5", "borderColor": "#509863", "borderWidth": 2, "textAlign": "center", "verticalAlign": "middle", "text": [ { "content": "🗄️ 记忆 / 持久\n", "bold": true, "fontSize": 13, "color": "#1F2329" }, { "content": "注意力↔记忆桥：显著性门控写 · 三维召回\n(新近×相关×重要) · 注入注意力预算 · 时序遗忘\n图谱+语义 · ConversationLog 落盘", "fontSize": 10, "color": "#646A73" } ] }

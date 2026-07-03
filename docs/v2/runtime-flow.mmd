@@ -4,7 +4,7 @@ flowchart LR
   engine["🧠 情感引擎·确定性(无LLM)<br/>perception→appraisal→value→affect_core<br/>并行流显著度门控融合→采样 e*"]:::engine
   timescales["⏱️ 三时间尺度+稳态<br/>瞬时 e* / 快变 emotion(几轮衰退)<br/>慢变 attitude(慢累积·持久化)<br/>+ 稳态回弹(向setpoint回归)"]:::timescale
   converse["🗣️ 自然对话·LLM输出接点<br/>ConversationModel.converse(push,retrieved)<br/>情绪经用词倾向漏进措辞 + 召回背景"]:::language
-  persona["🎭 人格 Persona(可选注入)<br/>人设卡进converse·气质进引擎<br/>预置关系首次接触播种·默认中性零回归"]:::persona
+  persona["🎭 人格 Persona(可选注入)<br/>人设卡进converse·气质进引擎<br/>预置关系首次接触播种·默认中性即现有行为"]:::persona
   memory[("🗄️ 记忆<br/>write_episode / recall<br/>显著性写情景·三维召回重排·注入注意力预算(U形窗)")]:::memory
   reply(["💬 带情绪的回应"]):::terminal
 

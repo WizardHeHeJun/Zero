@@ -1,12 +1,12 @@
-"""本地命令行验证 P3 评价标定（**需 LLM key**：读 .env 的 ZERO_OPENAI_*）。
+"""本地命令行验证评价标定 ZERO_APPRAISE_CALIBRATE（**需 LLM key**：读 .env 的 ZERO_OPENAI_*）。
 
-议会二轮判定：`_APPRAISE_SYS` 无标定锚时，LLM 有系统性正向偏置（positivity bias），把明确
-敌意只读成 goal_congruence≈-0.2~-0.3（贴 0 边界，是情绪标签翻号的先验侧根因之一）。P3
+背景：`_APPRAISE_SYS` 无标定锚时，LLM 有系统性正向偏置（positivity bias），把明确
+敌意只读成 goal_congruence≈-0.2~-0.3（贴 0 边界，是情绪标签翻号的先验侧根因之一）。
 `ZERO_APPRAISE_CALIBRATE=1` 注入**分级**标定锚，应把敌意拉到 OCC anger 应有的 -0.7~-0.9，
 而**不误伤**"语气直但中性"的输入。
 
 本脚本对同一组分级样本，各调一次 appraise（标定关 vs 开），并排打印读数——实测标定是否
-把强负样本拉强、又没把中性/轻负样本一并拉过头。这是议会规定 **P1(b) 落地的前置验证**。
+把强负样本拉强、又没把中性/轻负样本一并拉过头。
 
 跑：配好 .env(ZERO_OPENAI_API_KEY + ZERO_OPENAI_MODEL) 后
     `python -m scripts.verify_appraise_calibration`
@@ -59,7 +59,7 @@ async def main() -> None:
     off = await _appraise_all(calibrate=False)
     on = await _appraise_all(calibrate=True)
     print(f"模型={os.environ['ZERO_OPENAI_MODEL']}｜列为 appraise 读出 (valence, arousal)\n")
-    print(f"{'输入类型':<14} | {'标定关(默认)':>16} | {'标定开(P3)':>16} | Δvalence")
+    print(f"{'输入类型':<14} | {'标定关(默认)':>16} | {'标定开':>16} | Δvalence")
     print("-" * 66)
     for label, _ in SAMPLES:
         vo, vn = off[label][0], on[label][0]
