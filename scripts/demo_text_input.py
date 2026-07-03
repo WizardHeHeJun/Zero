@@ -14,7 +14,7 @@
         conda run -n affective-expression --no-capture-output python -m scripts.demo_text_input
 
 --------------------------------------------------------------------------------
-设计定调（经跨学科科学家议会评审）：文本作独立低精度先验流（TEXT_AFFECT_PRECISION=0.3）
+设计定调：文本作独立低精度先验流（TEXT_AFFECT_PRECISION=0.3）
 经 fuse_terms 精度加权参与后验，不进 occ_prior 入口、不污染 survival。
 
 诚实标注：文本流精度低（0.3），故对 e* 是"温和拉动"而非主导；

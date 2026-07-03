@@ -49,7 +49,7 @@
           "fillColor": "#FCF1F6", "borderColor": "#C45D8B", "borderWidth": 2, "borderRadius": 10,
           "children": [
             { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "L2 气质底色", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "setpoint / reactivity / recovery\n情绪基线·反应快慢·恢复速度（默认=引擎常量）\n大五→PAD 数值映射交科学家议会", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "setpoint / reactivity / recovery\n情绪基线·反应快慢·恢复速度（默认=引擎常量）\n大五(OCEAN)→PAD 自动推导(Mehrabian 1996)", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
           ]
         },
         {

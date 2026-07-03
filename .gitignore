@@ -20,7 +20,7 @@ ai-shared/
 evals/
 PRP/
 /CLAUDE.md
-# 注: notes/(研究/议会纪要) 与 diagrams/(架构图产物) 仅本地维护, 不随仓库共享。
+# 注: notes/(研究笔记) 与 diagrams/(架构图产物) 仅本地维护, 不随仓库共享。
 notes/
 diagrams/
 
