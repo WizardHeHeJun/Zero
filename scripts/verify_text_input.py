@@ -1,4 +1,4 @@
-"""文本输入路径闭环 demo：STTextAffectRegressor → 完整 6 节点管线 → e* + 情绪词标签。
+"""文本输入路径闭环验证：STTextAffectRegressor → 完整 6 节点管线 → e* + 情绪词标签。
 
 展示「文本型 stimulus」如何通过 PerceptionAgent 的句向量回归器产出 text_affect=(v,a)，
 再经完整管线（appraisal → value → affect_core → mood → expression → supervisor）
@@ -8,10 +8,10 @@
     设环境变量后跑（PowerShell 示例）：
         $env:ZERO_TEXT_AFFECT_BACKEND="st"
         $env:ZERO_TEXT_AFFECT_MODEL_PATH="artifacts/text_affect_regressor_st.pt"
-        conda run -n affective-expression --no-capture-output python -m scripts.demo_text_input
+        conda run -n affective-expression --no-capture-output python -m scripts.verify_text_input
 
     不设 ZERO_TEXT_AFFECT_BACKEND 时（默认关行为演示）：
-        conda run -n affective-expression --no-capture-output python -m scripts.demo_text_input
+        conda run -n affective-expression --no-capture-output python -m scripts.verify_text_input
 
 --------------------------------------------------------------------------------
 设计定调：文本作独立低精度先验流（TEXT_AFFECT_PRECISION=0.3）
@@ -107,7 +107,7 @@ def _check_env() -> bool:
 def _perception_from_trace(state: AffectState) -> dict[str, Any]:
     """从 AffectState.trace 中提取 perception 节点的 features 和 backend 标签。
 
-    runner._state_to_entry 不暴露 trace；demo 直接持有 AffectState 对象，
+    runner._state_to_entry 不暴露 trace；本脚本直接持有 AffectState 对象，
     从 state.trace 里找 perception 条目，以便展示 backend 路径标签。
 
     AffectState.trace 使用 operator.add reducer：多轮 ainvoke 共用同一 checkpointer 时，
@@ -202,8 +202,8 @@ async def _run_stimuli(
     """用底层 build_graph 跑 stimuli 序列，返回完整 AffectState 列表。
 
     runner.run() 返回的 _state_to_entry dict 不含 trace；
-    demo 需要 state.trace 来提取 perception backend 标签，因此直接用 graph.ainvoke。
-    graph.py / runner.py 的签名与接线保持不变——demo 直接构造初始 state dict，
+    本脚本需要 state.trace 来提取 perception backend 标签，因此直接用 graph.ainvoke。
+    graph.py / runner.py 的签名与接线保持不变——本脚本直接构造初始 state dict，
     workspace_enabled=True 在此注入，不需要改 runner 签名。
     """
     client = MemoryClient(build_graph_store(), semantic=build_semantic_store())
@@ -216,8 +216,8 @@ async def _run_stimuli(
             {
                 "stimulus": stim,
                 "session_id": thread_id,
-                "user_id": "demo-user",
-                "group_id": "demo-group",
+                "user_id": "verify-user",
+                "group_id": "verify-group",
                 "regulation_enabled": False,
                 "regulation_strategy": "suppression",
                 "mood_enabled": False,
@@ -236,7 +236,7 @@ async def _run_stimuli(
     return states
 
 
-async def run_demo(text_path_active: bool) -> None:
+async def run_verification(text_path_active: bool) -> None:
     """构造正负文本 stimulus，跑完整管线，打印关键中间量与最终 e*。
 
     workspace_enabled=True：开启显著度门控全局工作空间（文本流参与融合的前提）。
@@ -264,14 +264,14 @@ async def run_demo(text_path_active: bool) -> None:
 
     states = await _run_stimuli(
         stimuli,
-        thread_id="demo-text-input",
+        thread_id="verify-text-input",
         rng_seed=42,
         # workspace_enabled=True：需开启工作空间，文本流才能进入 fuse_terms
         workspace_enabled=True,
     )
 
     print("=" * 70)
-    print("  文本输入路径闭环 demo 结果（workspace_enabled=True）")
+    print("  文本输入路径闭环验证结果（workspace_enabled=True）")
     print("=" * 70)
     print()
 
@@ -328,7 +328,7 @@ def main() -> None:
         stream=sys.stderr,
     )
     text_path_active = _check_env()
-    asyncio.run(run_demo(text_path_active))
+    asyncio.run(run_verification(text_path_active))
 
 
 if __name__ == "__main__":

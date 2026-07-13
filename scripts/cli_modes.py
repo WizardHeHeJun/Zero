@@ -1,9 +1,9 @@
-"""验证 demo 场景（从临时入口 main.py 迁出）：核心轨迹 / 工作空间 / LLM 文本输出。
+"""CLI 运行模式（main.py --trace/--workspace/--llm 的实现）：核心轨迹 / 工作空间 / LLM 文本输出。
 
-这些是「验证脚手架」而非产品核心逻辑，独立成可单独运行的脚本入口：
-  python -m scripts.demo_modes --trace [--mood --language --recall]   # (v,a) 轨迹 JSON
-  python -m scripts.demo_modes --workspace                            # 并行流点燃对比
-  python -m scripts.demo_modes --llm                                  # LLM 文本输出情绪验证
+这些是可单独运行的脚本入口，核心逻辑在 src/：
+  python -m scripts.cli_modes --trace [--mood --language --recall]   # (v,a) 轨迹 JSON
+  python -m scripts.cli_modes --workspace                            # 并行流点燃对比
+  python -m scripts.cli_modes --llm                                  # LLM 文本输出情绪验证
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ async def run_llm() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="情感系统验证 demo 场景（核心 / 工作空间 / LLM）")
+    parser = argparse.ArgumentParser(description="情感系统 CLI 运行模式（核心 / 工作空间 / LLM）")
     parser.add_argument("--trace", action="store_true", help="跑核心管线打印 (v,a) 轨迹 JSON")
     parser.add_argument("--mood", action="store_true", help="[--trace] 慢变心境（A.7 滞后）")
     parser.add_argument("--language", action="store_true", help="[--trace] 语言层双向回路")
