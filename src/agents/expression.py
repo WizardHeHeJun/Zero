@@ -30,19 +30,34 @@ class ExpressionAgent:
     def __init__(self, decoder: ChannelDecoder | None = None) -> None:
         self.decoder = decoder
 
-    def _decode(self, affect: tuple[float, float]) -> dict[str, Any]:
+    def _decode(
+        self,
+        affect: tuple[float, float],
+        *,
+        coping_potential: float = 0.0,
+        facs_extended: bool = False,
+    ) -> dict[str, Any]:
         if self.decoder is not None:
+            # 注入 decoder 的 per-turn coping 待协议扩展·下一轮工程门
+            # （predict_channels(v,a) 公开签名不变，per CS 席约束 #4）
             return self.decoder.predict_channels(affect[0], affect[1])
-        return decode_channels(affect)
+        return decode_channels(
+            affect, coping_potential=coping_potential, facs_extended=facs_extended
+        )
 
     def __call__(self, state: AffectState) -> dict:
         if state.affect_sample is None:
             return {}
-        spontaneous = self._decode(state.affect_sample)
+        # 占位路径：透传 coping_potential_state + facs_extended（防空悬，W1）
+        coping = state.coping_potential_state
+        facs_ext = state.facs_extended
+        spontaneous = self._decode(
+            state.affect_sample, coping_potential=coping, facs_extended=facs_ext
+        )
         voluntary_source = (
             state.regulated_affect if state.regulated_affect is not None else state.affect_sample
         )
-        voluntary = self._decode(voluntary_source)
+        voluntary = self._decode(voluntary_source, coping_potential=coping, facs_extended=facs_ext)
         expression: dict[str, Any] = {
             "valence_arousal": state.affect_sample,
             "spontaneous": spontaneous,  # 非随意通路（直连 AffectCore）

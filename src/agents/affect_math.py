@@ -409,22 +409,43 @@ def text_label(valence: float, arousal: float) -> str:
     return "angry" if arousal >= 0.33 else "sad"
 
 
-def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
+def decode_channels(
+    affect: tuple[float, float],
+    *,
+    coping_potential: float = 0.0,
+    facs_extended: bool = False,
+    k_arousal: float = 1.5,
+    k_coping: float = 1.2,
+) -> dict[str, Any]:
     """把 (valence, arousal) 占位解码为 4 个表达通道的结构化结果。
 
     通道：FACS AU 向量 / 文本情绪标签 / 生理信号模拟 / 语音韵律参数。
+
+    Args:
+        affect: (valence, arousal) 后验情感坐标，各维 ∈ [-1, 1]。
+        coping_potential: 控制评价（AppraisalAgent 产出的 state.coping_potential_state），
+            ∈ [-1, 1]。仅在 facs_extended=True 时生效；默认 0.0 无影响，零回归。
+            正值→高控制感（愤怒方向），负值→低控制感（恐惧方向）。
+            来源：直接读 state.coping_potential_state，**不在表情层重估**（防构念重复）。
+        facs_extended: False（默认）→ 旧 5-AU 逐字行为，零回归；
+            True → 输出 11-AU 扩展集合（含 coping 驱动的区分性 AU）。
+        k_arousal: ⚖ AU05/07 对 arousal 的增益（工程可动；默认 1.5=现值，零回归）。
+            方向由议会定，不可改符号/单调；仅幅度可调。由 CompositeChannelDecoder 注入。
+        k_coping: ⚖ 区分性 AU 对 coping 强度的增益（工程可动；默认 1.2=现值，零回归）。
+            方向由议会定，不可改符号/单调；仅幅度可调。由 CompositeChannelDecoder 注入。
+
+    热路径：纯标量（clamp/sigmoid），无 torch/LLM/网络调用。
     """
     valence, arousal = affect
 
-    # 1) FACS AU：正效价→AU12/AU6（拉嘴角/抬脸颊），负效价→AU15/AU4（压嘴角/皱眉）
-    facs_au: dict[str, float] = {}
-    if valence >= 0:
-        facs_au["AU12"] = clamp(valence, 0.0, 1.0)
-        facs_au["AU06"] = clamp(0.6 * valence, 0.0, 1.0)
+    # 1) FACS AU
+    if facs_extended:
+        facs_au = _decode_facs_extended(
+            valence, arousal, coping_potential, k_arousal=k_arousal, k_coping=k_coping
+        )
     else:
-        facs_au["AU15"] = clamp(-valence, 0.0, 1.0)
-        facs_au["AU04"] = clamp(-0.6 * valence, 0.0, 1.0)
-    facs_au["intensity"] = clamp(abs(arousal), 0.0, 1.0)
+        # 旧 5-AU 逐字行为（零回归）
+        facs_au = _decode_facs_legacy(valence, arousal)
 
     # 2) 文本情绪标签：按 valence-arousal 象限映射离散词
     label = text_label(valence, arousal)
@@ -450,6 +471,112 @@ def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
         "physiology": physiology,
         "prosody": prosody,
     }
+
+
+def _decode_facs_legacy(valence: float, arousal: float) -> dict[str, float]:
+    """旧 5-AU 占位映射（零回归基准）。正效价→AU12/AU06；负效价→AU15/AU04；intensity∝|arousal|。"""
+    # 正效价→AU12/AU6（拉嘴角/抬脸颊），负效价→AU15/AU4（压嘴角/皱眉）
+    facs_au: dict[str, float] = {}
+    if valence >= 0:
+        facs_au["AU12"] = clamp(valence, 0.0, 1.0)
+        facs_au["AU06"] = clamp(0.6 * valence, 0.0, 1.0)
+    else:
+        facs_au["AU15"] = clamp(-valence, 0.0, 1.0)
+        facs_au["AU04"] = clamp(-0.6 * valence, 0.0, 1.0)
+    facs_au["intensity"] = clamp(abs(arousal), 0.0, 1.0)
+    return facs_au
+
+
+def _decode_facs_extended(
+    valence: float,
+    arousal: float,
+    coping_potential: float,
+    *,
+    k_arousal: float = 1.5,
+    k_coping: float = 1.2,
+) -> dict[str, float]:
+    """11-AU 扩展映射（facs_extended=True 分支）。
+
+    ⚖ 议会定方向、系数工程可动区间、待真数据校准（Gentsch 2015 fEMG 实证）。
+    热路径：纯标量（clamp/sigmoid），禁 torch/LLM/网络。
+
+    映射方向（design.md 议会裁决）：
+      AU04/06/12/15/intensity：保持旧向不变（零回归基准）。
+      AU05：随 arousal+ 升（高唤醒瞪眼，愤怒/恐惧共有；Ekman 1978 AU5 = 上睑抬）。
+      AU07：随 arousal+ 且 v<0 升（眼部紧张，高唤醒负效价共有）。
+      区分性 AU 仅在 (v<0, a≥0) 象限激活（象限守卫）：
+        AU23（口轮匝肌唇紧）：coping>0→高（愤怒对抗准备；Carver & Harmon-Jones 2009）。
+          ⚠ 跨文化注：Cordaro 2018 跨文化核心愤怒为 AU4+AU7，AU23 未入核心（~29% 出现率）；
+          此占位依 Ekman & Friesen 1978 + Scherer CPM 设计，待真权重从数据学习后修正。
+        AU01/AU02（额肌扬眉）：coping<0→高（恐惧，须联动同升；Ekman 1978）。
+        AU20（笑肌横拉唇）：coping<0→高（恐惧；Ekman 1978 AU20 = 唇横拉）。
+      连续映射：用 relu(x)·abs(v)·|a| 风格，无 ±0.3 硬阈值；
+        push 层（锥体外路泄漏）是连续渐变的（Gentsch 2015 fEMG 连续测量）。
+
+    Args:
+        k_arousal: ⚖ AU05/07 对 arousal 的增益（工程可动；默认 1.5）。
+            方向由议会定，不可改符号/单调；仅幅度可调（via ZERO_FACS_K_AROUSAL env）。
+        k_coping: ⚖ 区分性 AU 对 coping 强度的增益（工程可动；默认 1.2）。
+            方向由议会定，不可改符号/单调；仅幅度可调（via ZERO_FACS_K_COPING env）。
+    """
+    # ── 系数（⚖ 议会定方向、工程可动区间；方向不可私拍，仅幅度可调）──
+    K_AROUSAL: float = k_arousal  # ⚖ AU05/07 arousal 增益（经参数注入，默认 1.5）
+    K_COPING: float = k_coping  # ⚖ 区分性 AU coping 增益（经参数注入，默认 1.2）
+
+    facs_au: dict[str, float] = {}
+
+    # ── 旧向不变通道（零回归基准）──
+    if valence >= 0:
+        facs_au["AU12"] = clamp(valence, 0.0, 1.0)
+        facs_au["AU06"] = clamp(0.6 * valence, 0.0, 1.0)
+    else:
+        facs_au["AU15"] = clamp(-valence, 0.0, 1.0)
+        facs_au["AU04"] = clamp(-0.6 * valence, 0.0, 1.0)
+    facs_au["intensity"] = clamp(abs(arousal), 0.0, 1.0)
+
+    # ── 新增共有通道（arousal 驱动，无象限守卫）──
+    # AU05：上睑抬，随 arousal+ 升（愤怒/恐惧共有，连续）
+    # ⚖ 议会定方向：高唤醒→瞪眼（Ekman 1978；Gentsch 2015 AU5 出现率随 arousal 线性升）
+    arousal_pos = max(0.0, arousal)
+    facs_au["AU05"] = clamp(K_AROUSAL * arousal_pos, 0.0, 1.0)
+
+    # AU07：睑紧，随 arousal+ 且 v<0（高唤醒负效价共有，连续）
+    # ⚖ 议会定方向：负效价高唤醒（愤怒/恐惧均有）→ 眼周肌紧（Gentsch 2015 AU7）
+    neg_valence_gate = max(0.0, -valence)  # v<0 时 >0，v≥0 时 =0（连续软门控）
+    facs_au["AU07"] = clamp(K_AROUSAL * arousal_pos * neg_valence_gate, 0.0, 1.0)
+
+    # ── 区分性 AU：仅 (v<0, a≥0) 象限激活（象限守卫）──
+    # 愤怒(coping>0) vs 恐惧(coping<0) 分野在 Scherer CPM + Gentsch 2015 实证
+    in_quadrant = valence < 0.0 and arousal >= 0.0  # 高唤醒负效价象限
+    if in_quadrant:
+        # 共有强度权重：|v|·|a| 让信号在象限边界自然归零（连续，无硬阈值）
+        va_weight = abs(valence) * abs(arousal)
+
+        # AU23：愤怒对抗准备，coping>0 时高
+        # ⚖ 连续映射：relu(coping)·va_weight·K_COPING；coping≤0 时输出自然为 0
+        # ⚠ 跨文化注（Cordaro 2018）：AU23 非跨文化核心愤怒 AU，此处依 Ekman 1978 + CPM 占位；
+        #   待真权重从 AffectNet/DISFA 数据学习后修正（Q3）。
+        coping_pos = max(0.0, coping_potential)  # relu，coping<0 时=0
+        facs_au["AU23"] = clamp(K_COPING * coping_pos * va_weight, 0.0, 1.0)
+
+        # AU01/AU02：恐惧扬眉，coping<0 时高（联动同升，两 AU 值相等）
+        # ⚖ 连续映射：relu(-coping)·va_weight·K_COPING；coping≥0 时输出自然为 0
+        coping_neg = max(0.0, -coping_potential)  # relu(-coping)
+        fear_score = clamp(K_COPING * coping_neg * va_weight, 0.0, 1.0)
+        facs_au["AU01"] = fear_score
+        facs_au["AU02"] = fear_score  # 联动同升（Ekman 1978；Gentsch 2015 frontalis 整体响应）
+
+        # AU20：笑肌横拉唇，恐惧（coping<0）时高
+        # ⚖ 连续映射：同 AU01/02 的 coping 负部驱动（Ekman 1978 AU20 = 恐惧特有）
+        facs_au["AU20"] = clamp(K_COPING * coping_neg * va_weight, 0.0, 1.0)
+    else:
+        # 象限外：区分性 AU 归零（防意外激活）
+        facs_au["AU23"] = 0.0
+        facs_au["AU01"] = 0.0
+        facs_au["AU02"] = 0.0
+        facs_au["AU20"] = 0.0
+
+    return facs_au
 
 
 def fast_survival_prior(

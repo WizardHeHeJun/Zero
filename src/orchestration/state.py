@@ -83,6 +83,11 @@ class AffectState(BaseModel):
     # coping_potential_enabled=False 门控关 → 现路径逐字不变（零回归）
     coping_potential_state: float = 0.0
     coping_potential_enabled: bool = False  # 总门控（默认关=零回归）
+    # facs_extended 扩展 AU 门控（设计门 PASS·路径 b；默认关=零回归）
+    # True → ExpressionAgent 占位路径把 coping_potential_state 透传给 decode_channels，
+    # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
+    # 经 chat_driver 读 ZERO_FACS_EXTENDED → SessionConfig → to_state_flags 贯通。
+    facs_extended: bool = False  # 默认关=零回归
 
     # HPA/皮质醇慢回路（P3 1-B；运行态慢变量）—— 进 Checkpointer，**绝不写入长期记忆图谱**
     # cortisol_state: 归一皮质醇水平 ∈ [0, 1]（同 mood 先例：Checkpointer 持久，非图谱）

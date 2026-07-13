@@ -97,6 +97,11 @@ class SessionConfig(BaseModel):
     # coping_potential_enabled=False → AppraisalAgent 不产 coping_potential_state → 词典层零回归。
     # coping_potential 只进 Checkpointer，绝不写入图谱（CS 红线）。
     coping_potential_enabled: bool = False
+    # ── facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）──
+    # True → ExpressionAgent 占位路径把 coping_potential_state 透传给 decode_channels，
+    # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
+    # 仅占位路径（decoder=None）生效；注入 decoder 的 per-turn coping 待协议扩展·下一轮工程门。
+    facs_extended: bool = False
 
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
@@ -218,6 +223,8 @@ async def run(
     vicarious_threshold: float = 0.3,
     # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
     coping_potential_enabled: bool = False,
+    # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
+    facs_extended: bool = False,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -296,6 +303,8 @@ async def run(
                 "vicarious_threshold": vicarious_threshold,
                 # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
                 "coping_potential_enabled": coping_potential_enabled,
+                # facs_extended：AU 扩展集合门控（默认关=零回归）
+                "facs_extended": facs_extended,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -386,6 +395,8 @@ class ConversationSession:
         vicarious_threshold: float = 0.3,
         # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
         coping_potential_enabled: bool = False,
+        # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
+        facs_extended: bool = False,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -451,6 +462,8 @@ class ConversationSession:
                 vicarious_threshold=vicarious_threshold,
                 # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
                 coping_potential_enabled=coping_potential_enabled,
+                # facs_extended：AU 扩展集合门控（默认关=零回归）
+                facs_extended=facs_extended,
             )
 
     @property
