@@ -17,11 +17,11 @@
 **本文件是临时验证入口，自身不含核心逻辑**——只做参数解析 + 装配，便于将来删除并迁移正式
 主入口（届时 import 同样的 src/scripts 单元即可，逻辑不随本文件消亡）：
   - 对话核心 / 历史存储 → src/orchestration/chat_driver.py · src/storage/conversation_log.py
-  - 验证 demo 场景      → scripts/demo_modes.py（亦可 `python -m scripts.demo_modes ...` 单独跑）
+  - CLI 运行模式        → scripts/cli_modes.py（亦可 `python -m scripts.cli_modes ...` 单独跑）
   - 统一日志            → src/observability/
 
 更专项的入口：
-  python -m scripts.demo_pipeline          # 端到端真网络化 demo（合成训练 → 注入 → 跑）
+  python -m scripts.run_pipeline           # 端到端真网络化管线（合成训练 → 注入 → 跑）
   python -m scripts.verify_graphiti_local  # Graphiti 语义召回本地验证（需 .[graphiti] + LLM key）
 """
 
@@ -125,10 +125,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     # 统一日志：每次启动落一份新日志文件（入口无关，实现见 src/observability）。
-    # 本入口零核心逻辑：默认对话转发给 chat_driver；demo 模式转发给 scripts.demo_modes。
+    # 本入口零核心逻辑：默认对话转发给 chat_driver；--trace/--workspace/--llm 转发给 scripts.cli_modes。
     setup_logging()
     if args.trace or args.workspace or args.llm:
-        from scripts.demo_modes import run_core, run_llm, run_workspace
+        from scripts.cli_modes import run_core, run_llm, run_workspace
 
         if args.trace:
             asyncio.run(run_core(args))

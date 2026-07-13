@@ -164,7 +164,7 @@ Zero/
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   └── observability/       # 横切：统一日志 setup_logging + 对话人读日志 setup_conversation_log（每启动落 logs/、级别可配）
 ├── tests/                   # 单测 + 行为/记忆回归
-├── scripts/                 # 训练 train_*.py + demo（demo_modes 承接 main.py 三模式 / demo_pipeline 端到端 / demo_text_input 文本输入）+ 验证 verify_*.py
+├── scripts/                 # 训练 train_*.py + 运行入口（cli_modes 承接 main.py 三模式 / run_pipeline 端到端）+ 验证 verify_*.py（含 verify_text_input 文本输入）
 ├── tools/                   # 运维/文档工具（reset_db.py 清库 · plot_timescales.py 生成动力学曲线图）
 ├── docs/                    # 对外架构图（框架 / 运作流程 / 记忆架构 / 人格注入，v1/v2 谱系，详见 docs/README.md）
 ├── notes/                   # 研究笔记 / 设计决策 / 工程实践（本地维护、不入库）
@@ -215,10 +215,10 @@ python main.py --llm      # 四情绪场景的文本输出情绪验证（批处�
 ```powershell
 pip install -e ".[ml]"
 python -m scripts.train_prosody --root data/ravdess --epochs 300   # 权重存 artifacts/，再注入管线
-python -m scripts.demo_pipeline                                    # 端到端：合成训练 → 注入 → 跑（无需外部数据）
+python -m scripts.run_pipeline                                    # 端到端：合成训练 → 注入 → 跑（无需外部数据）
 ```
 
-> **不想自己训练？直接用现成权重**：真实数据训练好的权重已随 Release 提供，拿来即用——从 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件是同一份）下载 5 个 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore），各 `load_*` / `scripts/*`（如 `demo_pipeline`）自动加载；缺某通道回退内置默认 / 占位、不影响其它。
+> **不想自己训练？直接用现成权重**：真实数据训练好的权重已随 Release 提供，拿来即用——从 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件是同一份）下载 5 个 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore），各 `load_*` / `scripts/*`（如 `run_pipeline`）自动加载；缺某通道回退内置默认 / 占位、不影响其它。
 > - 五通道：`text_affect_regressor.pt` / `text_affect_regressor_st.pt`（文本→(v,a)，词袋 / 句向量，EmoBank）· `prosody_decoder.pt`（(v,a)→韵律，RAVDESS）· `physiology_decoder.pt`（(v,a)→生理，WESAD）· `expression_decoder.pt`（(v,a)→表情 FACS，demo）。
 
 > **日志与排障**：每次启动落一份 `logs/zero-<时间戳>-<pid>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。对话另落一份**人读日志** `logs/conversation-<时间戳>-<pid>.log`（每轮 user/Zero 原文 + 评价/情绪/态度 trace，默认开、`ZERO_CONVERSATION_LOG=0` 关且不落任何对话内容）。
