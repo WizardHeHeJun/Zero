@@ -2,6 +2,9 @@
 
 用法：python -m scripts.train_facs --csv data/facs/labels.csv --epochs 300
 数据获取/CSV 格式见 src/agents/datasets/facs_csv.py 模块文档。
+
+注意：训更大网络（--hidden/--num-layers 非默认值）需从头重训；
+原 Release 权重仅兼容默认形状（hidden=16, num_layers=1）。
 """
 
 from __future__ import annotations
@@ -24,11 +27,13 @@ def train(
     *,
     epochs: int = 300,
     lr: float = 1e-3,
+    hidden: int = 16,
+    num_layers: int = 1,
     out: str = "artifacts/facs_decoder.pt",
 ) -> float:
     """加载 FACS CSV、全批量训练 FacsDecoder 并保存权重，返回最终 MSE。"""
     x, y = load_facs_csv(csv_path)
-    model = FacsDecoder()
+    model = FacsDecoder(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
@@ -55,9 +60,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", required=True, help="FACS 标注 CSV 路径")
     parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--hidden", type=int, default=16)
+    parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/facs_decoder.pt")
     args = parser.parse_args()
-    final = train(args.csv, epochs=args.epochs, out=args.out)
+    final = train(
+        args.csv,
+        epochs=args.epochs,
+        hidden=args.hidden,
+        num_layers=args.num_layers,
+        out=args.out,
+    )
     print(f"done, final loss={final:.6f}")
 
 

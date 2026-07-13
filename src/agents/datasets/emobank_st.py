@@ -16,12 +16,18 @@ from src.agents.models.text_affect_regressor_st import DEFAULT_ENCODER, encode_t
 
 
 def load_emobank_embeddings(
-    path: str | Path, *, encoder: str = DEFAULT_ENCODER, limit: int | None = None
+    path: str | Path,
+    *,
+    encoder: str = DEFAULT_ENCODER,
+    limit: int | None = None,
+    include_d: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """读取 EmoBank CSV 并把文本编码成句向量，返回 (X=句向量, Y=(v,a)) float32 张量。
+    """读取 EmoBank CSV 并把文本编码成句向量，返回 (X=句向量, Y) float32 张量。
 
-    X ∈ R^dim（编码器维），Y ∈ [-1,1]^2。无数据行时（经 read_emobank_rows）抛 ValueError。
+    X ∈ R^dim（编码器维）。默认 include_d=False 时 Y ∈ [-1,1]^2（零回归）；
+    include_d=True 时 Y ∈ [-1,1]^3（含 D 维，见 read_emobank_rows 的 Note）。
+    无数据行时（经 read_emobank_rows）抛 ValueError。
     """
-    texts, ys = read_emobank_rows(path, limit=limit)
+    texts, ys = read_emobank_rows(path, limit=limit, include_d=include_d)
     x = encode_texts(texts, encoder=encoder)
     return x, torch.tensor(ys, dtype=torch.float32)

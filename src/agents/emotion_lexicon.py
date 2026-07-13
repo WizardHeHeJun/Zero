@@ -95,6 +95,7 @@ def motivational_system(
     arousal: float,
     *,
     distinguish_fear: bool = False,
+    coping_potential: float = 0.0,
 ) -> str:
     """VA → Panksepp 主导情绪系统标签（动机色彩）。
 
@@ -124,6 +125,14 @@ def motivational_system(
         True 时按 arousal 阈值（PANKSEPP_FEAR_AROUSAL_THRESHOLD）次级区分 fear/rage。
         ⚠ 议会 2026-07-02 判该阈值无可辩护文献依据，生产不建议开启。
 
+    coping_potential : float
+        情境控制感 ∈ [-1,1]（默认 0.0=零回归，(-v,+a) 一律→ rage，与旧行为逐字兼容）。
+        非零时在 (-v,+a) 象限用 control_appraisal 分离 rage/fear（议会 2026-07-13 P1-D）：
+        >COPING_RAGE_THRESHOLD → rage（高控制/趋近）；<COPING_FEAR_THRESHOLD → fear（低控制/回避）；
+        中间段 → rage（保守默认，与旧 (-v,+a)→rage 逐字兼容）。
+        由 AppraisalAgent 产出 coping_potential_state；经 language._appraisal_summary 读 state
+        透传至此（仅 appraisal_conditioning 开时经该摘要消费，与 distinguish_fear 同一路径）。
+
     env 贯通状态：已接 ZERO_PANKSEPP_DISTINGUISH_FEAR（默认关=零回归）。经
     chat_driver/runner → SessionConfig → AffectState.panksepp_distinguish_fear →
     language.py::_appraisal_summary 读 state 传入（仅 appraisal_conditioning 开时经该摘要可见）。
@@ -138,6 +147,17 @@ def motivational_system(
         return "seeking" if arousal >= 0.0 else "care"
     # (-v, +a) 象限
     if arousal >= 0.0:
+        # coping_potential 分离路径（议会 2026-07-13 P1-D）。阈值为函数体内局部变量：
+        # ⚖ 议会初值(Smith & Ellsworth 1985 control 维)，待 P1 观测校准，工程不私拍。
+        # P1 校准出新值后走 env 注入（仿 ignition_beta 新增 state 透传），届时改此为参数。
+        COPING_RAGE_THRESHOLD = 0.3
+        COPING_FEAR_THRESHOLD = -0.3
+        if coping_potential > COPING_RAGE_THRESHOLD:
+            return "rage"
+        if coping_potential < COPING_FEAR_THRESHOLD:
+            return "fear"
+        # 中间段 [-0.3, 0.3]：保守默认 rage（与旧 (-v,+a)→rage 逐字兼容）
+        # 旧 distinguish_fear 路径（tombstone 标注；coping_potential=0 时走此回退）
         if distinguish_fear and arousal >= PANKSEPP_FEAR_AROUSAL_THRESHOLD:
             return "fear"
         return "rage"

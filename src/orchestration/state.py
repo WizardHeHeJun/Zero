@@ -27,6 +27,10 @@ class Stimulus(BaseModel):
     standard_compliance: float = 0.0  # 与标准的契合（行为维度）
     attitude_appeal: float = 0.0  # 对象的喜好（吸引力维度）
     intensity: float = 1.0  # 事件显著度/强度
+    # 情境控制感评价维度（议会 2026-07-13 T2；Smith & Ellsworth 1985 control 维）。
+    # 独立于 goal_congruence——目标可实现但感觉无法掌控（如意外之喜）。
+    # +1=高控制/趋近（愤怒端），-1=低控制/回避（恐惧端）；默认 0=零回归。
+    control_appraisal: float = 0.0
 
 
 class AffectState(BaseModel):
@@ -72,6 +76,13 @@ class AffectState(BaseModel):
 
     # Mood（A.7 慢变心境：时间深度/滞后）—— 运行态，进 Checkpointer，不入图谱
     mood: tuple[float, float] | None = None
+
+    # coping_potential 独立标量流（议会 2026-07-13；运行态慢变量）—— 进 Checkpointer，绝不入图谱
+    # coping_potential_state: 情境控制感 ∈ [-1,1]（同 mood 先例：Checkpointer 持久，非图谱）
+    # +1=趋近/高控制/愤怒端，-1=回避/低控制/恐惧端；经 language._appraisal_summary 消费
+    # coping_potential_enabled=False 门控关 → 现路径逐字不变（零回归）
+    coping_potential_state: float = 0.0
+    coping_potential_enabled: bool = False  # 总门控（默认关=零回归）
 
     # HPA/皮质醇慢回路（P3 1-B；运行态慢变量）—— 进 Checkpointer，**绝不写入长期记忆图谱**
     # cortisol_state: 归一皮质醇水平 ∈ [0, 1]（同 mood 先例：Checkpointer 持久，非图谱）

@@ -2,6 +2,9 @@
 
 用法：python -m scripts.train_physiology --root data/wesad --epochs 300
 数据获取见 src/agents/datasets/wesad.py 模块文档。
+
+注意：训更大网络（--hidden/--num-layers 非默认值）需从头重训；
+原 Release 权重仅兼容默认形状（hidden=16, num_layers=1）。
 """
 
 from __future__ import annotations
@@ -26,11 +29,13 @@ def train(
     lr: float = 1e-3,
     window_seconds: int = 30,
     limit: int | None = None,
+    hidden: int = 16,
+    num_layers: int = 1,
     out: str = "artifacts/physiology_decoder.pt",
 ) -> float:
     """加载 WESAD、全批量训练 PhysiologyDecoder 并保存权重，返回最终 MSE。"""
     x, y = load_wesad(root, window_seconds=window_seconds, limit=limit)
-    model = PhysiologyDecoder()
+    model = PhysiologyDecoder(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
@@ -59,6 +64,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--window-seconds", type=int, default=30)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--hidden", type=int, default=16)
+    parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/physiology_decoder.pt")
     args = parser.parse_args()
     final = train(
@@ -66,6 +73,8 @@ def main() -> None:
         epochs=args.epochs,
         window_seconds=args.window_seconds,
         limit=args.limit,
+        hidden=args.hidden,
+        num_layers=args.num_layers,
         out=args.out,
     )
     print(f"done, final loss={final:.6f}")

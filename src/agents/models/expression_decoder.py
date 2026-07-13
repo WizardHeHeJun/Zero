@@ -66,16 +66,13 @@ def vector_to_channels(vec: list[float]) -> dict[str, Any]:
 class ExpressionDecoder(nn.Module):
     """(v,a) → 11 维通道向量的 MLP，输出经 sigmoid 落在 [0,1]。"""
 
-    def __init__(self, hidden: int = 32) -> None:
+    def __init__(self, hidden: int = 32, num_layers: int = 2) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(2, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, CHANNEL_DIM),
-            nn.Sigmoid(),
-        )
+        layers: list[nn.Module] = [nn.Linear(2, hidden), nn.ReLU()]
+        for _ in range(num_layers - 1):
+            layers += [nn.Linear(hidden, hidden), nn.ReLU()]
+        layers += [nn.Linear(hidden, CHANNEL_DIM), nn.Sigmoid()]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -91,9 +88,9 @@ class ExpressionDecoder(nn.Module):
         return channels
 
 
-def load_decoder(path: str, hidden: int = 32) -> ExpressionDecoder:
+def load_decoder(path: str, hidden: int = 32, num_layers: int = 2) -> ExpressionDecoder:
     """从权重文件加载已训练的解码器。"""
-    model = ExpressionDecoder(hidden=hidden)
+    model = ExpressionDecoder(hidden=hidden, num_layers=num_layers)
     model.load_state_dict(torch.load(path, map_location="cpu"))
     model.eval()
     return model

@@ -93,6 +93,11 @@ class SessionConfig(BaseModel):
     cortisol_impulse: float | None = None
     cortisol_theta_goal: float | None = None
     cortisol_theta_intensity: float | None = None
+    # ── coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）──
+    # coping_potential_enabled=False → AppraisalAgent 不产 coping_potential_state → 词典层零回归。
+    # coping_potential 只进 Checkpointer，绝不写入图谱（CS 红线）。
+    coping_potential_enabled: bool = False
+
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
     # 此处只存会话级固定系数（contagion/care/vicarious alpha + threshold）。
@@ -159,6 +164,8 @@ def _state_to_entry(stim_name: str, state: AffectState) -> dict[str, Any]:
         "expression": state.expression,
         # P3 1-B：皮质醇慢变量（供 chat_driver 消费 cortisol→ATTITUDE_RATE；仅标量观测，不入图谱）
         "cortisol_state": state.cortisol_state,
+        # coping_potential：情境控制感标量（可观测，供校准/观测；仅标量、不入图谱，同 cortisol）
+        "coping_potential_state": state.coping_potential_state,
     }
 
 
@@ -209,6 +216,8 @@ async def run(
     care_bias_alpha: float = 0.0,
     vicarious_alpha: float = 0.0,
     vicarious_threshold: float = 0.3,
+    # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+    coping_potential_enabled: bool = False,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -285,6 +294,8 @@ async def run(
                 "care_bias_alpha": care_bias_alpha,
                 "vicarious_alpha": vicarious_alpha,
                 "vicarious_threshold": vicarious_threshold,
+                # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+                "coping_potential_enabled": coping_potential_enabled,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -373,6 +384,8 @@ class ConversationSession:
         care_bias_alpha: float = 0.0,
         vicarious_alpha: float = 0.0,
         vicarious_threshold: float = 0.3,
+        # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+        coping_potential_enabled: bool = False,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -436,6 +449,8 @@ class ConversationSession:
                 care_bias_alpha=care_bias_alpha,
                 vicarious_alpha=vicarious_alpha,
                 vicarious_threshold=vicarious_threshold,
+                # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+                coping_potential_enabled=coping_potential_enabled,
             )
 
     @property

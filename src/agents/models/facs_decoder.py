@@ -16,14 +16,13 @@ FACS_KEYS = ["AU04", "AU06", "AU12", "AU15", "intensity"]
 class FacsDecoder(nn.Module):
     """(v,a) → 5 维 AU 强度的 MLP，sigmoid 输出 [0,1]。"""
 
-    def __init__(self, hidden: int = 16) -> None:
+    def __init__(self, hidden: int = 16, num_layers: int = 1) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(2, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, FACS_DIM),
-            nn.Sigmoid(),
-        )
+        layers: list[nn.Module] = [nn.Linear(2, hidden), nn.ReLU()]
+        for _ in range(num_layers - 1):
+            layers += [nn.Linear(hidden, hidden), nn.ReLU()]
+        layers += [nn.Linear(hidden, FACS_DIM), nn.Sigmoid()]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -36,9 +35,9 @@ class FacsDecoder(nn.Module):
         return dict(zip(FACS_KEYS, vec, strict=True))
 
 
-def load_facs_decoder(path: str, hidden: int = 16) -> FacsDecoder:
+def load_facs_decoder(path: str, hidden: int = 16, num_layers: int = 1) -> FacsDecoder:
     """从权重文件加载已训练的 FACS 解码器。"""
-    model = FacsDecoder(hidden=hidden)
+    model = FacsDecoder(hidden=hidden, num_layers=num_layers)
     model.load_state_dict(torch.load(path, map_location="cpu"))
     model.eval()
     return model

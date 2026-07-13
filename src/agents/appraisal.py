@@ -166,6 +166,15 @@ class AppraisalAgent:
             "prior_sigma": prior_sigma,
             "reward": reward,
         }
+
+        # ── coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）──
+        # 来源独立于 occ_prior VA 路径；绝不读 goal_congruence（T2 裁决：来源须正交）。
+        # enabled=False（默认）→ 不改任何字段，逐字零回归。
+        coping_updates: dict = {}
+        if state.coping_potential_enabled and stim is not None:
+            cp = clamp(stim.control_appraisal, -1.0, 1.0)
+            coping_updates = {"coping_potential_state": cp}
+
         return {
             "prior_mu": prior_mu,
             "prior_sigma": prior_sigma,
@@ -173,4 +182,5 @@ class AppraisalAgent:
             "appraisal": appraisal,
             "trace": [entry],
             **cortisol_updates,
+            **coping_updates,
         }

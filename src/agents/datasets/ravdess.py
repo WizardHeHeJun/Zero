@@ -32,6 +32,11 @@ EMOTION_CODE_TO_VA: dict[str, tuple[float, float]] = {
 }
 
 
+# TODO(D-dim): RAVDESS 无逐样本连续 D（Dominance）标注。
+# 当前仅用文件名离散情绪码映射 (v,a)；若要扩展 D 维监督，需数据采集 + 研究决策：
+#   - 离散情绪码 → D 的映射须经议会操作化对齐（见议会 notes 2026-07-13 #2）；
+#   - RAVDESS 本身未提供连续效价/唤醒/优势度评分，扩 D 属数据采集阻塞；
+#   - 在此之前不要把 D 列加入 load_ravdess 的输出张量。
 def parse_emotion_code(filename: str) -> str | None:
     """从 RAVDESS 文件名解析情绪码；非法格式返回 None。"""
     stem = Path(filename).stem

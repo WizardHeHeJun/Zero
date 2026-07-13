@@ -27,15 +27,14 @@ def hash_features(text: str, dim: int = TEXT_FEATURE_DIM) -> list[float]:
 class TextAffectRegressor(nn.Module):
     """哈希词袋 → (valence, arousal) 的 MLP，tanh 输出落在 [-1, 1]。"""
 
-    def __init__(self, dim: int = TEXT_FEATURE_DIM, hidden: int = 64) -> None:
+    def __init__(self, dim: int = TEXT_FEATURE_DIM, hidden: int = 64, num_layers: int = 1) -> None:
         super().__init__()
         self.dim = dim
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, 2),
-            nn.Tanh(),
-        )
+        layers: list[nn.Module] = [nn.Linear(dim, hidden), nn.ReLU()]
+        for _ in range(num_layers - 1):
+            layers += [nn.Linear(hidden, hidden), nn.ReLU()]
+        layers += [nn.Linear(hidden, 2), nn.Tanh()]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -50,10 +49,10 @@ class TextAffectRegressor(nn.Module):
 
 
 def load_text_affect_regressor(
-    path: str, dim: int = TEXT_FEATURE_DIM, hidden: int = 64
+    path: str, dim: int = TEXT_FEATURE_DIM, hidden: int = 64, num_layers: int = 1
 ) -> TextAffectRegressor:
     """从权重文件加载已训练的文本情感回归器。"""
-    model = TextAffectRegressor(dim=dim, hidden=hidden)
+    model = TextAffectRegressor(dim=dim, hidden=hidden, num_layers=num_layers)
     model.load_state_dict(torch.load(path, map_location="cpu"))
     model.eval()
     return model

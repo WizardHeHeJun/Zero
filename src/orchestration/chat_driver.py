@@ -643,6 +643,14 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     care_bias_alpha = float(os.getenv("ZERO_CARE_BIAS_ALPHA", "0"))
     vicarious_alpha = float(os.getenv("ZERO_VICARIOUS_ALPHA", "0"))
     vicarious_threshold = float(os.getenv("ZERO_VICARIOUS_THRESHOLD", "0.3"))
+    # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）。
+    # step() 构造 Stimulus 不传 control_appraisal（默认 0），ChatDriver 不持有该旋钮。
+    coping_potential_enabled = os.getenv("ZERO_COPING_POTENTIAL_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
     # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
     # cortisol 动力学常数：env → SessionConfig → state → AppraisalAgent（None→回退常量=零回归）。
@@ -691,6 +699,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         care_bias_alpha=care_bias_alpha,
         vicarious_alpha=vicarious_alpha,
         vicarious_threshold=vicarious_threshold,
+        # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）。
+        coping_potential_enabled=coping_potential_enabled,
     )
     return ChatDriver(
         thread=resolved_thread,
