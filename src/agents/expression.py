@@ -81,6 +81,14 @@ class ExpressionAgent:
             "spontaneous": spontaneous,  # 非随意通路（直连 AffectCore）
             "voluntary": voluntary,  # 随意通路（经 Regulation）
         }
+        # prosody 量纲标记 hoist 到 expression 顶层（zero-link Q1 拍板 2026-07-14）：
+        # 两头（spontaneous/voluntary）共用同一**无状态** decoder → 量纲一致，
+        # 故从 spontaneous 单点读即代表两头。⚠ 若 decoder 将来引入 per-call 有状态
+        # 路径（dropout/温度采样）致两头量纲分叉，须重审（见 test_prosody_scale_tag
+        # 两头不变式断言）。供 MCP mapper 单点读 expression["prosody_scale"]；未标注
+        # 量纲的注入 decoder（如 mock）不挂键 = additive 零回归。
+        if "prosody_scale" in spontaneous:
+            expression["prosody_scale"] = spontaneous["prosody_scale"]
         # 语言层开启时，把生成的语言内容并入最终表现（情感↔语言相互判断的产物）
         if state.language_text is not None:
             expression["language"] = {

@@ -114,6 +114,9 @@ class CompositeChannelDecoder:
         )  # 解析占位提供全部 4 通道
         if self.prosody_model is not None:
             channels["prosody"] = self.prosody_model.predict_prosody(valence, arousal)
+            # 专用 ProsodyDecoder 出归一 [0,1]（sigmoid）→ 覆盖 decode_channels 占位的 "ratio"
+            # 量纲标记为 "normalized"（zero-link Q1 拍板 2026-07-14·canonical 目标口径）。
+            channels["prosody_scale"] = "normalized"
         if self.physiology_model is not None:
             channels["physiology"] = self.physiology_model.predict_physiology(valence, arousal)
         if self.facs_model is not None:

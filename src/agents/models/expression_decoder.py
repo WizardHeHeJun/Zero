@@ -60,6 +60,10 @@ def vector_to_channels(vec: list[float]) -> dict[str, Any]:
             "pitch": 1.0 + 0.3 * (2.0 * vec[9] - 1.0),
             "energy": vec[10],
         },
+        # 整向量通路把内部 [0,1] 反归一化回**倍率口径**（见上 speech_rate/pitch 的 1.0±… 映射）
+        # → "ratio"（zero-link Q1 拍板 2026-07-14）。与解析占位同量纲；仅专用 ProsodyDecoder
+        # 出 normalized。兄弟键，不入 prosody 子 dict（保通道纯 3 值·零回归）。
+        "prosody_scale": "ratio",
     }
 
 
@@ -91,6 +95,8 @@ class ExpressionDecoder(nn.Module):
 def load_decoder(path: str, hidden: int = 32, num_layers: int = 2) -> ExpressionDecoder:
     """从权重文件加载已训练的解码器。"""
     model = ExpressionDecoder(hidden=hidden, num_layers=num_layers)
-    model.load_state_dict(torch.load(path, map_location="cpu"))
+    # weights_only=True：只反序列化张量/state_dict，不执行任意 pickle（对齐 load_facs_decoder；
+    # PyTorch ≥2.4 将默认此值）。加载的是 state_dict，安全无副作用。
+    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
     model.eval()
     return model

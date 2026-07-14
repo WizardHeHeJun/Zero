@@ -470,6 +470,11 @@ def decode_channels(
         "text_label": label,
         "physiology": physiology,
         "prosody": prosody,
+        # prosody 量纲标记（zero-link Q1 拍板 2026-07-14）：解析占位出**倍率口径**——
+        # speech_rate/pitch 以 1.0 为基线、energy∈[0,1] → "ratio"。canonical 目标口径是
+        # normalized [0,1]（专用 ProsodyDecoder 达标）；MCP 情感 TTS mapper 按此 tag 分支消费，
+        # 收窄校验。兄弟键（非塞进 prosody 子 dict）——保 prosody 通道纯 3 值、零回归。
+        "prosody_scale": "ratio",
     }
 
 

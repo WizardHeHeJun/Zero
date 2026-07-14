@@ -52,6 +52,13 @@ def test_affect_to_vector_matches_analytic_physiology_prosody() -> None:
             assert model_ch[channel][key] == pytest.approx(value, abs=1e-6), (channel, key)
 
 
+def test_vector_path_prosody_scale_ratio() -> None:
+    # zero-link Q1（2026-07-14）：整向量通路把内部 [0,1] 反归一化回倍率口径 → 量纲标记 "ratio"
+    # （与专用 ProsodyDecoder 的 normalized 相区分）。
+    assert vector_to_channels(affect_to_vector(0.6, 0.5))["prosody_scale"] == "ratio"
+    assert ExpressionDecoder().predict_channels(0.6, 0.5)["prosody_scale"] == "ratio"
+
+
 def test_expression_agent_injected_decoder_preserves_contract() -> None:
     agent = ExpressionAgent(decoder=ExpressionDecoder())  # 未训练也应满足契约
     state = AffectState(affect_sample=(0.8, 0.7))
