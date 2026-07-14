@@ -50,6 +50,13 @@ steer = [
     "transformers>=5",
     "numpy>=2",
 ]
+# 数据集预处理（外部人脸数据集 → labels_ext.csv 训练输入）：读 parquet(HuggingFace 数据集)抽图。
+# 仅跑 scripts/build_emonet_dataset 等数据合成脚本时需；运行态/默认/训练循环不依赖。
+data = [
+    "pyarrow>=15",
+    "pillow>=10",
+    "huggingface-hub>=0.20",
+]
 
 [dependency-groups]
 dev = [

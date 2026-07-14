@@ -88,6 +88,12 @@ class AffectState(BaseModel):
     # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
     # 经 chat_driver 读 ZERO_FACS_EXTENDED → SessionConfig → to_state_flags 贯通。
     facs_extended: bool = False  # 默认关=零回归
+    # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。
+    # 自发头(push·锥体外路·皮层下驱动)全量传 coping；随意头(pull·锥体束意志调控)传
+    # coping×voluntary_coping_leak（意志可部分压制 coping-driven AU，Rinn 1984）。
+    # 默认 1.0 = 两头等值 = 逐字旧行为（零回归）；推荐 0.3；经 ZERO_VOLUNTARY_COPING_LEAK 注入。
+    # 仅在 facs_extended=True 时对 facs_au 生效（legacy 模式 coping 不参与→自动零回归）。
+    voluntary_coping_leak: float = Field(default=1.0, ge=0.0, le=1.0)
 
     # HPA/皮质醇慢回路（P3 1-B；运行态慢变量）—— 进 Checkpointer，**绝不写入长期记忆图谱**
     # cortisol_state: 归一皮质醇水平 ∈ [0, 1]（同 mood 先例：Checkpointer 持久，非图谱）

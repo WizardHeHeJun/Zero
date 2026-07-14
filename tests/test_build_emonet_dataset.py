@@ -1,0 +1,119 @@
+"""scripts/build_emonet_dataset.py 单测（emonet parquet → 均衡子集图 + VA 表）。
+
+需 pyarrow/PIL（.[data] extra）；缺则整文件跳过。合成微型 parquet（含 emonet 的
+emotion ClassLabel HF metadata + path struct 图 bytes）驱动，无需真数据集。
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("pyarrow")
+pytest.importorskip("PIL")
+
+import io  # noqa: E402
+
+import pyarrow as pa  # noqa: E402
+import pyarrow.parquet as pq  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from scripts.build_emonet_dataset import (  # noqa: E402
+    EMONET_VA,
+    _short_prefix,
+    build_emonet_dataset,
+)
+
+
+def _tiny_jpeg() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (128, 64, 32)).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def _make_emonet_parquet(path: Path, emotions_present: list[str], per: int) -> None:
+    """合成 emonet 结构 parquet：path struct{bytes,path} + emotion int + HF ClassLabel 元数据。"""
+    names = sorted(EMONET_VA)  # 全 40 类作 ClassLabel 名（与真数据集同构）
+    jpg = _tiny_jpeg()
+    paths, emos = [], []
+    idx = 0
+    for e in emotions_present:
+        for _ in range(per):
+            paths.append({"bytes": jpg, "path": f"{idx:05d}.jpg"})
+            emos.append(names.index(e))
+            idx += 1
+    path_type = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
+    tbl = pa.table({"path": pa.array(paths, type=path_type), "emotion": pa.array(emos, pa.int64())})
+    hf_meta = {
+        "info": {
+            "features": {
+                "emotion": {"_type": "ClassLabel", "names": names},
+                "path": {"_type": "Image"},
+            }
+        }
+    }
+    tbl = tbl.replace_schema_metadata({b"huggingface": json.dumps(hf_meta).encode()})
+    pq.write_table(tbl, path)
+
+
+def test_emonet_va_map_valid() -> None:
+    """EMONET_VA：40 类、值均 ∈[-1,1]（近似 circumplex 坐标健全性）。"""
+    assert len(EMONET_VA) == 40
+    for emo, (v, a) in EMONET_VA.items():
+        assert -1.0 <= v <= 1.0, f"{emo} valence 越界：{v}"
+        assert -1.0 <= a <= 1.0, f"{emo} arousal 越界：{a}"
+    # 愤怒与恐惧有意同 (v,a)（分野属 coping 维、不在 VA 上）
+    assert EMONET_VA["Anger"] == EMONET_VA["Fear"]
+
+
+def test_short_prefix() -> None:
+    assert _short_prefix("Amusement") == "Amuse"[:6] or _short_prefix("Amusement") == "Amusem"
+    assert _short_prefix("Astonishment/Surprise") == "Astoni"  # 取首词截 6
+    assert " " not in _short_prefix("Sexual Lust")
+    assert "&" not in _short_prefix("Jealousy & Envy")
+
+
+def test_build_balanced_subset(tmp_path: Path) -> None:
+    """两类各 5 张、n_per=3 → 抽 6 张（每类 3），VA 表列/值正确、图落盘。"""
+    pqdir = tmp_path / "pq"
+    pqdir.mkdir()
+    _make_emonet_parquet(pqdir / "train-00000-of-00001.parquet", ["Amusement", "Fear"], per=5)
+
+    img_out = tmp_path / "images"
+    va_out = tmp_path / "va.csv"
+    n = build_emonet_dataset(pqdir, img_out, va_out, n_per=3)
+
+    assert n == 6, "两类各 3 张（n_per 均衡截断）"
+    assert len(list(img_out.glob("*.jpg"))) == 6
+
+    with open(va_out, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert set(rows[0].keys()) == {"image", "valence", "arousal"}
+    by_emo: dict[tuple[str, str], int] = {}
+    for r in rows:
+        by_emo[(r["valence"], r["arousal"])] = by_emo.get((r["valence"], r["arousal"]), 0) + 1
+    # Amusement (0.8,0.4) 与 Fear (-0.6,0.6) 各 3
+    assert by_emo[("0.8", "0.4")] == 3
+    assert by_emo[("-0.6", "0.6")] == 3
+
+
+def test_clean_wipes_prior_batch(tmp_path: Path) -> None:
+    """clean=True（默认）先清空 img_out，避免混入旧批。"""
+    pqdir = tmp_path / "pq"
+    pqdir.mkdir()
+    _make_emonet_parquet(pqdir / "train-00000-of-00001.parquet", ["Anger"], per=4)
+    img_out = tmp_path / "images"
+    img_out.mkdir()
+    (img_out / "stale.jpg").write_bytes(b"old")
+
+    build_emonet_dataset(pqdir, img_out, tmp_path / "va.csv", n_per=2)
+    assert not (img_out / "stale.jpg").exists(), "旧批应被清空"
+    assert len(list(img_out.glob("*.jpg"))) == 2
+
+
+def test_missing_parquet_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        build_emonet_dataset(tmp_path, tmp_path / "img", tmp_path / "va.csv")

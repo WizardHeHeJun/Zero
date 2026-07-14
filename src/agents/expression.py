@@ -51,13 +51,20 @@ class ExpressionAgent:
         # 占位路径：透传 coping_potential_state + facs_extended（防空悬，W1）
         coping = state.coping_potential_state
         facs_ext = state.facs_extended
+        # 自发头（push·锥体外路·皮层下驱动）：全量传 coping，coping-driven AU 原始强度泄漏。
         spontaneous = self._decode(
             state.affect_sample, coping_potential=coping, facs_extended=facs_ext
         )
         voluntary_source = (
             state.regulated_affect if state.regulated_affect is not None else state.affect_sample
         )
-        voluntary = self._decode(voluntary_source, coping_potential=coping, facs_extended=facs_ext)
+        # 随意头（pull·锥体束意志调控）差异化（议会 C1 设计门 2026-07-14）：coping-driven AU
+        # 的泄漏按 voluntary_coping_leak∈[0,1] 衰减（意志可部分压制但不归零，Rinn 1984）。
+        # 默认 leak=1.0 → voluntary_coping==coping → 两头等值 = 逐字旧行为（零回归）。
+        voluntary_coping = coping * state.voluntary_coping_leak
+        voluntary = self._decode(
+            voluntary_source, coping_potential=voluntary_coping, facs_extended=facs_ext
+        )
         expression: dict[str, Any] = {
             "valence_arousal": state.affect_sample,
             "spontaneous": spontaneous,  # 非随意通路（直连 AffectCore）

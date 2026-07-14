@@ -11,6 +11,11 @@ from typing import Any, Protocol
 
 from src.agents.affect_math import decode_channels, text_label
 
+# coping 判别性 AU（议会定方向）：愤怒 AU23、恐惧 AU01/02/20。真 FacsDecoder 的
+# predict_facs(v,a) 不吃 coping、学不到这四个 AU 的愤怒/恐惧分野（同 (v,a) 同点），
+# 故注入真模型时这四个 AU 由解析占位的 coping 增量承担（C2 residual 叠加）。
+_COPING_DRIVEN_AUS = ("AU23", "AU01", "AU02", "AU20")
+
 
 class ProsodyModel(Protocol):
     def predict_prosody(self, valence: float, arousal: float) -> dict[str, float]: ...
@@ -34,6 +39,15 @@ class CompositeChannelDecoder:
         k_arousal: ⚖ AU05/07 arousal 增益（默认 1.5=现值，零回归）。
         k_coping:  ⚖ 区分性 AU coping 增益（默认 1.2=现值，零回归）。
         方向由议会定，不可改符号/单调；仅幅度可调（via ZERO_FACS_K_AROUSAL/K_COPING env）。
+
+    C2 residual 叠加（议会 C2 设计门 2026-07-14）：注入真 FacsModel 且 facs_extended 时，
+    真模型出通用 AU 基准、coping 判别 AU（AU23/01/02/20）按 residual_alpha 与占位 coping 增量
+    混合（真模型不吃 coping、学不到愤怒/恐惧分野）。默认 α=1.0 → 判别 AU 纯占位保分野。
+    未注入 facs_model 时此路径不触发 = 零回归。（via ZERO_FACS_RESIDUAL_ALPHA env）
+
+    ⚠ 调用方契约：注入的 `facs_model` 键集须与 `facs_extended` 对齐——`facs_extended=True` 注入
+    `FacsDecoder(extended=True)`（11 键）、`facs_extended=False` 注入 5 键旧模型。否则 legacy
+    路径会挂上 11 键 base，破坏下游对旧 5-AU 布局的假设（W1）。
     """
 
     def __init__(
@@ -46,6 +60,7 @@ class CompositeChannelDecoder:
         facs_extended: bool = False,
         k_arousal: float = 1.5,
         k_coping: float = 1.2,
+        residual_alpha: float = 1.0,
     ) -> None:
         self.prosody_model = prosody_model
         self.physiology_model = physiology_model
@@ -54,6 +69,16 @@ class CompositeChannelDecoder:
         self.facs_extended = facs_extended
         self.k_arousal = k_arousal
         self.k_coping = k_coping
+        # residual_alpha：C2 residual 叠加系数（议会 C2 设计门 2026-07-14）∈[0,1]。
+        # 注入真 FacsModel 且 facs_extended 时，coping 判别 AU = base*(1-α)+placeholder_coping*α。
+        # 默认 1.0 → 判别 AU 纯占位（保 coping 分野）、其余 AU 用真模型基准；0 → 全用真模型
+        # （coping 分野丢，退化为旧 W2 覆盖）。方向议会定、幅度工程可动。
+        # env: ZERO_FACS_RESIDUAL_ALPHA。越界会让混合外推、AU 越 [0,1] → fail-fast。
+        if not 0.0 <= residual_alpha <= 1.0:
+            raise ValueError(
+                f"residual_alpha 须 ∈[0,1]（避混合外推使 AU 越界），实为 {residual_alpha}"
+            )
+        self.residual_alpha = residual_alpha
 
     def predict_channels(self, valence: float, arousal: float) -> dict[str, Any]:
         channels = decode_channels(
@@ -68,8 +93,18 @@ class CompositeChannelDecoder:
         if self.physiology_model is not None:
             channels["physiology"] = self.physiology_model.predict_physiology(valence, arousal)
         if self.facs_model is not None:
-            # W2 TODO：真 FacsDecoder 路径当前不接 coping，待 facs_decoder_ext.pt 就绪时
-            # 为 FacsModel 协议加 coping_potential 参（breaking·下一轮工程门）。
-            channels["facs_au"] = self.facs_model.predict_facs(valence, arousal)
+            # C2 residual 叠加（议会 C2 设计门 2026-07-14；替代旧 W2 TODO 的整通道覆盖）：
+            # 真模型出通用 AU 基准（喜/悲/惊…从真脸学）；coping 判别 AU（AU23/01/02/20）——
+            # 真模型 predict_facs(v,a) 不吃 coping、学不到愤怒/恐惧分野——按 residual_alpha 与
+            # 解析占位的 coping 增量混合（占位值在上面 channels["facs_au"] 里，已带 coping 算出）。
+            # CS 席：协议不变（predict_facs(v,a) 不加 coping 参，避两层 breaking）。
+            base = self.facs_model.predict_facs(valence, arousal)
+            if self.facs_extended:
+                placeholder = channels["facs_au"]
+                alpha = self.residual_alpha
+                for au in _COPING_DRIVEN_AUS:
+                    if au in base and au in placeholder:
+                        base[au] = base[au] * (1.0 - alpha) + placeholder[au] * alpha
+            channels["facs_au"] = base
         channels["text_label"] = text_label(valence, arousal)
         return channels

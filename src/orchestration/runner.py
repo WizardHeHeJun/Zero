@@ -102,6 +102,10 @@ class SessionConfig(BaseModel):
     # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
     # 仅占位路径（decoder=None）生效；注入 decoder 的 per-turn coping 待协议扩展·下一轮工程门。
     facs_extended: bool = False
+    # ── voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]──
+    # 自发头全量传 coping、随意头传 coping×leak（意志部分压制 coping-driven AU）。
+    # 默认 1.0=两头等值=零回归；推荐 0.3。仅 facs_extended=True 时对 facs_au 生效。
+    voluntary_coping_leak: float = Field(default=1.0, ge=0.0, le=1.0)
 
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
@@ -225,6 +229,8 @@ async def run(
     coping_potential_enabled: bool = False,
     # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
     facs_extended: bool = False,
+    # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
+    voluntary_coping_leak: float = 1.0,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -305,6 +311,8 @@ async def run(
                 "coping_potential_enabled": coping_potential_enabled,
                 # facs_extended：AU 扩展集合门控（默认关=零回归）
                 "facs_extended": facs_extended,
+                # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
+                "voluntary_coping_leak": voluntary_coping_leak,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -397,6 +405,8 @@ class ConversationSession:
         coping_potential_enabled: bool = False,
         # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
         facs_extended: bool = False,
+        # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
+        voluntary_coping_leak: float = 1.0,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -464,6 +474,8 @@ class ConversationSession:
                 coping_potential_enabled=coping_potential_enabled,
                 # facs_extended：AU 扩展集合门控（默认关=零回归）
                 facs_extended=facs_extended,
+                # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
+                voluntary_coping_leak=voluntary_coping_leak,
             )
 
     @property

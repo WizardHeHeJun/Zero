@@ -655,6 +655,9 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # True → ExpressionAgent 占位路径用 coping_potential_state 驱动 11-AU 扩展集合。
     # 仅占位路径（decoder=None）生效；注入 decoder 的 per-turn coping 待下一轮工程门。
     facs_extended = os.getenv("ZERO_FACS_EXTENDED", "").lower() in ("1", "true", "yes", "on")
+    # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。默认 1.0=两头
+    # 等值=零回归；推荐 0.3（随意头仅保留自发头 30% coping-driven 强度）。仅 facs_extended 时生效。
+    voluntary_coping_leak = float(os.getenv("ZERO_VOLUNTARY_COPING_LEAK", "1.0"))
     # FACS 映射幅度系数 k_arousal/k_coping：⚖ 方向议会定、幅度工程可动——经 decode_channels /
     # CompositeChannelDecoder 参数注入（工程可动已满足）；建模系数（同 emotion_lexicon 阈值先例），
     # chat 占位路径用函数内置默认（1.5/1.2），不走 env 全链贯通（避免为系数拉 state 字段）。
@@ -710,6 +713,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         coping_potential_enabled=coping_potential_enabled,
         # facs_extended：AU 扩展集合门控（默认关=零回归）。
         facs_extended=facs_extended,
+        # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。
+        voluntary_coping_leak=voluntary_coping_leak,
     )
     return ChatDriver(
         thread=resolved_thread,

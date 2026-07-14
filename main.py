@@ -125,7 +125,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     # 统一日志：每次启动落一份新日志文件（入口无关，实现见 src/observability）。
-    # 本入口零核心逻辑：默认对话转发给 chat_driver；--trace/--workspace/--llm 转发给 scripts.cli_modes。
+    # 本入口零核心逻辑：默认对话转发给 chat_driver；
+    # --trace/--workspace/--llm 转发给 scripts.cli_modes。
     setup_logging()
     if args.trace or args.workspace or args.llm:
         from scripts.cli_modes import run_core, run_llm, run_workspace
