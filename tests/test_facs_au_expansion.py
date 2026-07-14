@@ -2,7 +2,8 @@
 
 覆盖：
   ① 默认 facs_extended=False 时 decode_channels facs_au 键集/值与旧逐字一致（零回归）。
-  ② facs_extended=True 时 facs_au 含 11 AU（FACS_KEYS_EXT 完整键集）。
+  ② facs_extended=True 时 facs_au 含 13 AU（FACS_KEYS_EXT 完整键集；任务 D 加 AU17/AU26）。
+  ⑦ 任务 D：AU17（−valence 主驱）/AU26（arousal 主驱+valence 压制）方向 + 不进 coping 判别。
   ③ 端到端经 CompositeChannelDecoder 注入（防 W1 空悬）：
      (v=-0.6, a=0.6, coping=+0.5) → AU23 高、AU01/02/20 低；
      coping=-0.5 → AU01/02/20 高、AU23 低。
@@ -97,11 +98,12 @@ class TestDefaultLegacyBehavior:
 
 
 class TestExtendedKeySet:
-    """facs_extended=True 时输出完整 11-AU 键集。
+    """facs_extended=True 时输出完整 13-AU 键集。
 
     扩展分支与旧分支一样采用互斥正/负效价逻辑——旧向通道（AU12/AU06 vs AU15/AU04）
-    在单次调用中仍互斥。但区分性 AU（AU01/02/05/07/20/23）和 intensity 在各象限均输出。
-    因此"完整 11 键"需正效价 + 负效价两个测试点合并才能覆盖全集；单次调用只保证
+    在单次调用中仍互斥。但共有 AU（AU05/07/17/26）、区分性 AU（AU01/02/20/23）和 intensity
+    在各象限均输出。
+    因此"完整 13 键"需正效价 + 负效价两个测试点合并才能覆盖全集；单次调用只保证
     "键集 ⊆ FACS_KEYS_EXT 且包含所有非互斥键"。
     """
 
@@ -115,17 +117,19 @@ class TestExtendedKeySet:
         )
 
     def test_negative_valence_contains_discriminative_and_shared_aus(self) -> None:
-        """负效价象限（v<0, a≥0）：含所有区分性 AU + 共有 AU + intensity（象限内全 9 键）。"""
+        """负效价象限（v<0, a≥0）：含区分性 AU + 共有 AU + intensity（象限内 11 键）。"""
         result = decode_channels((-0.5, 0.5), coping_potential=0.5, facs_extended=True)["facs_au"]
         expected_present = {
             "AU15",
             "AU04",
             "AU05",
             "AU07",
+            "AU17",  # 任务 D：−valence 主驱·无象限守卫 → 负效价点也产出
             "AU23",
             "AU01",
             "AU02",
             "AU20",
+            "AU26",  # 任务 D：arousal 主驱·无象限守卫 → 高唤醒点也产出
             "intensity",
         }
         for key in expected_present:
@@ -529,8 +533,8 @@ class TestExtTrainingPipelineTurnkey:
         model = FacsDecoder(extended=True)
         model.load_state_dict(torch.load(out, map_location="cpu", weights_only=True))
         facs = model.predict_facs(-0.6, 0.6)
-        assert set(facs) == set(FACS_KEYS_EXT), f"predict_facs 应输出 11 键，实为 {set(facs)}"
-        assert len(facs) == len(FACS_KEYS_EXT) == 11
+        assert set(facs) == set(FACS_KEYS_EXT), f"predict_facs 应输出 13 键，实为 {set(facs)}"
+        assert len(facs) == len(FACS_KEYS_EXT) == 13
 
     def test_ext_weights_isolated_from_legacy_5au(self, tmp_path: Path) -> None:
         """扩展权重与旧 5-AU 权重形状不同 → state_dict 不可互载（隔离守卫）。"""
@@ -542,7 +546,7 @@ class TestExtTrainingPipelineTurnkey:
         out = tmp_path / "facs_decoder_ext.pt"
         train(str(csv_path), extended=True, epochs=3, out=str(out))
 
-        # 用旧 5 维模型载 11 维权重应失败（形状不匹配 → 破坏 expression_decoder.pt 的守卫）。
+        # 用旧 5 维模型载 13 维权重应失败（形状不匹配 → 破坏 expression_decoder.pt 的守卫）。
         # match= 限定「size mismatch」，避免任意 RuntimeError（IO/读取失败等）假绿。
         legacy = FacsDecoder(extended=False)
         with pytest.raises(RuntimeError, match=r"size mismatch"):
@@ -553,7 +557,7 @@ class TestExtTrainingPipelineTurnkey:
 
 
 class _MockFacsModel:
-    """假 FacsModel：所有 11 AU 返回常数 base_val（模拟真模型通用基准），便于隔离 residual 混合。
+    """假 FacsModel：所有 13 AU 返回常数 base_val（模拟真模型通用基准），便于隔离 residual 混合。
 
     真模型 predict_facs(v,a) 不吃 coping → 对同一 (v,a) 恒定输出；用常数正好凸显「判别 AU 被
     占位 coping 增量覆盖」与「非判别 AU 保持真模型 base」的分野。
@@ -706,3 +710,55 @@ class TestLiveWiringCopingAware:
         assert out["facs_au"] == {"marker": 1.0}, (
             "旧 decoder 走 predict_channels(v,a)、不受 coping 影响"
         )
+
+
+# ─── ⑪ 任务 D：AU17/AU26 方向 + 不进 coping 判别（议会 D 设计门 2026-07-14）──────
+
+
+class TestAU17AU26Directions:
+    """任务 D（议会 D 设计门）：AU17（−valence 主驱·联动 AU15）/ AU26（arousal 主驱·valence 压制）
+    均为通用 AU——无象限守卫、不随 coping 符号分野（守「不进 coping 判别」，强行归入=概念失真）。
+    """
+
+    @staticmethod
+    def _au(v: float, a: float, coping: float = 0.0) -> dict[str, float]:
+        return decode_channels((v, a), coping_potential=coping, facs_extended=True)["facs_au"]
+
+    def test_au17_monotone_in_negative_valence(self) -> None:
+        """AU17 随 −valence 单调升（负效价越强、颏肌越紧）。"""
+        assert self._au(-0.8, 0.3)["AU17"] > self._au(-0.2, 0.3)["AU17"]
+
+    def test_au17_arousal_light_modulation(self) -> None:
+        """AU17 受 arousal 轻调制（k_a>0，同 −valence 下高唤醒略升）。"""
+        assert self._au(-0.5, 0.8)["AU17"] > self._au(-0.5, 0.2)["AU17"]
+
+    def test_au17_valence_dominates_arousal(self) -> None:
+        """AU17 −valence 主驱 ≫ arousal 调制（k_v ≫ k_a）：纯负效价贡献 > 纯高唤醒贡献。"""
+        assert self._au(-0.6, 0.0)["AU17"] > self._au(0.0, 0.6)["AU17"]
+
+    def test_au26_monotone_in_arousal(self) -> None:
+        """AU26 随 arousal 主驱单调升（高唤醒下颌落）。"""
+        assert self._au(-0.3, 0.5)["AU26"] > self._au(-0.3, 0.2)["AU26"]
+
+    def test_au26_positive_valence_suppressed(self) -> None:
+        """AU26 正 valence 轻压制：同 arousal 下正效价点 AU26 更低（a=0.3 避 cap 饱和）。"""
+        assert self._au(0.8, 0.3)["AU26"] < self._au(0.0, 0.3)["AU26"]
+
+    def test_au26_capped(self) -> None:
+        """AU26 ≤ cap（跨文化保守上限 0.6）：即便极高唤醒也不超 cap。"""
+        assert self._au(-0.9, 1.0)["AU26"] <= 0.6 + 1e-9
+
+    def test_au17_au26_invariant_to_coping_sign(self) -> None:
+        """AU17/AU26 不随 coping 符号变（通用 AU·不进 coping 判别）；对照 AU23 随 coping 分野。"""
+        pos = self._au(-0.5, 0.5, coping=0.6)
+        neg = self._au(-0.5, 0.5, coping=-0.6)
+        assert pos["AU17"] == pytest.approx(neg["AU17"]), "AU17 不应随 coping 符号变"
+        assert pos["AU26"] == pytest.approx(neg["AU26"]), "AU26 不应随 coping 符号变"
+        assert pos["AU23"] != pytest.approx(neg["AU23"]), "对照：AU23 应随 coping 符号分野"
+
+    def test_au17_au26_no_quadrant_guard(self) -> None:
+        """AU17/AU26 无象限守卫：正效价高唤醒点（区分性 AU 象限外）也产键、AU26>0。"""
+        fa = self._au(0.6, 0.6)  # 正效价高唤醒（区分性 AU 象限外）
+        assert "AU17" in fa and "AU26" in fa, "AU17/AU26 无象限守卫、任何点都产键"
+        assert fa["AU26"] > 0.0, "正效价高唤醒 AU26 应>0（arousal 驱动、不受象限守卫）"
+        assert fa["AU23"] == 0.0, "对照：区分性 AU23 象限外归零"

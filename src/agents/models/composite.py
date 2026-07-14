@@ -47,8 +47,8 @@ class CompositeChannelDecoder:
 
     ⚠ 调用方契约：
     - 注入的 `facs_model` 键集须与 `facs_extended` 对齐——`facs_extended=True` 注入
-      `FacsDecoder(extended=True)`（11 键）、`facs_extended=False` 注入 5 键旧模型。否则 legacy
-      路径会挂上 11 键 base，破坏下游对旧 5-AU 布局的假设。
+      `FacsDecoder(extended=True)`（13 键，任务 D 起含 AU17/AU26）、`facs_extended=False` 注入
+      5 键旧模型。否则 legacy 路径会挂上 13 键 base，破坏下游对旧 5-AU 布局的假设。
     - 构造时 `facs_extended` 须与运行时 `state.facs_extended` **同源**（本项目从同一 `.env` →
       SessionConfig → state 流入）。否则 `predict_channels(v,a)`（用构造固定值）与经
       `predict_channels_coping`（用当轮 state 值）两路径会静默分叉。

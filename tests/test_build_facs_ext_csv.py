@@ -78,8 +78,8 @@ class TestNativeVA:
         assert list(_read_rows(out)[0].keys()) == OUT_COLUMNS, "列顺序须对齐 OUT_COLUMNS"
         assert float(a["AU01"]) == pytest.approx(0.2), "AU01_r=1.0 → /5 = 0.2"
         assert float(a["AU23"]) == pytest.approx(1.0), "AU23_r=5.0 → /5 = 1.0"
-        # intensity = 10 个目标 AU 均值 = (0.2 + 1.0)/10 = 0.12（AU09 非目标，不计）
-        assert float(a["intensity"]) == pytest.approx(0.12)
+        # intensity = 12 个目标 AU 均值 = (0.2 + 1.0)/12 = 0.1（AU09 非目标不计；任务 D 后 12 键）
+        assert float(a["intensity"]) == pytest.approx(0.1)
 
     def test_va_scale(self, openface_dir: Path, tmp_path: Path) -> None:
         """VA∈[-10,10] 时 --va-scale=10 归一到 [-1,1]。"""

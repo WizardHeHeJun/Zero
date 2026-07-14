@@ -46,7 +46,7 @@ def _first_row_keys(path: Path) -> list[str]:
 
 
 def test_converter_to_train_one_shot(tmp_path: Path) -> None:
-    """合成 OpenFace 输出 + 原生 VA 表 → 真 build() → train --ext → 权重 → predict 11 键。
+    """合成 OpenFace 输出 + 原生 VA 表 → 真 build() → train --ext → 权重 → predict 13 键。
 
     覆盖多象限（正效价/负高唤醒/中性）；愤怒与恐惧图共 (v,a)=(-0.6,0.6)（VA 上同点，分野属
     coping 维，见模块 docstring 与转换器 EMOTION_TO_VA）。
@@ -63,8 +63,16 @@ def test_converter_to_train_one_shot(tmp_path: Path) -> None:
     of_dir.mkdir()
     of_specs: dict[str, dict[str, str]] = {
         "img_happy": {"AU06_r": "3.0", "AU12_r": "4.5"},  # 正效价笑肌
-        "img_anger": {"AU04_r": "3.0", "AU07_r": "2.0", "AU23_r": "4.0"},  # 愤怒判别 AU23
-        "img_fear": {"AU01_r": "3.5", "AU02_r": "3.5", "AU05_r": "2.5", "AU20_r": "3.0"},  # 恐惧
+        # 愤怒判别 AU23 + AU17（angrily-disgusted 复合含颏肌·Du 2014，验证 AU17 抽取）
+        "img_anger": {"AU04_r": "3.0", "AU07_r": "2.0", "AU17_r": "2.5", "AU23_r": "4.0"},
+        # 恐惧 + AU26 下颌落（恐惧原型含 jaw drop·Ekman 1978，验证 AU26 抽取）
+        "img_fear": {
+            "AU01_r": "3.5",
+            "AU02_r": "3.5",
+            "AU05_r": "2.5",
+            "AU20_r": "3.0",
+            "AU26_r": "3.0",
+        },
         "img_neutral": {},  # 中性：无 AU 列 → 转换器填 0
     }
     for name, aus in of_specs.items():
@@ -87,6 +95,13 @@ def test_converter_to_train_one_shot(tmp_path: Path) -> None:
     n_rows = build(of_dir, va_csv, labels, va_id_col="image")
     assert n_rows == 4, "四图两侧都在，应产 4 行"
     assert _first_row_keys(labels) == OUT_COLUMNS, "转换器输出列须对齐 OUT_COLUMNS"
+    # 任务 D 防假绿：断言转换器正确抽取新增 AU17/AU26 列并 /5 归一（否则抽取路径 bug 仍全绿）。
+    # labels 行不含图名、img_anger/img_fear 的 (v,a) 同为 (-0.6,0.6) 无法按行区分——用跨行最大值：
+    # 仅 img_anger 有 AU17_r=2.5、仅 img_fear 有 AU26_r=3.0，故 max(AU17)=0.5、max(AU26)=0.6。
+    with open(labels, newline="", encoding="utf-8") as fh:
+        label_rows = list(csv.DictReader(fh))
+    assert max(float(r["AU17"]) for r in label_rows) == pytest.approx(0.5), "AU17_r=2.5 → /5=0.5"
+    assert max(float(r["AU26"]) for r in label_rows) == pytest.approx(0.6), "AU26_r=3.0 → /5=0.6"
 
     # 4) load_facs_csv_ext 读回 → 形状对（管线中段：转换器输出可被训练 loader 消费）
     x, y = load_facs_csv_ext(str(labels))
@@ -100,11 +115,11 @@ def test_converter_to_train_one_shot(tmp_path: Path) -> None:
     assert math.isfinite(final), f"最终 loss 应有限（整链通、无 NaN），实为 {final}"
     assert out.name == "facs_decoder_ext.pt", "隔离命名，不覆盖旧 5-AU 权重"
 
-    # 6) 载回扩展模型 → predict 11 键（证权重可用）
+    # 6) 载回扩展模型 → predict 13 键（证权重可用）
     model = FacsDecoder(extended=True)
     model.load_state_dict(torch.load(out, map_location="cpu", weights_only=True))
     facs = model.predict_facs(-0.6, 0.6)
-    assert set(facs) == set(FACS_KEYS_EXT), f"predict_facs 应输出 11 键，实为 {set(facs)}"
+    assert set(facs) == set(FACS_KEYS_EXT), f"predict_facs 应输出 13 键，实为 {set(facs)}"
 
 
 def test_category_source_one_shot(tmp_path: Path) -> None:

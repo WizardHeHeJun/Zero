@@ -32,9 +32,23 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# OpenFace 的 _r 强度列（0-5）对应的 10 个目标 AU；顺序须对齐 facs_decoder.FACS_KEYS_EXT
+# OpenFace 的 _r 强度列（0-5）对应的 12 个目标 AU；顺序须对齐 facs_decoder.FACS_KEYS_EXT
 # （本脚本 torch-free，不 import 该常量以免拉 torch；tests 有漂移守卫断言二者一致）。
-AU_TARGETS = ["AU01", "AU02", "AU04", "AU05", "AU06", "AU07", "AU12", "AU15", "AU20", "AU23"]
+# 任务 D：加 AU17(颏肌·厌恶/悲伤)/AU26(下颌落·恐惧/惊讶) 两个通用 AU（Ekman 编号序插入）。
+AU_TARGETS = [
+    "AU01",
+    "AU02",
+    "AU04",
+    "AU05",
+    "AU06",
+    "AU07",
+    "AU12",
+    "AU15",
+    "AU17",
+    "AU20",
+    "AU23",
+    "AU26",
+]
 OUT_COLUMNS = ["valence", "arousal", *AU_TARGETS, "intensity"]
 
 # Russell circumplex：常见情绪标签 → (v,a) 锚点 ∈[-1,1]（仿本项目 ravdess.EMOTION_CODE_TO_VA）。

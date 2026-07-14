@@ -428,7 +428,7 @@ def decode_channels(
             正值→高控制感（愤怒方向），负值→低控制感（恐惧方向）。
             来源：直接读 state.coping_potential_state，**不在表情层重估**（防构念重复）。
         facs_extended: False（默认）→ 旧 5-AU 逐字行为，零回归；
-            True → 输出 11-AU 扩展集合（含 coping 驱动的区分性 AU）。
+            True → 输出 13-AU 扩展集合（含 coping 驱动的区分性 AU + AU17/AU26 通用 AU）。
         k_arousal: ⚖ AU05/07 对 arousal 的增益（工程可动；默认 1.5=现值，零回归）。
             方向由议会定，不可改符号/单调；仅幅度可调。由 CompositeChannelDecoder 注入。
         k_coping: ⚖ 区分性 AU 对 coping 强度的增益（工程可动；默认 1.2=现值，零回归）。
@@ -495,7 +495,7 @@ def _decode_facs_extended(
     k_arousal: float = 1.5,
     k_coping: float = 1.2,
 ) -> dict[str, float]:
-    """11-AU 扩展映射（facs_extended=True 分支）。
+    """13-AU 扩展映射（facs_extended=True 分支；任务 D 起含 AU17/AU26 通用 AU）。
 
     ⚖ 议会定方向、系数工程可动区间、待真数据校准（Gentsch 2015 fEMG 实证）。
     热路径：纯标量（clamp/sigmoid），禁 torch/LLM/网络。
@@ -504,6 +504,10 @@ def _decode_facs_extended(
       AU04/06/12/15/intensity：保持旧向不变（零回归基准）。
       AU05：随 arousal+ 升（高唤醒瞪眼，愤怒/恐惧共有；Ekman 1978 AU5 = 上睑抬）。
       AU07：随 arousal+ 且 v<0 升（眼部紧张，高唤醒负效价共有）。
+      AU17（颏肌下巴上推）：随 −valence 主驱 + arousal 轻调制升（厌恶/悲伤；无象限守卫，
+        联动 AU15 约 0.5×；议会 D·通用 AU 不进 coping 判别）。
+      AU26（下颌落）：随 arousal 主驱 + 正 valence 轻压制升（恐惧/惊讶共有；无象限守卫，
+        cap 因东亚惊讶少用 AU26 保守；议会 D·通用 AU 不进 coping 判别）。
       区分性 AU 仅在 (v<0, a≥0) 象限激活（象限守卫）：
         AU23（口轮匝肌唇紧）：coping>0→高（愤怒对抗准备；Carver & Harmon-Jones 2009）。
           ⚠ 跨文化注：Cordaro 2018 跨文化核心愤怒为 AU4+AU7，AU23 未入核心（~29% 出现率）；
@@ -542,8 +546,27 @@ def _decode_facs_extended(
 
     # AU07：睑紧，随 arousal+ 且 v<0（高唤醒负效价共有，连续）
     # ⚖ 议会定方向：负效价高唤醒（愤怒/恐惧均有）→ 眼周肌紧（Gentsch 2015 AU7）
-    neg_valence_gate = max(0.0, -valence)  # v<0 时 >0，v≥0 时 =0（连续软门控）
+    neg_valence_gate = max(0.0, -valence)  # v<0 时 >0，v≥0 时 =0（连续软门控 = relu(-valence)）
     facs_au["AU07"] = clamp(K_AROUSAL * arousal_pos * neg_valence_gate, 0.0, 1.0)
+
+    # AU17：颏肌下巴上推，厌恶(主)/悲伤(次)。−valence 主驱 + arousal 轻调制，联动 AU15（约 0.5×）。
+    # ⚖ 议会 D 定方向（Baird 2024：AU17~arousal 显著 p=.003 / valence 负向趋势；Gentsch 2015：
+    #   goal-obstructive 组、非 coping 符号判别）——**通用 AU、无象限守卫（厌恶/悲伤跨低-高唤醒）、
+    #   不进 coping 判别**。系数工程可动、待真数据校准（走内置默认，不拉 env 全链）。
+    K_AU17_V = 0.5  # ⚖ −valence 主驱增益（联动 AU15 的 ~0.5×，互补非冗余）
+    K_AU17_A = 0.2  # ⚖ arousal 轻调制增益（k_v ≫ k_a）
+    facs_au["AU17"] = clamp(K_AU17_V * neg_valence_gate + K_AU17_A * arousal_pos, 0.0, 1.0)
+
+    # AU26：下颌落，恐惧+惊讶共有。arousal 主驱 + 正 valence 轻压制（惊喜开口＜惊恐），无象限守卫。
+    # ⚖ 议会 D 定方向（Baird 2024：AU26 与 v/a 线性相关不显著→占位给理论方向、真脸细节留真模型学；
+    #   Cordaro 2018：东亚惊讶少用 AU26→cap 保守）——**通用 AU、不进 coping 判别**。系数工程可动。
+    K_AU26 = 1.5  # ⚖ arousal 主驱增益
+    AU26_V_SUPPRESS = 0.4  # ⚖ 正 valence 压制系数（惊喜时开口幅度小于惊恐）
+    AU26_CAP = 0.6  # ⚖ 跨文化保守上限（东亚惊讶少用 AU26）
+    pos_valence = max(0.0, valence)
+    facs_au["AU26"] = clamp(
+        K_AU26 * arousal_pos * (1.0 - AU26_V_SUPPRESS * pos_valence), 0.0, AU26_CAP
+    )
 
     # ── 区分性 AU：仅 (v<0, a≥0) 象限激活（象限守卫）──
     # 愤怒(coping>0) vs 恐惧(coping<0) 分野在 Scherer CPM + Gentsch 2015 实证
