@@ -32,6 +32,7 @@ from src.agents.affect_math import (
 from src.agents.emotion_lexicon import affect_label, appraise_standard_compliance
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
+from src.agents.models.composite import CompositeChannelDecoder
 from src.agents.persona import Persona, load_persona
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
@@ -118,6 +119,41 @@ def _relationship_hint(exposure: int) -> str:
     if exposure < 15:
         return "认识了一阵、但还称不上熟"
     return "已经比较熟络"
+
+
+def _build_expression_decoder(facs_extended: bool) -> CompositeChannelDecoder | None:
+    """env 门控构造真表情解码器：`ZERO_FACS_MODEL_PATH` 未设/空 → None（占位路径，零回归）。
+
+    设了权重路径才延迟 import torch 侧 `load_facs_decoder`（同 OpenAILanguageModel 先例：
+    默认路径不引重依赖）。`extended` 与运行时 `state.facs_extended` **同源**——调用方传入
+    同一 `ZERO_FACS_EXTENDED` 解析值（守 CompositeChannelDecoder 的键集对齐契约）；权重形状
+    与 extended 不配对时 `load_state_dict` fail-fast，不静默回退占位（config-only-via-env）。
+    加载失败**不学 perception.py 文本通道的 fail-soft**（那是辅助流，缺模型可降级 OCC 路径）：
+    FACS 配了权重路径即声明真模型为表情主路径，静默降级占位会掩盖配置错误，故一律 fail-fast；
+    文件缺失/不可读时翻译成指向本 env 的 RuntimeError（不裸抛 torch 堆栈）。
+    系数 k_arousal/k_coping/residual_alpha：⚖ 方向议会定、幅度工程可动——构造期一次读 env，
+    默认=构造函数默认（1.5/1.2/1.0）=零回归；residual_alpha 越界由 CompositeChannelDecoder
+    构造抛 ValueError（fail-fast）。
+    """
+    model_path = os.getenv("ZERO_FACS_MODEL_PATH", "")
+    if not model_path:
+        return None
+    from src.agents.models.facs_decoder import load_facs_decoder  # 延迟：设了权重才需 torch
+
+    try:
+        facs_model = load_facs_decoder(model_path, extended=facs_extended)
+    except OSError as e:  # 文件缺失/不可读（FileNotFoundError ⊂ OSError）；形状不配对的
+        # RuntimeError 原样穿透（本身已含 size mismatch 详情）。
+        raise RuntimeError(
+            f"ZERO_FACS_MODEL_PATH={model_path!r} 指向的权重文件不可读，请检查配置"
+        ) from e
+    return CompositeChannelDecoder(
+        facs_model=facs_model,
+        facs_extended=facs_extended,
+        k_arousal=float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
+        k_coping=float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
+        residual_alpha=float(os.getenv("ZERO_FACS_RESIDUAL_ALPHA", "1.0")),
+    )
 
 
 class ChatDriver:
@@ -469,7 +505,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     之前设好；本工厂只读已就绪的 env，不写 os.environ、不改全局 logger 级别。
     人格经 `load_persona()` 读入（未配置 → 中性 Persona()，逐字现有行为）：L1 人设卡入 lm、
     L2 气质/L3 种子透传给 ChatDriver。记忆后端显式构造一次、同时注入 session 与 ChatDriver，
-    使种子记忆落在召回会查的同一 user/key 下。
+    使种子记忆落在召回会查的同一 user/key 下。表情通道经 `_build_expression_decoder` 装配：
+    `ZERO_FACS_MODEL_PATH` 门控注入真解码器（未设 → None → 占位路径零回归）。
     """
     resolved_thread = thread or os.getenv("ZERO_CHAT_THREAD") or "chat"
     persona = load_persona()  # 人格定义（env/JSON 文件；未配置 → 中性 Persona()，零回归）
@@ -659,9 +696,12 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。默认 1.0=两头
     # 等值=零回归；推荐 0.3（随意头仅保留自发头 30% coping-driven 强度）。仅 facs_extended 时生效。
     voluntary_coping_leak = float(os.getenv("ZERO_VOLUNTARY_COPING_LEAK", "1.0"))
-    # FACS 映射幅度系数 k_arousal/k_coping：⚖ 方向议会定、幅度工程可动——经 decode_channels /
-    # CompositeChannelDecoder 参数注入（工程可动已满足）；建模系数（同 emotion_lexicon 阈值先例），
-    # chat 占位路径用函数内置默认（1.5/1.2），不走 env 全链贯通（避免为系数拉 state 字段）。
+    # 真表情解码器注入（composite 工厂接线）：ZERO_FACS_MODEL_PATH 未设 → None → ExpressionAgent
+    # 走解析占位路径（逐字零回归）；设了 → 加载真权重构 CompositeChannelDecoder，训好的真模型在
+    # 跑图里生效（per-turn coping 经可选 predict_channels_coping 已可达，议会遗留 2·方案 b）。
+    # k_arousal/k_coping：⚖ 方向议会定、幅度工程可动——占位路径用 decode_channels 内置默认
+    # （1.5/1.2，不为系数拉 state 字段）；composite 路径经 ZERO_FACS_K_AROUSAL/K_COPING 构造期读入。
+    expression_decoder = _build_expression_decoder(facs_extended)
     # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
     # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
     # cortisol 动力学常数：env → SessionConfig → state → AppraisalAgent（None→回退常量=零回归）。
@@ -716,6 +756,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         facs_extended=facs_extended,
         # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。
         voluntary_coping_leak=voluntary_coping_leak,
+        # 真表情解码器（ZERO_FACS_MODEL_PATH 门控；None=占位路径零回归）。
+        expression_decoder=expression_decoder,
     )
     return ChatDriver(
         thread=resolved_thread,
