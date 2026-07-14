@@ -644,3 +644,65 @@ class TestC2ResidualBlend:
         for bad in [-0.1, 1.5]:
             with pytest.raises(ValueError, match=r"residual_alpha"):
                 CompositeChannelDecoder(facs_model=_MockFacsModel(), residual_alpha=bad)
+
+
+# ─── ⑩ 遗留 2：per-turn coping live-wiring（议会设计门 2026-07-14·方案 b）──────────
+
+
+class _PlainDecoder:
+    """旧式 decoder：只有 predict_channels(v,a)、无 predict_channels_coping（回退路径守卫）。"""
+
+    def predict_channels(self, valence: float, arousal: float) -> dict[str, object]:
+        return {"facs_au": {"marker": 1.0}, "text_label": "x", "physiology": {}, "prosody": {}}
+
+
+class TestLiveWiringCopingAware:
+    """遗留 2（方案 b）：注入支持 `predict_channels_coping` 的 decoder 时 per-turn coping 透传。
+    additive 非 breaking——旧 decoder（只有 predict_channels）回退、零改动。
+    """
+
+    def test_predict_channels_coping_uses_per_turn_not_construction(self) -> None:
+        """predict_channels_coping 用传入 coping、非构造固定值（构造 coping=0 也能分愤怒/恐惧）。"""
+        comp = CompositeChannelDecoder(facs_extended=True, coping_potential=0.0)  # 构造 coping=0
+        anger = comp.predict_channels_coping(-0.6, 0.6, 0.5, True)["facs_au"]
+        fear = comp.predict_channels_coping(-0.6, 0.6, -0.5, True)["facs_au"]
+        assert anger["AU23"] > anger["AU01"], f"per-turn coping>0 愤怒 AU23>AU01：{anger}"
+        assert fear["AU01"] > fear["AU23"], f"per-turn coping<0 恐惧 AU01>AU23：{fear}"
+
+    def test_predict_channels_delegates_with_construction_coping(self) -> None:
+        """predict_channels(v,a) 公开签名不变：等价于用构造 coping 调 predict_channels_coping。"""
+        comp = CompositeChannelDecoder(facs_extended=True, coping_potential=0.5)
+        assert (
+            comp.predict_channels(-0.6, 0.6)["facs_au"]
+            == comp.predict_channels_coping(-0.6, 0.6, 0.5, True)["facs_au"]
+        )
+
+    def test_expression_agent_passes_per_turn_coping_to_injected_decoder(self) -> None:
+        """图内：ExpressionAgent 注入 composite → state.coping_potential_state 透传到注入 decoder，
+        自发头愤怒/恐惧 coping 分野生效（构造 coping=0 也不影响，证 per-turn 透传）。"""
+        from src.agents.expression import ExpressionAgent
+        from src.orchestration.state import AffectState
+
+        comp = CompositeChannelDecoder(facs_extended=True, coping_potential=0.0)
+        agent = ExpressionAgent(decoder=comp)
+        anger = agent(
+            AffectState(affect_sample=(-0.6, 0.6), coping_potential_state=0.5, facs_extended=True)
+        )["expression"]["spontaneous"]["facs_au"]
+        fear = agent(
+            AffectState(affect_sample=(-0.6, 0.6), coping_potential_state=-0.5, facs_extended=True)
+        )["expression"]["spontaneous"]["facs_au"]
+        assert anger["AU23"] > anger["AU01"], f"注入路径愤怒 AU23>AU01：{anger}"
+        assert fear["AU01"] > fear["AU23"], f"注入路径恐惧 AU01>AU23：{fear}"
+
+    def test_expression_agent_fallback_plain_decoder(self) -> None:
+        """注入只有 predict_channels(v,a) 的旧 decoder → 回退、coping 不透传（零改动守卫）。"""
+        from src.agents.expression import ExpressionAgent
+        from src.orchestration.state import AffectState
+
+        agent = ExpressionAgent(decoder=_PlainDecoder())
+        out = agent(
+            AffectState(affect_sample=(-0.6, 0.6), coping_potential_state=0.5, facs_extended=True)
+        )["expression"]["spontaneous"]
+        assert out["facs_au"] == {"marker": 1.0}, (
+            "旧 decoder 走 predict_channels(v,a)、不受 coping 影响"
+        )

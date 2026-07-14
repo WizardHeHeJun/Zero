@@ -38,8 +38,19 @@ class ExpressionAgent:
         facs_extended: bool = False,
     ) -> dict[str, Any]:
         if self.decoder is not None:
-            # 注入 decoder 的 per-turn coping 待协议扩展·下一轮工程门
-            # （predict_channels(v,a) 公开签名不变，per CS 席约束 #4）
+            # 议会遗留 2 设计门（方案 b）：若注入 decoder 有可选方法 predict_channels_coping，
+            # 传入当轮 coping/facs_extended（真 facs_model 注入后 C2 residual 才拿到正确 coping）；
+            # 否则回退 predict_channels(v,a)（旧 decoder/mock 零改动）。
+            # additive 非 breaking：ChannelDecoder 协议不变（CS 席约束 #4）。
+            # 探测得到的方法假定签名 (v, a, coping, facs_extended) -> dict（本项目
+            # CompositeChannelDecoder.predict_channels_coping 即此签名）；getattr 返回 Any，
+            # 静态检查放行，调用方须保证注入 decoder 的该方法签名一致。
+            coping_aware = getattr(self.decoder, "predict_channels_coping", None)
+            if coping_aware is not None:
+                result: dict[str, Any] = coping_aware(
+                    affect[0], affect[1], coping_potential, facs_extended
+                )
+                return result
             return self.decoder.predict_channels(affect[0], affect[1])
         return decode_channels(
             affect, coping_potential=coping_potential, facs_extended=facs_extended

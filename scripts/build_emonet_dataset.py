@@ -13,9 +13,12 @@
 
 ⚠ **40 类→(v,a) 映射的忠实性（重要）**：EMONET_VA 是**近似 circumplex 坐标**（Russell 1980
 环状模型结构 + 情感常模惯例），用作训练标签——同本项目对 RAVDESS/WESAD 的 category→VA 既有
-做法（`ravdess.EMOTION_CODE_TO_VA`）。**坐标为工程近似、可校准，是科学家议会 fidelity 复审的
-候选**（尤其 Awe/Longing/Intoxication 等模糊类）。愤怒/恐惧有意映到同一 (v,a)——二者分野属
-coping 维、不在 VA 上（FacsDecoder predict_facs(v,a) 学通用 AU，coping 分野由占位/C2 承担）。
+做法（`ravdess.EMOTION_CODE_TO_VA`）。**已经 2026-07-14 科学家议会 fidelity 复审**（对照
+Warriner et al. 2013 VAD 常模 / Cowen&Keltner 2017），据裁决修正 5 处（Longing/Emotional
+Numbness/Hopelessness/Sexual Lust/Malevolence，各行注「议会修正」）；决策与引文见
+`notes/2026-07-14-facs-decoder-livewiring-council.md`。系数幅度仍属工程可动、可继续校准。
+愤怒/恐惧有意映到同一 (v,a)（Anger=Fear=Distress）——二者分野属 coping 维、不在 VA 上（议会
+背书；FacsDecoder predict_facs(v,a) 学通用 AU，coping 分野由占位/C2 承担）。
 """
 
 from __future__ import annotations
@@ -52,24 +55,27 @@ EMONET_VA: dict[str, tuple[float, float]] = {
     "Doubt": (-0.25, 0.05),
     "Elation": (0.8, 0.7),
     "Embarrassment": (-0.3, 0.45),
-    "Emotional Numbness": (-0.2, -0.6),
+    "Emotional Numbness": (-0.2, -0.4),  # 议会修正：arousal 上调，避与 Fatigue(-0.75) 混淆
     "Fatigue/Exhaustion": (-0.3, -0.75),
     "Fear": (-0.6, 0.6),  # 与 Anger/Distress 同 (v,a)：愤怒/恐惧分野属 coping 维、不在 VA 上
     "Hope/Enthusiasm/Optimism": (0.6, 0.45),
-    "Hopelessness": (-0.7, -0.1),
+    "Hopelessness": (-0.7, -0.3),  # 议会修正：arousal 下调，与 Sadness(-0.6,-0.4) 区分/低于其唤醒
     "Impatience and Irritability": (-0.4, 0.5),
     "Infatuation": (0.6, 0.5),
     "Interest": (0.5, 0.35),
     "Intoxication/Altered States of Consciousness": (0.1, -0.1),
     "Jealousy & Envy": (-0.5, 0.45),
-    "Longing": (-0.15, 0.15),
-    "Malevolence/Malice": (-0.6, 0.4),
+    "Longing": (-0.35, 0.15),  # 议会修正：v 拉负，保有渴念的轻度苦涩而非近中性（Warriner 2013）
+    "Malevolence/Malice": (
+        -0.75,
+        0.4,
+    ),  # 议会修正：v 拉负，恶意更深度负效价、与 Anger/Contempt 区分
     "Pain": (-0.7, 0.55),
     "Pleasure/Ecstasy": (0.9, 0.6),
     "Pride": (0.65, 0.45),
     "Relief": (0.5, -0.3),
     "Sadness": (-0.6, -0.4),
-    "Sexual Lust": (0.5, 0.75),
+    "Sexual Lust": (0.5, 0.55),  # 议会修正：arousal 下调，性欲非恒定最高唤醒（Warriner 2013 ≈0.67）
     "Shame": (-0.55, 0.2),
     "Sourness": (-0.4, -0.05),
     "Teasing": (0.4, 0.4),

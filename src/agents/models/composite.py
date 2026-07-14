@@ -45,9 +45,13 @@ class CompositeChannelDecoder:
     混合（真模型不吃 coping、学不到愤怒/恐惧分野）。默认 α=1.0 → 判别 AU 纯占位保分野。
     未注入 facs_model 时此路径不触发 = 零回归。（via ZERO_FACS_RESIDUAL_ALPHA env）
 
-    ⚠ 调用方契约：注入的 `facs_model` 键集须与 `facs_extended` 对齐——`facs_extended=True` 注入
-    `FacsDecoder(extended=True)`（11 键）、`facs_extended=False` 注入 5 键旧模型。否则 legacy
-    路径会挂上 11 键 base，破坏下游对旧 5-AU 布局的假设（W1）。
+    ⚠ 调用方契约：
+    - 注入的 `facs_model` 键集须与 `facs_extended` 对齐——`facs_extended=True` 注入
+      `FacsDecoder(extended=True)`（11 键）、`facs_extended=False` 注入 5 键旧模型。否则 legacy
+      路径会挂上 11 键 base，破坏下游对旧 5-AU 布局的假设。
+    - 构造时 `facs_extended` 须与运行时 `state.facs_extended` **同源**（本项目从同一 `.env` →
+      SessionConfig → state 流入）。否则 `predict_channels(v,a)`（用构造固定值）与经
+      `predict_channels_coping`（用当轮 state 值）两路径会静默分叉。
     """
 
     def __init__(
@@ -81,10 +85,30 @@ class CompositeChannelDecoder:
         self.residual_alpha = residual_alpha
 
     def predict_channels(self, valence: float, arousal: float) -> dict[str, Any]:
+        """公开签名不变（CS 席约束 #4）：用构造时固定的 coping/facs_extended。"""
+        return self.predict_channels_coping(
+            valence, arousal, self.coping_potential, self.facs_extended
+        )
+
+    def predict_channels_coping(
+        self,
+        valence: float,
+        arousal: float,
+        coping_potential: float,
+        facs_extended: bool,
+    ) -> dict[str, Any]:
+        """可选扩展（议会遗留 2 设计门 2026-07-14·方案 b）：接 **per-turn** coping/facs_extended。
+
+        `ExpressionAgent._decode` 用 `hasattr` 探测此方法——有则传入当轮 `coping_potential_state`、
+        无则回退 `predict_channels(v,a)`（旧 decoder 零改动）。**additive 非 breaking**：不改
+        `ChannelDecoder`/`FacsModel` Protocol、不改 `predict_channels(v,a)` 签名（与 C2 当时 BLOCK
+        的「改 predict_facs Protocol 签名」本质不同——那是 Protocol 层参数加法，所有实现被迫跟改）。
+        注入真 facs_model 后 C2 residual 才拿到正确当轮 coping（否则固定 coping 使 α>0 无意义）。
+        """
         channels = decode_channels(
             (valence, arousal),
-            coping_potential=self.coping_potential,
-            facs_extended=self.facs_extended,
+            coping_potential=coping_potential,
+            facs_extended=facs_extended,
             k_arousal=self.k_arousal,
             k_coping=self.k_coping,
         )  # 解析占位提供全部 4 通道
@@ -97,9 +121,8 @@ class CompositeChannelDecoder:
             # 真模型出通用 AU 基准（喜/悲/惊…从真脸学）；coping 判别 AU（AU23/01/02/20）——
             # 真模型 predict_facs(v,a) 不吃 coping、学不到愤怒/恐惧分野——按 residual_alpha 与
             # 解析占位的 coping 增量混合（占位值在上面 channels["facs_au"] 里，已带 coping 算出）。
-            # CS 席：协议不变（predict_facs(v,a) 不加 coping 参，避两层 breaking）。
             base = self.facs_model.predict_facs(valence, arousal)
-            if self.facs_extended:
+            if facs_extended:
                 placeholder = channels["facs_au"]
                 alpha = self.residual_alpha
                 for au in _COPING_DRIVEN_AUS:

@@ -100,7 +100,8 @@ class SessionConfig(BaseModel):
     # ── facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）──
     # True → ExpressionAgent 占位路径把 coping_potential_state 透传给 decode_channels，
     # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
-    # 仅占位路径（decoder=None）生效；注入 decoder 的 per-turn coping 待协议扩展·下一轮工程门。
+    # 占位路径（decoder=None）经 ExpressionAgent 消费；注入 decoder 若实现 predict_channels_coping
+    # 也拿到 per-turn coping（议会遗留 2·方案 b 已落地），否则回退 predict_channels(v,a)。
     facs_extended: bool = False
     # ── voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]──
     # 自发头全量传 coping、随意头传 coping×leak（意志部分压制 coping-driven AU）。
