@@ -33,8 +33,10 @@ def read_emobank_rows(
             clamp((D-3)/2, -1, 1)。
 
     Note:
-        D 列为 SAM Dominance 标注，与 coping_potential/control appraisal 语义对齐
-        悬而未决（议会 2026-07-13 #2），使用前须确认操作化定义。
+        D 列为 SAM Dominance 标注（Bradley & Lang 1994 SAM 量表，感受量非评价前件）。
+        议会 2026-07-15 裁定「有条件可用」（结 2026-07-13 #2）：须选 writer perspective
+        + 社会支配子集筛选 + 验证集方向校验(≥80%) + 训后独立性门控 r(V,D_pred)≤0.50；
+        未执行修正=不可用。见 notes/2026-07-15-text-coping-potential-emobank-d-council.md。
     """
     texts: list[str] = []
     ys: list[list[float]] = []
