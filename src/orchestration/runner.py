@@ -108,6 +108,13 @@ class SessionConfig(BaseModel):
     # 默认 1.0=两头等值=零回归；推荐 0.3。仅 facs_extended=True 时对 facs_au 生效。
     voluntary_coping_leak: float = Field(default=1.0, ge=0.0, le=1.0)
 
+    # ── 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）──
+    # external_priors 本身是每轮 state_overrides 内容（同 interlocutor_affect），不在此收口。
+    # 此处只存会话级固定的校验参数（precision_cap / max_streams）。
+    # ZERO_EXTERNAL_PRIOR_PRECISION_CAP 默认 0.8；ZERO_MAX_EXTERNAL_STREAMS 默认 5。
+    external_prior_precision_cap: float = Field(default=0.8, gt=0.0)
+    max_external_streams: int = Field(default=5, ge=0)
+
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
     # 此处只存会话级固定系数（contagion/care/vicarious alpha + threshold）。
@@ -232,6 +239,9 @@ async def run(
     facs_extended: bool = False,
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
     voluntary_coping_leak: float = 1.0,
+    # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+    external_prior_precision_cap: float = 0.8,
+    max_external_streams: int = 5,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -242,6 +252,11 @@ async def run(
     expression_decoder：可选注入训练好的真通道解码器，走真网络表达。
     language_model：可选注入的语言模型（鸭子类型），开启 language_enabled 后驱动
     affect↔language 双向收敛回路；未注入则用占位模板模型。
+
+    external_prior_precision_cap / max_external_streams 是外部先验流的**校验**参数（M3/M6）；
+    external_priors 本身（每轮的 (name,(μv,μa),(Πv,Πa)) 数据）**不经 run() 注入**——它是每轮
+    可变量，经 `ConversationSession.step(stim, state_overrides={"external_priors": [...]})` 注入
+    （同 interlocutor_affect）。run() 批量接口每条 stimulus 不携带外部先验（code-reviewer W5）。
     """
     client = (
         memory
@@ -314,6 +329,9 @@ async def run(
                 "facs_extended": facs_extended,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
                 "voluntary_coping_leak": voluntary_coping_leak,
+                # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+                "external_prior_precision_cap": external_prior_precision_cap,
+                "max_external_streams": max_external_streams,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -408,6 +426,9 @@ class ConversationSession:
         facs_extended: bool = False,
         # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
         voluntary_coping_leak: float = 1.0,
+        # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+        external_prior_precision_cap: float = 0.8,
+        max_external_streams: int = 5,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -477,6 +498,9 @@ class ConversationSession:
                 facs_extended=facs_extended,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
                 voluntary_coping_leak=voluntary_coping_leak,
+                # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+                external_prior_precision_cap=external_prior_precision_cap,
+                max_external_streams=max_external_streams,
             )
 
     @property
@@ -505,6 +529,11 @@ class ConversationSession:
             "group_id": self.group_id,
             "task_complete": False,
             **self.config.to_state_flags(),
+            # external_priors 每轮显式归零（M4·code-reviewer B1 2026-07-15）：它是 LastValue
+            # channel，若不在本轮 ainvoke input 里显式给值，会从 checkpoint 恢复上一轮注入的
+            # 非空 list → 跨轮残留（同 text_affect 被 PerceptionAgent 每轮显式归零的教训）。
+            # state_overrides 若含 external_priors 会覆盖此空基准（下方 base.update）。
+            "external_priors": [],
         }
         if state_overrides is not None:
             base.update(state_overrides)

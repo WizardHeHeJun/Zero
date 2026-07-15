@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # 仅注解用（PEP 563 惰性注解下不产生运行时 import）——external_prior 是编排层叶子协议
+    # 类型（无任何 import），置于 TYPE_CHECKING 顶部消 code-reviewer W1 的末尾延迟 import 味道。
+    from src.orchestration.external_prior import ExternalPrior
 
 # 数值边界，避免精度/方差退化或采样发散
 MIN_SIGMA = 0.05
@@ -918,3 +923,95 @@ def cortisol_trigger(
     if goal_congruence < -theta_goal and intensity > theta_intensity:
         return impulse
     return 0.0
+
+
+# ── 外部多模态先验流展开（议会 2026-07-15 M1–M6；PRP 外部多模态先验流注入口）──
+# ExternalPrior 类型注解 import 见文件顶部 TYPE_CHECKING 块（同层·叶子协议·无反向依赖）。
+# 生理流前缀集合（M2·议会生物席强制）：以任一前缀开头的流名视为生理信号流，
+# 无条件覆写 Πv=MIN_PRECISION（EDA/HRV/瞳孔/SCR 对效价盲，Kreibig 2010）。
+_PHYSIO_PREFIXES: tuple[str, ...] = ("physio", "eda", "hrv", "pupil", "scr")
+
+
+def expand_external_priors(
+    external_priors: list[ExternalPrior],
+    *,
+    precision_cap: float,
+    max_streams: int,
+) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
+    """外部多模态先验流展开 + 防御性校验，返回可直接 extend 进 streams 的列表。
+
+    M6（数学席·流数上界）：len(external_priors) > max_streams → raise ValueError。
+    校验精度来自 MCP payload，Zero 只校验+防御——不硬编码各模态精度。
+
+    形状良构校验（澄清 2）：每条须 (str, (float, float), (float, float))；
+    name 必须是 str，mu/prec 各须是 2 元 float tuple；防 MCP 传标量精度或错元数。
+
+    M3（CS 席·fail-fast 放展开处）：
+      - Πv > 0 且 Πa > 0，否则 raise ValueError（精度须正）。
+      - Πv ≤ precision_cap 且 Πa ≤ precision_cap，否则 raise ValueError。
+      fail-fast 在此处（非 SessionConfig）：external_priors 是每轮 state_overrides
+      动态内容，SessionConfig 只能管会话级默认，管不到每轮 payload（design.md M3）。
+
+    M2（生物席强制·唯一「失真必改」）：name 以 _PHYSIO_PREFIXES 任一前缀开头
+    （小写比较）→ 无条件覆写 Πv = MIN_PRECISION，即便 MCP 给了有意义值也归零。
+    依据：EDA/HRV/瞳孔只编码交感唤醒输出、对效价盲（Kreibig 2010）；
+    给 valence 精度 = 主动注入偏差（design.md §二·生物席强制·收敛 a）。
+
+    返回与 affect_core.py:77 streams 类型完全一致的列表，可直接 extend（M1）。
+    不进 occ_prior/survival 入口（design.md 受约束方案 c）。
+
+    引文：Kreibig S.D. (2010). Biol. Psychol. 84(3):394-421.
+    https://doi.org/10.1016/j.biopsycho.2010.03.010
+    设计决策见 design.md M1–M6（议会 2026-07-15）。
+    """
+    # M6：流数上界
+    if len(external_priors) > max_streams:
+        raise ValueError(
+            f"external_priors 条数 {len(external_priors)} 超过 max_external_streams={max_streams}；"
+            f"请检查 MCP 传参（ZERO_MAX_EXTERNAL_STREAMS 调大或减少注入流数）"
+        )
+
+    result: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
+    for i, prior in enumerate(external_priors):
+        # 形状良构校验（澄清 2）
+        if (
+            not isinstance(prior, tuple)
+            or len(prior) != 3
+            or not isinstance(prior[0], str)
+            or not (isinstance(prior[1], tuple) and len(prior[1]) == 2)
+            or not (isinstance(prior[2], tuple) and len(prior[2]) == 2)
+            or not all(isinstance(x, (int, float)) for x in prior[1])
+            or not all(isinstance(x, (int, float)) for x in prior[2])
+        ):
+            raise ValueError(
+                f"external_priors[{i}] 形状不合法：须为 (str, (float,float), (float,float))，"
+                f"实际为 {prior!r}；请检查 MCP as_zero_streams() 输出格式"
+            )
+        name: str = prior[0]
+        mu: tuple[float, float] = (float(prior[1][0]), float(prior[1][1]))
+        pi_v: float = float(prior[2][0])
+        pi_a: float = float(prior[2][1])
+
+        # M2：生理流 valence 精度强制归 MIN_PRECISION（无条件·唯一失真必改）。
+        # 置于 M3 校验之前（code-reviewer W1 2026-07-15）：physio 的 Πv 无条件覆写，
+        # 不因 MCP 误传超 cap / 非正 Πv 而在 M3 处误报——覆写后 Πv=MIN_PRECISION∈(0,cap]。
+        if name.lower().startswith(_PHYSIO_PREFIXES):
+            pi_v = MIN_PRECISION
+
+        # M3：精度正值校验（physio Πv 已被 M2 覆写为 MIN_PRECISION>0；Πa 恒校验）
+        if pi_v <= 0.0 or pi_a <= 0.0:
+            raise ValueError(
+                f"external_priors[{i}] ({name!r}) 精度须 >0，"
+                f"实际 Πv={pi_v}, Πa={pi_a}；请检查 MCP 传参"
+            )
+        # M3：精度上界校验（physio Πv=MIN_PRECISION<<cap 必过；Πa 恒校验）
+        if pi_v > precision_cap or pi_a > precision_cap:
+            raise ValueError(
+                f"external_priors[{i}] ({name!r}) 精度超过上界 {precision_cap}，"
+                f"实际 Πv={pi_v}, Πa={pi_a}；请降低 MCP 精度或调高 "
+                f"ZERO_EXTERNAL_PRIOR_PRECISION_CAP"
+            )
+
+        result.append((name, mu, (pi_v, pi_a)))
+
+    return result

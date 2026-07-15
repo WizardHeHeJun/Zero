@@ -13,6 +13,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.memory.types import Fact
+from src.orchestration.external_prior import ExternalPrior
 
 
 class Stimulus(BaseModel):
@@ -214,3 +215,18 @@ class AffectState(BaseModel):
     # _appraisal_summary（appraisal_conditioning 开时）消费；精确阈值/坐标待议会 P1-D。
     panksepp_distinguish_fear: bool = False
     task_complete: bool = False
+
+    # 外部多模态先验流注入口（议会 2026-07-15 M1–M6；PRP 外部多模态先验流注入口）。
+    # 每条 ExternalPrior = (name, (μv, μa), (Πv, Πa))，逐维精度与 affect_core.py:77
+    # streams 类型原生一致，AffectCoreAgent 展开后直接 extend 进 streams 竞争融合。
+    # ⚠ 无任何图节点写此字段——每轮经 state_overrides 注入（interlocutor_affect 先例）；
+    # 进 Checkpointer 不入图谱；默认空列表=零回归（workspace_enabled 下才有意义）。
+    external_priors: list[ExternalPrior] = Field(default_factory=list)
+    # 单条外部先验精度上界（M3；ZERO_EXTERNAL_PRIOR_PRECISION_CAP env；默认 0.8）。
+    # 超出 → expand_external_priors raise ValueError（fail-fast 指向 MCP 传参错误）。
+    # 经 SessionConfig → to_state_flags 贯通；MCP 保守低精度推荐见 design.md §五。
+    external_prior_precision_cap: float = Field(default=0.8, gt=0.0)
+    # 每轮外部流数上界（M6；ZERO_MAX_EXTERNAL_STREAMS env；默认 5）。
+    # len(external_priors) > max → expand_external_priors raise ValueError（数学席 Σπ 虚增保险）。
+    # 经 SessionConfig → to_state_flags 贯通；N≤5 保守（fuse_terms MIN_SIGMA 已给隐式上界）。
+    max_external_streams: int = Field(default=5, ge=0)

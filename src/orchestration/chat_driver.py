@@ -696,6 +696,11 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。默认 1.0=两头
     # 等值=零回归；推荐 0.3（随意头仅保留自发头 30% coping-driven 强度）。仅 facs_extended 时生效。
     voluntary_coping_leak = float(os.getenv("ZERO_VOLUNTARY_COPING_LEAK", "1.0"))
+    # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）。
+    # external_priors 本身每轮由 state_overrides 注入（MCP 侧），不在此读取。
+    # 此处只读会话级固定的校验参数：精度上界 + 流数上界。
+    external_prior_precision_cap = float(os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8"))
+    max_external_streams = int(os.getenv("ZERO_MAX_EXTERNAL_STREAMS", "5"))
     # 真表情解码器注入（composite 工厂接线）：ZERO_FACS_MODEL_PATH 未设 → None → ExpressionAgent
     # 走解析占位路径（逐字零回归）；设了 → 加载真权重构 CompositeChannelDecoder，训好的真模型在
     # 跑图里生效（per-turn coping 经可选 predict_channels_coping 已可达，议会遗留 2·方案 b）。
@@ -756,6 +761,9 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         facs_extended=facs_extended,
         # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。
         voluntary_coping_leak=voluntary_coping_leak,
+        # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）。
+        external_prior_precision_cap=external_prior_precision_cap,
+        max_external_streams=max_external_streams,
         # 真表情解码器（ZERO_FACS_MODEL_PATH 门控；None=占位路径零回归）。
         expression_decoder=expression_decoder,
     )
