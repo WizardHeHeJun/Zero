@@ -27,6 +27,11 @@ db = [
 llm = [
     "openai>=2",
 ]
+# zero-link MCP server：把 ConversationSession 包成 MCP 三工具（open/step/close）供 MCP 侧 client 接。
+# 边界适配层（三层之外），默认**不入 core**（守零依赖基线）；起 src/mcp_server 时才需。
+mcp = [
+    "mcp>=1.28",
+]
 # 语义记忆侧信道（深度集成）：Graphiti（LLM 抽实体/关系入图 + 语义/向量检索；自带 neo4j/openai）。
 # 与确定性 GraphStore 并存、默认关；置 ZERO_SEMANTIC_BACKEND=graphiti 时才需。
 # kuzu = 嵌入式图库（ZERO_GRAPHITI_DB=kuzu），本地无服务/无 Docker 即可验证；

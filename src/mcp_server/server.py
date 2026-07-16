@@ -1,0 +1,189 @@
+"""zero-link MCP **server**：把 `ConversationSession` 包成三工具（边界适配层，三层之外）。
+
+对齐 MCP 侧 client 契约（`D:\\Zero_MCP\\notes\\2026-07-15-zero-link-client-ready-to-zero.md`）：
+- `zero.open_session(persona?, config?) -> {"session_id": str}`
+- `zero.step(session_id, stim, external_priors?) -> <expression 子 dict>`
+- `zero.close_session(session_id) -> {"ok": true}`
+错误一律 `ToolError`（FastMCP 转成 `CallToolResult.isError=true`，消息进 `content[0].text`）。
+
+红线守则：本模块**不反向依赖**内核内部（只经 `ConversationSession` 公开 `step`）、
+**不进 affect 热路径**（映射是纯数据搬运）、secrets 走 env。`mcp` 走 optional-deps 不入 core。
+
+会话门控默认（`ZERO_MCP_*` env 可调）：`workspace_enabled=True`（否则 external_priors 被整段
+跳过，`affect_core.py:44,100-107`）+ `coping_potential_enabled=True`（否则 coping 被忽略，
+`appraisal.py:174-176`）——让 client 发的 external_priors/coping **真正生效**，与 chat 生产路径一致。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import uuid
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+
+from src.agents.expression import ChannelDecoder
+from src.mcp_server.mapping import external_priors_from_payload, stimulus_from_payload
+from src.mcp_server.registry import SessionRegistry
+from src.orchestration.runner import ConversationSession, SessionConfig
+
+logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """读布尔 env；未设 → default。真值集与 chat_driver 一致（1/true/yes/on）。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
+def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
+    """从 env 装配 MCP 边界的会话默认门控；`overrides` 覆写 SessionConfig 已声明字段。
+
+    覆写只挑 SessionConfig 已有字段（防注入未知键），并经 SessionConfig 构造**重新校验**
+    （如共情系数 L1 上界 `runner.py:131-140`），坏值 fail-fast → 上层转 ToolError。
+    """
+    base: dict[str, Any] = {
+        "workspace_enabled": _env_flag("ZERO_MCP_WORKSPACE_ENABLED", True),
+        "coping_potential_enabled": _env_flag("ZERO_MCP_COPING_ENABLED", True),
+        "external_prior_precision_cap": float(
+            os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
+        ),
+        "max_external_streams": int(os.getenv("ZERO_MAX_EXTERNAL_STREAMS", "5")),
+    }
+    if overrides:
+        base.update({k: v for k, v in overrides.items() if k in SessionConfig.model_fields})
+    return SessionConfig(**base)
+
+
+def _maybe_expression_decoder() -> ChannelDecoder | None:
+    """env 门控注入真表情解码器：`ZERO_FACS_MODEL_PATH` 未设 → None（占位路径，无需 torch）。
+
+    仅设了权重路径才**延迟 import** models 层的 **公开** `load_facs_decoder` /
+    `CompositeChannelDecoder`（该链引 torch 侧）；默认（未设）路径完全不 import → server
+    保持轻依赖（仅 langgraph+pydantic+mcp）。**只依赖 models 公开类**（非 chat_driver 私有工厂），
+    边界层不耦合编排层内部；构造口径与 `chat_driver._build_expression_decoder`
+    （`chat_driver.py:124-156`）刻意保持一致（真 13-AU 权重可跑进 MCP 输出）。系数方向议会定、
+    幅度工程可动——env 缺省=构造默认（1.5/1.2/1.0）；形状不配对/文件不可读 fail-fast（不静默降级）。
+    """
+    model_path = os.getenv("ZERO_FACS_MODEL_PATH")
+    if not model_path:
+        return None
+    from src.agents.models.composite import CompositeChannelDecoder
+    from src.agents.models.facs_decoder import load_facs_decoder
+
+    facs_extended = _env_flag("ZERO_FACS_EXTENDED", False)
+    try:
+        facs_model = load_facs_decoder(model_path, extended=facs_extended)
+    except (
+        OSError
+    ) as e:  # 文件缺失/不可读；形状不配对的 RuntimeError 原样穿透（含 size mismatch）。
+        raise RuntimeError(
+            f"ZERO_FACS_MODEL_PATH={model_path!r} 指向的权重文件不可读，请检查配置"
+        ) from e
+    return CompositeChannelDecoder(
+        facs_model=facs_model,
+        facs_extended=facs_extended,
+        k_arousal=float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
+        k_coping=float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
+        residual_alpha=float(os.getenv("ZERO_FACS_RESIDUAL_ALPHA", "1.0")),
+    )
+
+
+def build_server(registry: SessionRegistry | None = None) -> FastMCP:
+    """装配并返回挂好三工具的 FastMCP server（传输无关：入口再选 stdio/http）。
+
+    `registry` 可注入（测试用）；缺省新建。表情解码器在此按 env 构造一次、注入每个会话
+    （无状态、可共享）。工具全部 `structured_output=False`：只发 unstructured `content[0].text`
+    （JSON），与 client 读 `content[0].text` 的口径完全一致（不逼 client 改读 structuredContent）。
+    """
+    registry = registry if registry is not None else SessionRegistry()
+    decoder = _maybe_expression_decoder()
+    mcp: FastMCP = FastMCP("zero")
+
+    @mcp.tool(
+        name="zero.open_session",
+        description="建一个 Zero 情感引擎会话（建图/checkpointer 一次），返回 {session_id}。",
+        structured_output=False,
+    )
+    async def open_session(
+        persona: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
+        """建会话。`config` 覆写 SessionConfig 门控；`persona` **本轮为预留入参**：接受但暂不生效
+        （Zero persona 属 ChatDriver 层、经 load_persona 从 env/文件装配，非 by-name；会话边界
+        暂不接人格，避免静默误导 client——见 HANDOFF/回执"非目标"）。仅记入日志备后续接线。
+        """
+        try:
+            cfg = _build_session_config(config)
+        except (ValueError, TypeError) as e:
+            raise ToolError(f"config 不合法：{e}") from e
+        session_id = uuid.uuid4().hex
+        # thread_id=user_id=session_id：会话态经 checkpointer 按 thread_id 跨轮持久 + 记忆作用域
+        # 天然按 session 隔离（防多会话共享 default-user 记忆串味，同 chat_driver 口径）。
+        session = ConversationSession(
+            thread_id=session_id,
+            user_id=session_id,
+            config=cfg,
+            expression_decoder=decoder,
+        )
+        await registry.open(session_id, session)
+        logger.info(
+            "zero.open_session sid=%s persona=%s active=%d",
+            session_id,
+            persona,
+            await registry.count(),
+        )
+        return {"session_id": session_id}
+
+    @mcp.tool(
+        name="zero.step",
+        description=(
+            "喂一条刺激 {valence, arousal, coping_potential?} + 可选 external_priors，"
+            "推进一轮，返回 expression 子 dict（valence_arousal/spontaneous/voluntary/…）。"
+        ),
+        structured_output=False,
+    )
+    async def step(
+        session_id: str,
+        stim: dict[str, Any],
+        external_priors: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        session, lock = await registry.acquire(session_id)
+        if session is None or lock is None:
+            raise ToolError(f"未知 session_id={session_id!r}；请先调 zero.open_session")
+        try:
+            stimulus = stimulus_from_payload(stim)
+            priors = external_priors_from_payload(external_priors)
+        except (ValueError, TypeError) as e:
+            raise ToolError(f"stim/external_priors 载荷不合法：{e}") from e
+        # 同会话串行化：LangGraph checkpointer 读-改-写非原子，并发 ainvoke(同 thread_id) 会竞态
+        # （http 传输下 client 可能并发）；stdio 顺序则此锁无争用、零成本。
+        async with lock:
+            try:
+                step_out = await session.step(stimulus, state_overrides={"external_priors": priors})
+            except ValueError as e:
+                # expand_external_priors 的 M3/M6 fail-fast（精度>0/≤cap、流数≤max、形状良构）。
+                raise ToolError(f"external_priors 校验失败（指向 MCP 传参）：{e}") from e
+        expression = step_out.get("expression") or {}
+        return expression
+
+    @mcp.tool(
+        name="zero.close_session",
+        description="释放一个会话；未知 id 幂等。返回 {'ok': true}（client 忽略返回值）。",
+        structured_output=False,
+    )
+    async def close_session(session_id: str) -> dict[str, bool]:
+        existed = await registry.close(session_id)
+        logger.info(
+            "zero.close_session sid=%s existed=%s active=%d",
+            session_id,
+            existed,
+            await registry.count(),
+        )
+        return {"ok": True}
+
+    return mcp
