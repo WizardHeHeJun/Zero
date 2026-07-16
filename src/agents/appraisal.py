@@ -170,10 +170,62 @@ class AppraisalAgent:
         # ── coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）──
         # 来源独立于 occ_prior VA 路径；绝不读 goal_congruence（T2 裁决：来源须正交）。
         # enabled=False（默认）→ 不改任何字段，逐字零回归。
+        #
+        # B3 四分支融合（议会 2026-07-16 Q3=B3）：
+        #   ctrl = stim.control_appraisal（float|None；None=absent cue，精度趋零不参与融合）
+        #   text = state.text_coping_prior（float|None；None=门关=零回归）
+        #
+        #   分支1：两皆 None → cp=0.0, src_flag=False（数值等价旧行为，R1 逐字零回归）
+        #   分支2：仅 text（ctrl None）→ cp=clamp(text), src_flag=True（纯文本先验）
+        #   分支3：仅 ctrl（text None）→ cp=clamp(ctrl), src_flag=False（旧行为零回归，R4）
+        #   分支4：两皆有 → MLE 精度加权（Ernst & Banks 2002）：
+        #            π_ctrl=1.0（固定·议会定；过程量位阶高于感受代理）
+        #            π_t=state.text_coping_precision（ZERO_TEXT_COPING_PRECISION env，≤0.10）
+        #            cp = clamp((π_ctrl·clamp(ctrl) + π_t·clamp(text)) / (π_ctrl+π_t))
+        #            src_flag=True（text 参与融合，供中间带哑火消费）
+        #   不复用 fuse_terms / hierarchical_fuse（守来源正交红线）。
+        #
+        # ⚠ 已知局限（神经席约束7；不粉饰）：
+        #   text_coping_prior 学自 EmoBank SAM Dominance，为感受状态代理（主观量），
+        #   而 control_appraisal 是次级评价过程量（Smith & Ellsworth 1985 controllability）；
+        #   测量层次差异在 writer-D IAA≈0.54 天花板下筛选后仍残留，靠 π_t≤0.10 对冲。
         coping_updates: dict = {}
         if state.coping_potential_enabled and stim is not None:
-            cp = clamp(stim.control_appraisal, -1.0, 1.0)
-            coping_updates = {"coping_potential_state": cp}
+            ctrl = stim.control_appraisal  # float | None
+            # ── text_coping_enabled 门控（BLOCK-1）──
+            # False（默认）→ text 强制视为 None，只走分支1/3（纯 ctrl 路径，零回归）；
+            # True → 允许 text_coping_prior 参与 B3 融合（分支2/4）。
+            text = state.text_coping_prior if state.text_coping_enabled else None
+            if ctrl is None and text is None:
+                # 分支1：两皆 None → 强制 cp=0.0（每轮覆盖，非保持上轮值）；src_flag=False
+                cp: float = 0.0
+                src_flag: bool = False
+            elif ctrl is None:
+                # 分支2：仅 text（B3：absent ctrl 精度趋零，不参与融合）
+                assert text is not None  # 分支1 已排除两皆 None；此处 text 必非 None
+                cp = clamp(text, -1.0, 1.0)
+                src_flag = True
+            elif text is None:
+                # 分支3：仅 ctrl（旧行为路径，R4 零回归）
+                cp = clamp(ctrl, -1.0, 1.0)
+                src_flag = False
+            else:
+                # 分支4：两皆有 → MLE 精度加权（Ernst & Banks 2002）
+                pi_ctrl: float = 1.0  # 固定·议会定（过程量位阶高于感受代理）
+                pi_t: float = state.text_coping_precision  # ≤0.10（SessionConfig 层 fail-fast）
+                ctrl_c = clamp(ctrl, -1.0, 1.0)
+                text_c = clamp(text, -1.0, 1.0)
+                cp = clamp(
+                    (pi_ctrl * ctrl_c + pi_t * text_c) / (pi_ctrl + pi_t),
+                    -1.0,
+                    1.0,
+                )
+                src_flag = True
+            coping_updates = {"coping_potential_state": cp, "text_coping_source": src_flag}
+        else:
+            # coping_potential_enabled=False（默认）→ 不改 coping_potential_state；
+            # text_coping_source 归零为 False，防绕过 step() 的调用路径残留上轮 True（WARN-2）。
+            coping_updates = {"text_coping_source": False}
 
         return {
             "prior_mu": prior_mu,

@@ -279,10 +279,10 @@ class TestStimulusControlAppraisal:
         d = stim.model_dump()
         assert "control_appraisal" in d
 
-    def test_default_control_appraisal_is_zero(self) -> None:
-        """Stimulus 默认 control_appraisal=0.0（零回归）。"""
+    def test_default_control_appraisal_is_none(self) -> None:
+        """Stimulus 默认 control_appraisal=None（B3 前置改，absent cue 精度趋零）。"""
         stim = Stimulus(name="test")
-        assert stim.control_appraisal == pytest.approx(0.0)
+        assert stim.control_appraisal is None
 
     def test_explicit_control_appraisal_roundtrips(self) -> None:
         """显式传入 control_appraisal=0.7 后 model_dump 含正确值。"""

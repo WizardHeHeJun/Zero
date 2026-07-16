@@ -30,8 +30,10 @@ class Stimulus(BaseModel):
     intensity: float = 1.0  # 事件显著度/强度
     # 情境控制感评价维度（议会 2026-07-13 T2；Smith & Ellsworth 1985 control 维）。
     # 独立于 goal_congruence——目标可实现但感觉无法掌控（如意外之喜）。
-    # +1=高控制/趋近（愤怒端），-1=低控制/回避（恐惧端）；默认 0=零回归。
-    control_appraisal: float = 0.0
+    # +1=高控制/趋近（愤怒端），-1=低控制/回避（恐惧端）。
+    # None=absent cue（B3：absent cue 精度趋零，不参与 B3 融合）；
+    # 0.0=genuine-zero（显式真中性，参与 B3 融合，但贡献极小）。
+    control_appraisal: float | None = None
 
 
 class AffectState(BaseModel):
@@ -230,3 +232,25 @@ class AffectState(BaseModel):
     # len(external_priors) > max → expand_external_priors raise ValueError（数学席 Σπ 虚增保险）。
     # 经 SessionConfig → to_state_flags 贯通；N≤5 保守（fuse_terms MIN_SIGMA 已给隐式上界）。
     max_external_streams: int = Field(default=5, ge=0)
+
+    # text_coping 独立标量流（议会 2026-07-16 B3；来源：PerceptionAgent 词典/回归产出）。
+    # ── text_coping_enabled：B3 总门控（默认 False=零回归）──
+    # False → AppraisalAgent B3 强制 text=None，只走分支1/3（纯 ctrl 路径），逐字旧行为；
+    # True → 允许 text_coping_prior 参与 B3 融合（分支2/4）。
+    # 经 SessionConfig.text_coping_enabled → to_state_flags() → ainvoke 贯通。
+    text_coping_enabled: bool = False  # 默认关=零回归
+    # ── text_coping_prior：独立标量流入口 ──
+    # None=门关=零回归（每轮归零防 LastValue 残留，仿 external_priors）；
+    # 非 None=本轮 PerceptionAgent 产出的文本 coping 估计 ∈ [-1,1]。
+    # 绝不入 fuse_terms/occ_prior/fast_survival_prior/hierarchical_fuse（来源正交）；
+    # 唯一消费者经 AppraisalAgent 更新 coping_potential_state；每轮 step() 归零。
+    text_coping_prior: float | None = None
+    # ── text_coping_source：AppraisalAgent 输出 flag ──
+    # True=本轮 coping_potential_state 的值来自 text（供 motivational_system 中间带哑火）；
+    # False=来自 control_appraisal 或两皆 None（默认）；每轮 step() 归零。
+    text_coping_source: bool = False
+    # ── text_coping_precision：π_t（议会定 ≤0.10·缺省 0.08）──
+    # B3 融合精度：两者皆有时 π_ctrl=1.0（固定）vs π_t（此字段）做精度加权。
+    # ⚠ 不加 le 约束——避免 pydantic checkpoint 反序列化 fail（le 由 SessionConfig 层 fail-fast）。
+    # 仿 text_affect_precision 注释风格；由 ZERO_TEXT_COPING_PRECISION env 注入。
+    text_coping_precision: float = 0.08

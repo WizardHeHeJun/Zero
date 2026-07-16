@@ -96,6 +96,7 @@ def motivational_system(
     *,
     distinguish_fear: bool = False,
     coping_potential: float = 0.0,
+    text_coping_source: bool = False,
 ) -> str:
     """VA → Panksepp 主导情绪系统标签（动机色彩）。
 
@@ -129,9 +130,16 @@ def motivational_system(
         情境控制感 ∈ [-1,1]（默认 0.0=零回归，(-v,+a) 一律→ rage，与旧行为逐字兼容）。
         非零时在 (-v,+a) 象限用 control_appraisal 分离 rage/fear（议会 2026-07-13 P1-D）：
         >COPING_RAGE_THRESHOLD → rage（高控制/趋近）；<COPING_FEAR_THRESHOLD → fear（低控制/回避）；
-        中间段 → rage（保守默认，与旧 (-v,+a)→rage 逐字兼容）。
+        中间带哑火（text 来源·B3 约束3）见 text_coping_source 参数。
         由 AppraisalAgent 产出 coping_potential_state；经 language._appraisal_summary 读 state
         透传至此（仅 appraisal_conditioning 开时经该摘要消费，与 distinguish_fear 同一路径）。
+
+    text_coping_source : bool
+        默认 False=旧调用方零回归（不触发中间带哑火）。
+        True=本轮 coping_potential 值来自文本先验（B3 分支2/4），在 (-v,+a) 象限且
+        |coping_potential|≤TEXT_COPING_MIDDLE_BAND 时哑火返回 rage（保守默认），
+        防止低信度文本先验在中间带错误翻转 rage/fear（议会 2026-07-16 神经席约束3）。
+        仅影响 (-v,+a) 象限的 rage/fear 判断，其余象限无影响。
 
     env 贯通状态：已接 ZERO_PANKSEPP_DISTINGUISH_FEAR（默认关=零回归）。经
     chat_driver/runner → SessionConfig → AffectState.panksepp_distinguish_fear →
@@ -140,6 +148,11 @@ def motivational_system(
 
     返回小写枚举串，便于下游条件化与单测。
     """
+    # text 来源 coping 中间带哑火边界（议会 2026-07-16 神经席；Wacker et al. 2003）：
+    # 极端段方可分 rage/fear；[-0.15,+0.15] 方向可靠度不足，保守回落 rage。
+    # 暂定·待方向判据（留出集 Wilson CI 下界≥0.70）后回工程升/降，
+    # 届时仿 ignition_beta 走 env 注入（新增 state 字段 + ZERO_TEXT_COPING_MIDDLE_BAND）。
+    TEXT_COPING_MIDDLE_BAND = 0.15
     r, _ = _polar(valence, arousal)
     if r < NEUTRAL_RADIUS:
         return "neutral"
@@ -147,6 +160,11 @@ def motivational_system(
         return "seeking" if arousal >= 0.0 else "care"
     # (-v, +a) 象限
     if arousal >= 0.0:
+        # ── 中间带哑火 guard（B3 约束3）：text 来源且 |coping| 在中间带 → 保守 rage ──
+        # 必须在 COPING_RAGE_THRESHOLD/COPING_FEAR_THRESHOLD 判断之前执行（R3）。
+        # 与旧 (-v,+a)→rage 保守默认逐字兼容（中间带 → rage，非 fear）。
+        if text_coping_source and abs(coping_potential) <= TEXT_COPING_MIDDLE_BAND:
+            return "rage"
         # coping_potential 分离路径（议会 2026-07-13 P1-D）。阈值为函数体内局部变量：
         # ⚖ 议会初值(Smith & Ellsworth 1985 control 维)，待 P1 观测校准，工程不私拍。
         # P1 校准出新值后走 env 注入（仿 ignition_beta 新增 state 透传），届时改此为参数。

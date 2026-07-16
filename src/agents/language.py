@@ -131,6 +131,7 @@ def _appraisal_summary(state: AffectState) -> str:
             a,
             distinguish_fear=state.panksepp_distinguish_fear,
             coping_potential=state.coping_potential_state,
+            text_coping_source=state.text_coping_source,
         )
         if v is not None and a is not None
         else "?"

@@ -97,6 +97,13 @@ class SessionConfig(BaseModel):
     # coping_potential_enabled=False → AppraisalAgent 不产 coping_potential_state → 词典层零回归。
     # coping_potential 只进 Checkpointer，绝不写入图谱（CS 红线）。
     coping_potential_enabled: bool = False
+    # ── text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）──
+    # text_coping_enabled=False → AppraisalAgent B3 走分支1/3（仅 ctrl 路径）→ 词典层零回归。
+    # text_coping_source 是 AppraisalAgent 输出 flag，不是会话级输入，不进 SessionConfig。
+    text_coping_enabled: bool = False
+    # π_t 精度上界（le=0.10 在此层 fail-fast；AffectState 层不加 le 防 checkpoint 反序列化 fail）。
+    # 单源 EmoBank·议会 2026-07-16·π_t≤0.10·方向判据过后 CI 下界≥0.70 可升 0.15。
+    text_coping_precision: float = Field(default=0.08, gt=0.0, le=0.10)
     # ── facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）──
     # True → ExpressionAgent 占位路径把 coping_potential_state 透传给 decode_channels，
     # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
@@ -235,6 +242,9 @@ async def run(
     vicarious_threshold: float = 0.3,
     # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
     coping_potential_enabled: bool = False,
+    # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+    text_coping_enabled: bool = False,
+    text_coping_precision: float = 0.08,
     # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
     facs_extended: bool = False,
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
@@ -325,6 +335,13 @@ async def run(
                 "vicarious_threshold": vicarious_threshold,
                 # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
                 "coping_potential_enabled": coping_potential_enabled,
+                # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+                "text_coping_enabled": text_coping_enabled,
+                "text_coping_precision": text_coping_precision,
+                # text_coping 每轮防御归零（INFO-2·与 ConversationSession.step() 基准一致）：
+                # 批跑不逐轮注入 text_coping_prior，但显式归零防 checkpoint 残留（一致性+防御）。
+                "text_coping_prior": None,
+                "text_coping_source": False,
                 # facs_extended：AU 扩展集合门控（默认关=零回归）
                 "facs_extended": facs_extended,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
@@ -422,6 +439,9 @@ class ConversationSession:
         vicarious_threshold: float = 0.3,
         # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
         coping_potential_enabled: bool = False,
+        # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+        text_coping_enabled: bool = False,
+        text_coping_precision: float = 0.08,
         # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
         facs_extended: bool = False,
         # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
@@ -494,6 +514,9 @@ class ConversationSession:
                 vicarious_threshold=vicarious_threshold,
                 # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
                 coping_potential_enabled=coping_potential_enabled,
+                # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+                text_coping_enabled=text_coping_enabled,
+                text_coping_precision=text_coping_precision,
                 # facs_extended：AU 扩展集合门控（默认关=零回归）
                 facs_extended=facs_extended,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
@@ -534,6 +557,11 @@ class ConversationSession:
             # 非空 list → 跨轮残留（同 text_affect 被 PerceptionAgent 每轮显式归零的教训）。
             # state_overrides 若含 external_priors 会覆盖此空基准（下方 base.update）。
             "external_priors": [],
+            # text_coping 每轮显式归零（B3·议会 2026-07-16 约束5）：两者皆是 LastValue channel，
+            # 不归零会从 checkpoint 恢复上轮值造成残留（仿 external_priors 归零先例）。
+            # state_overrides 若含 text_coping_prior 会覆盖此 None 基准（下方 base.update）。
+            "text_coping_prior": None,
+            "text_coping_source": False,
         }
         if state_overrides is not None:
             base.update(state_overrides)

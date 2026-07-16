@@ -681,13 +681,23 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     vicarious_alpha = float(os.getenv("ZERO_VICARIOUS_ALPHA", "0"))
     vicarious_threshold = float(os.getenv("ZERO_VICARIOUS_THRESHOLD", "0.3"))
     # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）。
-    # step() 构造 Stimulus 不传 control_appraisal（默认 0），ChatDriver 不持有该旋钮。
+    # step() 构造 Stimulus 不传 control_appraisal（默认 None），ChatDriver 不持有该旋钮。
     coping_potential_enabled = os.getenv("ZERO_COPING_POTENTIAL_ENABLED", "").lower() in (
         "1",
         "true",
         "yes",
         "on",
     )
+    # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）。
+    # ZERO_TEXT_COPING_ENABLED 未设/false → False → AppraisalAgent B3 走仅 ctrl/两皆 None 分支。
+    # ZERO_TEXT_COPING_PRECISION：π_t 上限 ≤0.10（SessionConfig 层 fail-fast）；缺省 0.08。
+    text_coping_enabled = os.getenv("ZERO_TEXT_COPING_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    text_coping_precision = float(os.getenv("ZERO_TEXT_COPING_PRECISION", "0.08"))
     # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）。
     # True → ExpressionAgent 占位路径用 coping_potential_state 驱动 11-AU 扩展集合。
     # 占位路径（decoder=None）经 ExpressionAgent 消费；注入 decoder 若实现 predict_channels_coping
@@ -757,6 +767,9 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         vicarious_threshold=vicarious_threshold,
         # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）。
         coping_potential_enabled=coping_potential_enabled,
+        # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）。
+        text_coping_enabled=text_coping_enabled,
+        text_coping_precision=text_coping_precision,
         # facs_extended：AU 扩展集合门控（默认关=零回归）。
         facs_extended=facs_extended,
         # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。
