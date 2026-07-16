@@ -81,6 +81,9 @@ def _maybe_expression_decoder() -> ChannelDecoder | None:
     except (
         OSError
     ) as e:  # 文件缺失/不可读；形状不配对的 RuntimeError 原样穿透（含 size mismatch）。
+        # ⚠ 调用者（build_server ← __main__.main）须知：此 RuntimeError（及穿透的形状 RuntimeError）
+        # 意味**进程不可启动**的配置 fail-fast，非工具级错误——不应在 build_server 处被 ToolError 吞
+        # （启动期硬失败胜于启动后静默出错，同 chat_driver 的 FACS 权重 fail-fast 口径）。
         raise RuntimeError(
             f"ZERO_FACS_MODEL_PATH={model_path!r} 指向的权重文件不可读，请检查配置"
         ) from e
@@ -102,7 +105,21 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     """
     registry = registry if registry is not None else SessionRegistry()
     decoder = _maybe_expression_decoder()
-    mcp: FastMCP = FastMCP("zero")
+    # HTTP 传输的监听配置（stdio 下无害·仅 streamable-http 生效）：host/port/path 走 env，
+    # 便于给 MCP 侧稳定 endpoint（默认 127.0.0.1:8000/mcp，与 FastMCP 默认一致）。
+    # port 非法值 fail-fast 指向 env 名（与 _build_session_config 的 float/int 处理风格一致）。
+    try:
+        http_port = int(os.getenv("ZERO_MCP_HTTP_PORT", "8000"))
+    except ValueError as e:
+        raise ValueError(
+            f"ZERO_MCP_HTTP_PORT 须为整数，当前值={os.getenv('ZERO_MCP_HTTP_PORT')!r}"
+        ) from e
+    mcp: FastMCP = FastMCP(
+        "zero",
+        host=os.getenv("ZERO_MCP_HTTP_HOST", "127.0.0.1"),
+        port=http_port,
+        streamable_http_path=os.getenv("ZERO_MCP_HTTP_PATH", "/mcp"),
+    )
 
     @mcp.tool(
         name="zero.open_session",

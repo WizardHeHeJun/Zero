@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path  # _facs_v2_weights() 用
 
 import pytest
 
@@ -185,3 +186,92 @@ async def test_concurrent_steps_same_session_serialized() -> None:
         )
         assert all(r.isError is False for r in results)
         assert all("valence_arousal" in json.loads(r.content[0].text) for r in results)
+
+
+# ── 真 13-AU 权重路径（需 torch + 权重文件；权重走 gitignore/Release，缺则跳过）──────────
+
+
+def _facs_v2_weights() -> Path | None:
+    p = Path(__file__).resolve().parents[1] / "artifacts" / "facs_decoder_ext_v2.pt"
+    return p if p.exists() else None
+
+
+async def test_real_facs_decoder_13au_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """设 ZERO_FACS_MODEL_PATH → 注入真 13-AU 解码器：出全 13 键 facs_au、值为 python float
+    （无 numpy 泄漏、JSON 可序列化过边界）。权重/torch 缺则优雅跳过（CI 零依赖）。
+    """
+    pytest.importorskip("torch")
+    weights = _facs_v2_weights()
+    if weights is None:
+        pytest.skip("facs_decoder_ext_v2.pt 权重不在（gitignore/Release 分发）")
+    monkeypatch.setenv("ZERO_FACS_MODEL_PATH", str(weights))
+    monkeypatch.setenv("ZERO_FACS_EXTENDED", "true")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
+            "session_id"
+        ]
+        r = await client.call_tool(
+            "zero.step",
+            {"session_id": sid, "stim": {"valence": -0.5, "arousal": 0.7, "coping_potential": 0.8}},
+        )
+        assert r.isError is False
+        from src.agents.models.facs_decoder import FACS_KEYS_EXT
+
+        spontaneous = json.loads(r.content[0].text)["spontaneous"]
+        assert set(spontaneous["facs_au"]) == set(FACS_KEYS_EXT)  # 键名精确对齐（非仅数量）
+        assert all(isinstance(v, float) for v in spontaneous["facs_au"].values())  # JSON-safe
+        assert all(0.0 <= v <= 1.0 for v in spontaneous["facs_au"].values())  # 值域守界 [0,1]
+
+
+# ── HTTP（streamable-http）传输真端口往返（需 uvicorn；缺则跳过）──────────────────────
+
+
+async def test_http_transport_roundtrip() -> None:
+    """起 streamable-http server 于临时端口，streamablehttp_client 跑 open→step→close 全绿。
+
+    验证 HTTP 传输真可服务（非仅骨架）；与 stdio 同一 build_server、同契约。uvicorn 缺则跳过。
+    """
+    pytest.importorskip("uvicorn")
+    import asyncio
+    import socket
+
+    import uvicorn
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    # 持有已 bind 的 socket 直接交给 uvicorn（消除 bind→close→rebind 之间的端口竞态窗，W1）。
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+
+    app = build_server().streamable_http_app()
+    uv = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+    task = asyncio.create_task(uv.serve(sockets=[sock]))
+    try:
+        for _ in range(100):
+            if uv.started:
+                break
+            await asyncio.sleep(0.05)
+        assert uv.started, "uvicorn 未在 5s 内启动"
+        async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                names = {t.name for t in (await session.list_tools()).tools}
+                assert names == {"zero.open_session", "zero.step", "zero.close_session"}
+                sid = json.loads(
+                    (await session.call_tool("zero.open_session", {})).content[0].text
+                )["session_id"]
+                r = await session.call_tool(
+                    "zero.step", {"session_id": sid, "stim": {"valence": 0.6, "arousal": 0.5}}
+                )
+                assert r.isError is False
+                assert "valence_arousal" in json.loads(r.content[0].text)
+                r = await session.call_tool("zero.close_session", {"session_id": sid})
+                assert json.loads(r.content[0].text) == {"ok": True}
+    finally:
+        uv.should_exit = True
+        try:
+            await asyncio.wait_for(task, timeout=5)  # tear-down 有界，CI 不因收尾卡死（W2）
+        except TimeoutError:
+            task.cancel()
