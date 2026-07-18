@@ -113,17 +113,20 @@ def _fear_full_metric(logits: list[float]) -> SideMetric:
     return SideMetric(0.0, n, n, 1.0 if n else float("nan"), k, k / n if n else float("nan"), lb)
 
 
-def _three_way_split(indices: list[int], seed: int) -> tuple[list[int], list[int], list[int]]:
-    """固定种子把一侧样本索引洗牌后 40/40/20 三路切分：V_cal / V_test / V_reserve。
+def _three_way_split(
+    indices: list[int], seed: int, split_cal: float = SPLIT_CAL, split_test: float = SPLIT_TEST
+) -> tuple[list[int], list[int], list[int]]:
+    """固定种子把一侧样本索引洗牌后按 split_cal/split_test 三路切分：V_cal / V_test / V_reserve。
 
+    默认 40/40/20（余 20%=V_reserve）；split_test=0 即弃 reserve 的两路切分（如 60/40）。
     分侧（stratified）独立切分——保证 V_cal / V_test 两集各含足量 anger 与 fear。
     固定种子可复现（脚本无种子的 random 会不可复现，坑见交接 §5）。
     """
     shuffled = list(indices)
     random.Random(seed).shuffle(shuffled)
     n = len(shuffled)
-    n_cal = round(SPLIT_CAL * n)
-    n_test = round(SPLIT_TEST * n)
+    n_cal = round(split_cal * n)
+    n_test = round(split_test * n) if split_test > 0 else n - n_cal
     return shuffled[:n_cal], shuffled[n_cal : n_cal + n_test], shuffled[n_cal + n_test :]
 
 
