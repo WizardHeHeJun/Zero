@@ -134,6 +134,15 @@ def motivational_system(
         由 AppraisalAgent 产出 coping_potential_state；经 language._appraisal_summary 读 state
         透传至此（仅 appraisal_conditioning 开时经该摘要消费，与 distinguish_fear 同一路径）。
 
+        非对称可靠性与命名边界（议会四轮 2026-07-18·选项 δ）：来源本非对称——fear 回避
+        锚皮层下 PAG/杏仁核生存回路（情境无关，跨源 Wilson LB≈0.90；「情境无关」限防御
+        行为触发层面 LeDoux & Brown 2017，非意识 fear 感受本身 Barrett 2017）、anger 趋近
+        依赖前额叶可行动性评价（情境依赖，跨源撞构念天花板 ~74%）。故 text 来源的 coping 是
+        anger/fear 的**趋近-回避方向符号先验**（训练方案=符号监督 motivational_direction_prior；
+        ⚠接线未完成，PerceptionAgent 当前不产出 text_coping_prior，见 appraisal.py 同段注释），
+        非 Lazarus/Scherer 应对评价连续量；anger 侧约 12–20% 低置信弃权回退默认
+        （三路切分验证见 scripts/validate_anger_abstain.py），调用者不得假设 anger 信号总在。
+
     text_coping_source : bool
         默认 False=旧调用方零回归（不触发中间带哑火）。
         True=本轮 coping_potential 值来自文本先验（B3 分支2/4），在 (-v,+a) 象限且

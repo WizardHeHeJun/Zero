@@ -189,6 +189,24 @@ class AppraisalAgent:
         #   text_coping_prior 学自 EmoBank SAM Dominance，为感受状态代理（主观量），
         #   而 control_appraisal 是次级评价过程量（Smith & Ellsworth 1985 controllability）；
         #   测量层次差异在 writer-D IAA≈0.54 天花板下筛选后仍残留，靠 π_t≤0.10 对冲。
+        #
+        # ── 非对称可靠性与命名边界（议会四轮 2026-07-18 · 选项 δ）──
+        # ① 非对称来源（心理+神经席）：fear 回避锚皮层下 PAG/杏仁核生存回路（情境无关、
+        #    跨源稳，Wilson LB≈0.90）；anger 趋近依赖前额叶可行动性评价（情境依赖、叙事/
+        #    对话域动机衰减），故 anger 方向撞构念天花板（跨源 ~74%、LB<0.70）。
+        #    精度限定（神经席四轮）：「情境无关」指皮层下生存回路的**防御行为触发**层面
+        #    （LeDoux & Brown 2017），非意识 fear 感受本身——后者仍需皮层建构（Barrett 2017）。
+        #    anger 可行动性依据取 Harmon-Jones 2003 / Carver & Harmon-Jones 2009（EEG 直证）。
+        # ② 与 coping_potential 的边界（议会三轮正名）：本 text 先验的**训练方案**已定为符号
+        #    监督 motivational_direction_prior，是 anger/fear 类别的**趋近-回避方向符号先验**，
+        #    非 Lazarus/Scherer 意义的应对评价连续量；上方 SAM-D 段描述的是被取代的旧回归
+        #    路线（留档解释 π_t 对冲的由来）。⚠**接线未完成**：PerceptionAgent 当前不产出
+        #    text_coping_prior（每轮 step 归零）；text_coping_enabled=True 时须先在 perception
+        #    接入方向推理再写此字段，否则恒 None、只走分支1/3。
+        # ③ 弃权局限（选项 δ·anger 侧）：anger 高置信才用、低置信约 12–20% 弃权回退默认
+        #    （三路切分验证见 scripts/validate_anger_abstain.py + notes/2026-07-18-anger-
+        #    abstain-3way-validation.md；当前默认关、gate 未解锁）；调用者不得假设 anger
+        #    信号总在。fear 侧不弃权、全程可用。
         coping_updates: dict = {}
         if state.coping_potential_enabled and stim is not None:
             ctrl = stim.control_appraisal  # float | None

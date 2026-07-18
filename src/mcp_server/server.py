@@ -10,8 +10,11 @@
 **不进 affect 热路径**（映射是纯数据搬运）、secrets 走 env。`mcp` 走 optional-deps 不入 core。
 
 会话门控默认（`ZERO_MCP_*` env 可调）：`workspace_enabled=True`（否则 external_priors 被整段
-跳过，`affect_core.py:44,100-107`）+ `coping_potential_enabled=True`（否则 coping 被忽略，
-`appraisal.py:174-176`）——让 client 发的 external_priors/coping **真正生效**，与 chat 生产路径一致。
+跳过，`affect_core.py:44,100-107`——external_priors 是 client 契约核心、独立低精度流已经完整
+PRP + code-reviewer 批准，故默认开）；`coping_potential_enabled=False`（**与生产/chat 路径一致·
+零回归**——原默认 True 被议会四轮 2026-07-18 判为「生产关·MCP 开」治理旁路：anger 方向先验尚未
+经议会解锁，不得经 MCP 面静默生效。MCP 边界是否统一/anger 侧是否受同一弃权门约束=议会 B1 悬而
+未决，见 notes/2026-07-18-anger-delta-validation-council.md；解锁前维持最保守默认关）。
 """
 
 from __future__ import annotations
@@ -48,7 +51,9 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     """
     base: dict[str, Any] = {
         "workspace_enabled": _env_flag("ZERO_MCP_WORKSPACE_ENABLED", True),
-        "coping_potential_enabled": _env_flag("ZERO_MCP_COPING_ENABLED", True),
+        # 默认 False：与生产/chat 零回归一致（议会四轮 2026-07-18·B1 治理旁路整改）——
+        # anger 方向先验未经议会解锁，MCP 面不得旁路生效；解锁后按议会裁定更新。
+        "coping_potential_enabled": _env_flag("ZERO_MCP_COPING_ENABLED", False),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),
