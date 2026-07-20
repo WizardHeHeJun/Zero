@@ -213,8 +213,12 @@ class AppraisalAgent:
         #    ED 域仍 FAIL）。工程＝opt-in（ZERO_TEXT_COPING_ENABLED 默认仍 False·零回归）+ 域判别由
         #    **调用方注入 control_appraisal**（confrontational 注入·narrative 保 None 回退分支1/3·
         #    热路径不建域判别器）；真正生效前置=②的 W1 接线。anger 高置信才用、低置信约 12–20% 弃权
-        #    （无力型/沉思型 anger 噪声）；调用者不得假设 anger 信号总在。fear 不弃权但 Twitter 域
-        #    margin 小(见①)。
+        #    （无力型/沉思型 anger 噪声）；调用者不得假设 anger 信号总在。
+        # ④ fear 对称域条件化（议会 2026-07-20·EmoryNLP 第二源后·选项 α 重构）：δ「fear 全域稳」
+        #    证伪——fear 三源 ED 生存域 LB≈0.90(CeA-PAG)→SemEval 社交焦虑 0.709(BNST)→EmoryNLP 表演
+        #    对话 0.264 崩（anger 反双源稳 0.857/0.776）。fear 也域依赖·home 域与 anger 相反（fear=
+        #    生存叙事·anger=confrontational）；**fear 当前默认关**·域条件化激活路径待议会形式化
+        #    （须独立于 anger 的 control_appraisal 域·符号是方向轴非域轴）。见 fear-domain 纪要。
         coping_updates: dict = {}
         if state.coping_potential_enabled and stim is not None:
             ctrl = stim.control_appraisal  # float | None

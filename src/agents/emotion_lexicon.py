@@ -136,7 +136,8 @@ def motivational_system(
 
         非对称可靠性与命名边界（议会 2026-07-20·SemEval OOD 后订正）：可靠性**域特异·各有弱域**
         ——fear 回避锚皮层下 PAG/杏仁核生存回路（ED 叙事域 Wilson LB≈0.90 稳；但 Twitter 社交焦虑域
-        降至 LB=0.709·Davis&Walker 2009 BNST——「fear 全域稳」是 ED 单源幻觉；「情境无关」限防御行为
+        降至 LB=0.709·EmoryNLP 表演对话 0.264 崩·Davis&Walker 2009 BNST——「fear 全域稳」证伪·fear 也
+        须域条件化(home 域=生存叙事)；「情境无关」限防御行为
         触发层面 LeDoux&Brown 2017，非意识 fear 感受本身 Barrett 2017）、anger 趋近依赖前额叶可行动
         性评价（叙事/倾诉域 ~74%·confrontational 域恢复 LB=0.857·非本质下限）。
         故 text 来源 coping 是 anger/fear 的**趋近-回避方向符号先验**（训练方案=符号监督
