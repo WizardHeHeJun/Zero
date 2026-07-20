@@ -205,9 +205,9 @@ class AppraisalAgent:
         # ② 与 coping_potential 的边界（议会三轮正名）：本 text 先验的**训练方案**已定为符号
         #    监督 motivational_direction_prior，是 anger/fear 类别的**趋近-回避方向符号先验**，
         #    非 Lazarus/Scherer 意义的应对评价连续量；上方 SAM-D 段描述的是被取代的旧回归
-        #    路线（留档解释 π_t 对冲的由来）。⚠**接线未完成（W1）**：PerceptionAgent 当前不产出
-        #    text_coping_prior（每轮 step 归零）；text_coping_enabled=True 时须先在 perception
-        #    接入方向推理再写此字段，否则恒 None、只走分支1/3。
+        #    路线（留档解释 π_t 对冲的由来）。**W1 已接线（2026-07-20）**：PerceptionAgent 经
+        #    DirectionHead（ZERO_DIRECTION_HEAD_MODEL_PATH 门控·opt-in）产出 text_coping_prior；
+        #    未设权重 / text_coping_enabled=False（默认）则恒 None、只走分支1/3（零回归）。
         # ③ 解锁状态（议会 2026-07-20·**域条件化解锁·取代 δ 全域弃权**）：方向门(SemEval anger
         #    LB=0.857)+独立性门(r=−0.031)均过→**confrontational 域内解锁依据充分**（非全域无条件·
         #    ED 域仍 FAIL）。工程＝opt-in（ZERO_TEXT_COPING_ENABLED 默认仍 False·零回归）+ 域判别由

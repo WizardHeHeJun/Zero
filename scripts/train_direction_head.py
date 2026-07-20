@@ -85,7 +85,11 @@ def _wilson_lb(k: int, n: int, z: float = 1.96) -> float:
 
 
 class DirectionHead(nn.Module):
-    """句向量 → 单 logit（无 Tanh；BCEWithLogitsLoss 训练；推理 tanh(logit)∈[−1,1]）。"""
+    """句向量 → 单 logit（无 Tanh；BCEWithLogitsLoss 训练；推理 tanh(logit)∈[−1,1]）。
+
+    ⚠训练侧保留此定义；**推理封装权威版在 src/agents/models/direction_head.py**（W1 生产接线用）。
+    改 MLP 结构（hidden/层数）须两处同步，否则权重键形不兼容（code-review WARN-5）。
+    """
 
     def __init__(self, dim: int, hidden: int = 64) -> None:
         super().__init__()

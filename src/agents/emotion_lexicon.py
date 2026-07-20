@@ -140,8 +140,8 @@ def motivational_system(
         触发层面 LeDoux&Brown 2017，非意识 fear 感受本身 Barrett 2017）、anger 趋近依赖前额叶可行动
         性评价（叙事/倾诉域 ~74%·confrontational 域恢复 LB=0.857·非本质下限）。
         故 text 来源 coping 是 anger/fear 的**趋近-回避方向符号先验**（训练方案=符号监督
-        motivational_direction_prior；
-        ⚠接线未完成，PerceptionAgent 当前不产出 text_coping_prior，见 appraisal.py 同段注释），
+        motivational_direction_prior；W1 已接线 2026-07-20：PerceptionAgent 经 DirectionHead
+        opt-in 产出 text_coping_prior，见 appraisal.py 同段注释），
         非 Lazarus/Scherer 应对评价连续量；anger 侧约 12–20% 低置信弃权回退默认
         （三路切分验证见 scripts/validate_anger_abstain.py），调用者不得假设 anger 信号总在。
 
