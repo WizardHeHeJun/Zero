@@ -85,6 +85,28 @@ def _build_direction_head() -> DirectionHead | None:
         return None
 
 
+def _domain_direction_accepts(domain: str, direction_sign: float) -> bool:
+    """域×方向匹配谓词：仅在信号的 home 域接受该方向。
+
+    confrontational → direction_sign > 0（anger home 域）。
+    survival_narrative → direction_sign < 0（fear home 域）。
+    neutral（或其余未知值）→ False（显式两不属·弃权）。
+
+    重要（A-W1·议会 2026-07-20 WARN-1）：
+      domain 参数必须非 None——None 旁路由调用点 `if domain is not None` 处理。
+      本谓词的 `return False`（neutral 分支）是显式弃权，语义上≠ None 旁路；
+      若将 None 传入此谓词会产生 False，导致 text_coping_prior 被置 None，
+      与「None=整门旁路、prior 逐字不变」的零回归语义分叉——严禁混用。
+
+    热路径：纯枚举+符号比较，LLM-free，无判别器（域由调用方注入）。
+    """
+    if domain == "confrontational":
+        return direction_sign > 0.0  # anger home
+    if domain == "survival_narrative":
+        return direction_sign < 0.0  # fear home
+    return False  # neutral → 显式两不属 → 弃权（≠ None 旁路）
+
+
 class PerceptionAgent:
     """从 stimulus 抽取特征向量。
 
@@ -99,6 +121,14 @@ class PerceptionAgent:
       产出 text_coping_prior = tanh(logit) ∈ [-1, 1]（+1≈anger趋近·-1≈fear回避）。
       弃权门 τ（ZERO_ANGER_ABSTAIN_LOGIT_THRESHOLD，默认 0.0=不弃权）：
         abs(logit) < τ → text_coping_prior=None（弃权·B1 科学决策·当前 τ=0 inert）。
+
+    B2 域门（A1 热路径·议会 2026-07-20）：
+      _compute_text_coping 在 τ 弃权门之后施 A1 域×方向匹配门：
+        domain=None（默认）→ 整门旁路，prior 逐字不变（零回归，保 1061 passed）。
+        domain 非 None → 调用 _domain_direction_accepts(domain, prior) 检查方向：
+          失配（off-domain）→ prior=None（硬弃·off-domain π_t 近似为 0）。
+          匹配 → prior 逐字传出。
+      域门只置 text_coping_prior=None，绝不进 fuse_terms/occ_prior/其余流（来源正交）。
     """
 
     def __init__(self) -> None:
@@ -176,7 +206,14 @@ class PerceptionAgent:
           1. state.text_coping_enabled is False（默认）→ 归零（零回归·分支 1/3）。
           2. self.direction_head is None → 归零（未加载权重）。
           3. stim 或 stim.text 缺失 → 归零。
-          4. 产出路径：encode_texts → logit → 弃权门 → tanh(logit) 或 None。
+          4. 产出路径：encode_texts → logit → 弃权门 τ → A1 域门 → tanh(logit) 或 None。
+
+        A1 域门（B2·议会 2026-07-20·热路径单门）：
+          τ 弃权门之后，在 return 之前施 A1 域×方向匹配门（_domain_direction_accepts）：
+            stim.domain=None（默认）→ 整门旁路，prior 逐字不变（零回归，保 1061 passed）。
+            stim.domain 非 None 且 prior 非 None → 调用谓词：
+              匹配 → prior 不变；失配 → prior=None（硬弃·off-domain π_t 近似为 0）。
+          域门只置 text_coping_prior=None，绝不触及 fuse_terms/occ_prior 等流。
 
         节点读 state.text_coping_enabled，不读 ZERO_TEXT_COPING_ENABLED env
         （env 在驱动层注入 state·守节点契约）。
@@ -218,4 +255,22 @@ class PerceptionAgent:
             self.abstain_threshold,
             prior,
         )
+
+        # A1 域门（B2·议会 2026-07-20·热路径·域×方向匹配）
+        # A-W1：domain=None → 整门旁路，prior 逐字不变（零回归）；
+        #        domain 非 None → 谓词只处理非 None domain（None 旁路由此 if 包裹）。
+        # prior is not None 防止 None 入谓词（符号比较对 None 无意义）。
+        domain = stim.domain
+        # 注意：prior is None（τ 弃权门已置 None）时整个域门条件短路为 False → 整门跳过，
+        # prior 不再被置 None，直接透传（与下方 domain is None 旁路分支外观对称，
+        # 但语义不同——防后续维护者误改条件顺序将「弃权」混同「域失配置 None」）。
+        if (
+            domain is not None
+            and prior is not None
+            and not _domain_direction_accepts(domain, prior)
+        ):
+            prior = None  # 域失配 → 硬弃（off-domain π_t 近似为 0）
+            logger.debug("text_coping 域失配·硬弃 domain=%r prior→None", domain)
+        # domain is None → 整门旁路·prior 逐字不变（零回归）
+
         return {"text_coping_prior": prior}

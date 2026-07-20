@@ -18,6 +18,8 @@ from typing import Any
 from src.orchestration.external_prior import ExternalPrior
 from src.orchestration.state import Stimulus
 
+_VALID_DOMAINS: frozenset[str] = frozenset({"confrontational", "survival_narrative", "neutral"})
+
 
 def stimulus_from_payload(
     stim: dict[str, Any],
@@ -53,6 +55,15 @@ def stimulus_from_payload(
     coping = stim.get("coping_potential")
     if coping is not None:
         kwargs["control_appraisal"] = float(coping)
+    # A-map（B2·议会 2026-07-20）：domain 域轴字段提取与类型校验。
+    # domain 非 None 时 Stimulus 构造会触发 model_validator _check_domain_ctrl_sign，
+    # 校验 (domain, control_appraisal) 符号一致性（违反抛 ValueError·边界层 fail-fast）。
+    # _build_session_config 不感知 domain（per-step 字段·非 session flag）。
+    domain = stim.get("domain")
+    if domain is not None:
+        if not isinstance(domain, str) or domain not in _VALID_DOMAINS:
+            raise ValueError(f"domain 须为 {sorted(_VALID_DOMAINS)} 之一或 None，实际为 {domain!r}")
+        kwargs["domain"] = domain
     return Stimulus(**kwargs)
 
 

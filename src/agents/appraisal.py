@@ -215,10 +215,18 @@ class AppraisalAgent:
         #    热路径不建域判别器）；真正生效前置=②的 W1 接线。anger 高置信才用、低置信约 12–20% 弃权
         #    （无力型/沉思型 anger 噪声）；调用者不得假设 anger 信号总在。
         # ④ fear 对称域条件化（议会 2026-07-20·EmoryNLP 第二源后·选项 α 重构）：δ「fear 全域稳」
-        #    证伪——fear 三源 ED 生存域 LB≈0.90(CeA-PAG)→SemEval 社交焦虑 0.709(BNST)→EmoryNLP 表演
-        #    对话 0.264 崩（anger 反双源稳 0.857/0.776）。fear 也域依赖·home 域与 anger 相反（fear=
-        #    生存叙事·anger=confrontational）；**fear 当前默认关**·域条件化激活路径待议会形式化
-        #    （须独立于 anger 的 control_appraisal 域·符号是方向轴非域轴）。见 fear-domain 纪要。
+        #    证伪——fear 三源 ED 生存域 LB≈0.90→SemEval 社交焦虑 0.709→EmoryNLP 表演对话 0.264 崩
+        #    （anger 反双源稳 0.857/0.776）。fear 也域依赖·home 域与 anger 相反（fear=生存叙事·
+        #    anger=confrontational）。
+        #    【CeA/BNST 标签保守化·机制假说非确立事实】：CeA phasic 生存 fear / BNST sustained
+        #    社交焦虑的解剖映射是**机制假说**（Davis&Walker 2009 DOI:10.1038/npp.2009.109），
+        #    Grogans et al. (2023 SCAN) meta 分析显示 CeA/BNST 无显著区域×确定性解离（≈随机），
+        #    人类实证效度不足——故域定义以体裁/情境为锚，不以解剖结构为一级依据。
+        #    【B2 已落地·2026-07-20】：Stimulus.domain 正交字段（state.py）+ perception.py
+        #    _domain_direction_accepts 热路径域门均已实现；off-domain text_coping_prior 硬弃
+        #    ≡ 该域 π_t 近似为 0（硬弃非无理论工程约定·Ernst&Banks 2002 MLE）。
+        #    fear 生产解锁默认关（B-fe）：须 DailyDialog 第三源域稳定性验证（议会裁·B-DD）；
+        #    π_t(fear) 域数值（B-pi）走 .env·工程不私开。
         coping_updates: dict = {}
         if state.coping_potential_enabled and stim is not None:
             ctrl = stim.control_appraisal  # float | None

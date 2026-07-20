@@ -8,9 +8,9 @@ state 不放大对象（向量/文档）；trace 仅存标量中间量。运行�
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.memory.types import Fact
 from src.orchestration.external_prior import ExternalPrior
@@ -34,6 +34,55 @@ class Stimulus(BaseModel):
     # None=absent cue（B3：absent cue 精度趋零，不参与 B3 融合）；
     # 0.0=genuine-zero（显式真中性，参与 B3 融合，但贡献极小）。
     control_appraisal: float | None = None
+    # 域轴：当前事件的体裁/情境类别（B2·议会 2026-07-20；正交于 control_appraisal 方向轴）。
+    #
+    # 语义：
+    #   None（默认）= absent/未指定 → 域门整体旁路，现有路径逐字不变（零回归）。
+    #   "confrontational" = anger home 域（Twitter 式当下对抗·SemEval anger LB=0.857）。
+    #   "survival_narrative" = fear home 域（ED 式生存/防御叙事·ED fear LB=0.90）。
+    #   "neutral" = 显式两不属 → text_coping_prior 弃权（≠ None 旁路；两者语义不同·A-W1）。
+    #
+    # A-C2（对称门工程注意事项·神经层次不对等）：
+    #   confrontational 域的 anger 激活依赖前额叶评价（可行动性·Harmon-Jones 2003
+    #   DOI:10.1016/S0191-8869(02)00313-6），属皮层依赖过程；survival_narrative 域的 fear
+    #   激活依赖皮层下防御回路（CeA-PAG·Davis&Walker 2009 DOI:10.1038/npp.2009.109），
+    #   属皮层下生存机制。"对称门"是工程近似，两者神经层次不对等——anger 需语境中
+    #   行动可行性、fear 则情境依赖性弱得多。
+    #   重要：CeA/BNST 的解剖标签在此是**机制假说非确立事实**；Grogans et al. (2023 SCAN)
+    #   meta 分析显示 CeA/BNST 无显著区域×确定性解离（效度不足）——故域定义以体裁/情境为锚，
+    #   不以解剖结构为一级依据。
+    #   domain_confidence（c_domain 精度衰减字段）属 B 类议会定，本轮不实施。
+    #
+    # None → 旁路；neutral → 显式弃权；domain_confidence 属 B 类（Feldman&Friston 2010 B 类）。
+    domain: Literal["confrontational", "survival_narrative", "neutral"] | None = None
+
+    @model_validator(mode="after")
+    def _check_domain_ctrl_sign(self) -> Stimulus:
+        """边界层 fail-fast（A-bd·议会 2026-07-20 T-1）：domain 非 None 且 control_appraisal
+        非 None 时，校验二者符号一致性，防不一致注入抵达 appraisal 分支4 MLE。
+
+        confrontational → ctrl >= 0（anger home 域不接受 fear 符号注入）；
+        survival_narrative → ctrl <= 0（fear home 域不接受 anger 符号注入）；
+        neutral / domain=None / ctrl=None → no-op，直接 return self（零回归）。
+
+        违反时抛 ValueError（fail-fast，非静默）；消息含 domain 与 ctrl 值供调试。
+        """
+        domain = self.domain
+        ctrl = self.control_appraisal
+        if domain is None or ctrl is None:
+            return self
+        # neutral → no-op（跳过两 if·self 直接返回·防误加 neutral 的 ctrl 校验）
+        if domain == "confrontational" and ctrl < 0.0:
+            raise ValueError(
+                f"domain={domain!r} 要求 control_appraisal >= 0，"
+                f"但收到 ctrl={ctrl}（fear 符号注入 confrontational 域·边界层拒绝）"
+            )
+        if domain == "survival_narrative" and ctrl > 0.0:
+            raise ValueError(
+                f"domain={domain!r} 要求 control_appraisal <= 0，"
+                f"但收到 ctrl={ctrl}（anger 符号注入 survival_narrative 域·边界层拒绝）"
+            )
+        return self
 
 
 class AffectState(BaseModel):

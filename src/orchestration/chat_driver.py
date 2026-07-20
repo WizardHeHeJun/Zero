@@ -313,6 +313,10 @@ class ChatDriver:
         )
         if self.standard_compliance_enabled:
             stim_kwargs["standard_compliance"] = appraise_standard_compliance(user_text)
+        # A-bd（domain 缺口显式化）：canonical 构造当前不传 domain（默认 None=旁路·合法）。
+        # 若将来此路径需注入 domain，须知 Stimulus 的 @model_validator _check_domain_ctrl_sign
+        # 已集中覆盖 (domain, ctrl) 符号一致性 fail-fast（mapping.py 已落地）；
+        # 接线时跟进即可、此处无需另加 assert。
         stim = Stimulus(**stim_kwargs)
         # P3 1-C：任一共情 alpha>0（门开）把 interlocutor_va 注入每轮 state_overrides；
         # 全关（默认）→ 不传 state_overrides → session.step(stim) 调用签名与改前逐字一致（零回归）。
