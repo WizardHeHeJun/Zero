@@ -225,8 +225,20 @@ class AppraisalAgent:
         #    【B2 已落地·2026-07-20】：Stimulus.domain 正交字段（state.py）+ perception.py
         #    _domain_direction_accepts 热路径域门均已实现；off-domain text_coping_prior 硬弃
         #    ≡ 该域 π_t 近似为 0（硬弃非无理论工程约定·Ernst&Banks 2002 MLE）。
-        #    fear 生产解锁默认关（B-fe）：须 DailyDialog 第三源域稳定性验证（议会裁·B-DD）；
-        #    π_t(fear) 域数值（B-pi）走 .env·工程不私开。
+        #    fear 生产解锁默认关（B-fe）：议会 2026-07-21（DailyDialog 第三源后）裁**维持默认关**。
+        #    【DailyDialog 第三源·四源梯度】ED 0.90>SemEval 0.709>DailyDialog 0.582>EmoryNLP 0.264。
+        #    对话域 fear sub-bar 有**两层原因**（心理/神经席·勿混为一）：(a) 构念异质——live-chat
+        #    「害怕」多为 Lazarus anxiety（不确定）非 fear（即时具体威胁·Lazarus 1991），方向信号
+        #    不稳（主因）；(b) 体裁放大——表演台词夸张高唤醒→方向混淆（EmoryNLP 0.264·DailyDialog
+        #    自然对话 0.582 高出 +32pp 证明两层各有贡献·非纯表演 artifact；Bossuyt 2014 fear 方向
+        #    目标依赖可转趋近·对话域非零信号）。
+        #    【B-pi·π_t(fear) 推荐 0.08】闭式映射 π_t(fear)=π_t(anger 0.07)×(LB_fear 0.90/LB_anger
+        #    均值 0.821)≈0.077→取 0.08（Ben-David 2010·不超 0.10）；fear 默认关**不 set .env**·
+        #    待解锁裁；对话域域门硬弃→π_t 不生效（仅 survival 域才可能生效）。
+        #    【R 条件·单源 OOD 残余风险】ED 体裁⊂survival 全分布·非等于（d_HΔH 未量化·单源解锁属
+        #    工程近似非数学充分·「单源幻觉」历史）；残余风险 ε≤p_mis+(1−LB_ED)≈p_mis+0.10。
+        #    须第二生存叙事源（LB≥0.80）才升为可解锁——见
+        #    notes/2026-07-21-dailydialog-fear-unlock-council.md。
         coping_updates: dict = {}
         if state.coping_potential_enabled and stim is not None:
             ctrl = stim.control_appraisal  # float | None

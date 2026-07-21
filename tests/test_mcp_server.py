@@ -275,3 +275,81 @@ async def test_http_transport_roundtrip() -> None:
             await asyncio.wait_for(task, timeout=5)  # tear-down 有界，CI 不因收尾卡死（W2）
         except TimeoutError:
             task.cancel()
+
+
+# ── 议会解锁门治理旁路测试（A5·A6·2026-07-21）────────────────────────────────────────────
+#
+# 验证 _MCP_GOVERNANCE_GATED_FLAGS 堵住「生产关·MCP 开」旁路：
+#   - client 经 config overrides 传 text_coping_enabled/coping_potential_enabled=True → 静默忽略
+#   - env ZERO_MCP_TEXT_COPING_ENABLED=true → text_coping_enabled 生效（env 治理正路）
+#   - 非门控字段 contagion_alpha override → 仍正常覆写（不误伤）
+#   - 默认（无 env 无 override）→ 两门均 False（零回归）
+
+
+def test_governance_default_both_gates_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """无 env 无 override → text_coping_enabled=False·coping_potential_enabled=False（零回归）。
+
+    显式 delenv 两门 env，防 shell 预设 env 时假绿（pitfalls 第7条：不自动加载 .env）。
+    """
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.delenv("ZERO_MCP_COPING_ENABLED", raising=False)
+    monkeypatch.delenv("ZERO_MCP_TEXT_COPING_ENABLED", raising=False)
+    cfg = _build_session_config(None)
+    assert cfg.text_coping_enabled is False
+    assert cfg.coping_potential_enabled is False
+
+
+def test_governance_override_text_coping_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """client override text_coping_enabled=True → 被治理静默忽略，config 仍 False（A5）。"""
+    from src.mcp_server.server import _build_session_config
+
+    # 确保 env 未设（不受已有 .env 污染）
+    monkeypatch.delenv("ZERO_MCP_TEXT_COPING_ENABLED", raising=False)
+    cfg = _build_session_config({"text_coping_enabled": True})
+    assert cfg.text_coping_enabled is False
+
+
+def test_governance_override_coping_potential_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """client override coping_potential_enabled=True → 被治理静默忽略，仍 False（A6 残洞）。"""
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.delenv("ZERO_MCP_COPING_ENABLED", raising=False)
+    cfg = _build_session_config({"coping_potential_enabled": True})
+    assert cfg.coping_potential_enabled is False
+
+
+def test_governance_env_text_coping_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """env ZERO_MCP_TEXT_COPING_ENABLED=true → text_coping_enabled=True（env 治理正路生效）。"""
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.setenv("ZERO_MCP_TEXT_COPING_ENABLED", "true")
+    cfg = _build_session_config(None)
+    assert cfg.text_coping_enabled is True
+
+
+def test_governance_env_coping_potential_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ZERO_MCP_COPING_ENABLED=true → coping_potential_enabled=True。
+
+    env 治理正路·与 test_governance_env_text_coping_enabled 对称；
+    delenv text 门防串扰，确保结果仅由 ZERO_MCP_COPING_ENABLED 驱动。
+    """
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.setenv("ZERO_MCP_COPING_ENABLED", "true")
+    monkeypatch.delenv("ZERO_MCP_TEXT_COPING_ENABLED", raising=False)
+    cfg = _build_session_config(None)
+    assert cfg.coping_potential_enabled is True
+
+
+def test_governance_non_gated_override_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非门控字段 contagion_alpha override → 正常覆写（治理过滤不误伤普通字段）。"""
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.delenv("ZERO_MCP_TEXT_COPING_ENABLED", raising=False)
+    monkeypatch.delenv("ZERO_MCP_COPING_ENABLED", raising=False)
+    cfg = _build_session_config({"contagion_alpha": 0.15})
+    assert cfg.contagion_alpha == pytest.approx(0.15)
+    # 门控字段维持 False（未被 override 带进来）
+    assert cfg.text_coping_enabled is False
+    assert cfg.coping_potential_enabled is False

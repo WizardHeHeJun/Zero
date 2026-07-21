@@ -14,7 +14,13 @@
 PRP + code-reviewer 批准，故默认开）；`coping_potential_enabled=False`（**与生产/chat 路径一致·
 零回归**——原默认 True 被议会四轮 2026-07-18 判为「生产关·MCP 开」治理旁路：anger 方向先验尚未
 经议会解锁，不得经 MCP 面静默生效。MCP 边界是否统一/anger 侧是否受同一弃权门约束=议会 B1 悬而
-未决，见 notes/2026-07-18-anger-delta-validation-council.md；解锁前维持最保守默认关）。
+未决，见 notes/2026-07-18-anger-delta-validation-council.md；解锁前维持最保守默认关）；
+`text_coping_enabled=False`（**与生产/chat 路径一致·零回归**——text_coping 需议会解锁，
+MCP 面不得旁路生效，仅 `ZERO_MCP_TEXT_COPING_ENABLED` env 治理，见 A5·2026-07-21）。
+
+**议会解锁门治理原则（A5·A6·2026-07-21）**：`text_coping_enabled`/`coping_potential_enabled`
+是议会门控字段，**只受 `ZERO_MCP_*` env 治理，client 经 config overrides 传入的同名字段被
+静默忽略**（`_MCP_GOVERNANCE_GATED_FLAGS` 过滤）——防「生产关·MCP 开」旁路。
 """
 
 from __future__ import annotations
@@ -34,6 +40,12 @@ from src.orchestration.runner import ConversationSession, SessionConfig
 
 logger = logging.getLogger(__name__)
 
+# 议会解锁门：这两个字段**只受 ZERO_MCP_* env 治理**，client config overrides 中的同名键
+# 被 _build_session_config 静默忽略（A5·A6·2026-07-21）——防「生产关·MCP 开」旁路。
+_MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
+    {"coping_potential_enabled", "text_coping_enabled"}
+)
+
 
 def _env_flag(name: str, default: bool) -> bool:
     """读布尔 env；未设 → default。真值集与 chat_driver 一致（1/true/yes/on）。"""
@@ -48,19 +60,34 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
 
     覆写只挑 SessionConfig 已有字段（防注入未知键），并经 SessionConfig 构造**重新校验**
     （如共情系数 L1 上界 `runner.py:131-140`），坏值 fail-fast → 上层转 ToolError。
+
+    **议会解锁门（A5·A6·2026-07-21）**：`_MCP_GOVERNANCE_GATED_FLAGS` 中的字段
+    （`text_coping_enabled`/`coping_potential_enabled`）**不受 overrides 覆写**，
+    只由 `ZERO_MCP_TEXT_COPING_ENABLED`/`ZERO_MCP_COPING_ENABLED` env 治理——防 client
+    经 config 旁路生产门控（「生产关·MCP 开」治理漏洞）。非门控字段（如 `contagion_alpha`）
+    仍可正常 override。
     """
     base: dict[str, Any] = {
         "workspace_enabled": _env_flag("ZERO_MCP_WORKSPACE_ENABLED", True),
         # 默认 False：与生产/chat 零回归一致（议会四轮 2026-07-18·B1 治理旁路整改）——
         # anger 方向先验未经议会解锁，MCP 面不得旁路生效；解锁后按议会裁定更新。
         "coping_potential_enabled": _env_flag("ZERO_MCP_COPING_ENABLED", False),
+        # 默认 False：与生产/chat 零回归一致（A5·2026-07-21）——text_coping 需议会解锁，
+        # 仅 ZERO_MCP_TEXT_COPING_ENABLED env 治理；client override 被 gated_flags 静默忽略。
+        "text_coping_enabled": _env_flag("ZERO_MCP_TEXT_COPING_ENABLED", False),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),
         "max_external_streams": int(os.getenv("ZERO_MAX_EXTERNAL_STREAMS", "5")),
     }
     if overrides:
-        base.update({k: v for k, v in overrides.items() if k in SessionConfig.model_fields})
+        base.update(
+            {
+                k: v
+                for k, v in overrides.items()
+                if k in SessionConfig.model_fields and k not in _MCP_GOVERNANCE_GATED_FLAGS
+            }
+        )
     return SessionConfig(**base)
 
 
