@@ -167,14 +167,27 @@ class TestMotivationalSystemCopingThreeSections:
         result = motivational_system(-0.6, 0.6, coping_potential=0.31)
         assert result == "rage"
 
-    def test_below_low_threshold_is_fear(self) -> None:
-        """coping_potential=-0.5 < -0.3 → fear（低控制/回避端）。"""
+    def test_below_low_threshold_gate_closed_is_rage(self) -> None:
+        """coping_potential=-0.5 < -0.3 + fear_domain_enabled=False(默认) → rage（WARN-3 门关）。
+
+        改前此处断言 fear；WARN-3 fear 专属门落地后，默认门关→保守 rage 是正确的议会裁定行为。
+        """
         result = motivational_system(-0.6, 0.6, coping_potential=-0.5)
+        assert result == "rage"
+
+    def test_below_low_threshold_gate_open_is_fear(self) -> None:
+        """coping_potential=-0.5 < -0.3 + fear_domain_enabled=True → fear（门开正路）。"""
+        result = motivational_system(-0.6, 0.6, coping_potential=-0.5, fear_domain_enabled=True)
         assert result == "fear"
 
-    def test_exactly_below_threshold_is_fear(self) -> None:
-        """coping_potential=-0.31 (刚过 -0.3) → fear。"""
+    def test_exactly_below_threshold_gate_closed_is_rage(self) -> None:
+        """coping=-0.31(刚过 -0.3) + fear_domain_enabled=False(默认) → rage（WARN-3 门关）。"""
         result = motivational_system(-0.6, 0.6, coping_potential=-0.31)
+        assert result == "rage"
+
+    def test_exactly_below_threshold_gate_open_is_fear(self) -> None:
+        """coping_potential=-0.31(刚过 -0.3) + fear_domain_enabled=True → fear（门开正路）。"""
+        result = motivational_system(-0.6, 0.6, coping_potential=-0.31, fear_domain_enabled=True)
         assert result == "fear"
 
     def test_mid_section_positive_is_rage(self) -> None:
@@ -332,7 +345,7 @@ class TestCopingPotentialAppraisalSummaryWiring:
     """
 
     @staticmethod
-    def _summary(coping_potential_state: float) -> str:
+    def _summary(coping_potential_state: float, *, fear_domain_enabled: bool = False) -> str:
         from src.agents.language import _appraisal_summary
 
         stim = Stimulus(name="t", goal_congruence=-0.5, intensity=0.6)
@@ -341,12 +354,24 @@ class TestCopingPotentialAppraisalSummaryWiring:
             appraisal={"valence": -0.6, "arousal": 0.6},  # (-v,+a) 象限
             coping_potential_state=coping_potential_state,
             coping_potential_enabled=True,
+            fear_domain_enabled=fear_domain_enabled,
         )
         return _appraisal_summary(state)
 
-    def test_low_coping_summary_shows_fear(self) -> None:
-        """control_appraisal 低（-0.5）→ 摘要动机系统=fear（接线生效）。"""
-        assert "动机系统=fear" in self._summary(-0.5)
+    def test_low_coping_summary_gate_closed_shows_rage(self) -> None:
+        """coping_potential=-0.5 + fear_domain_enabled=False(默认) → rage（WARN-3 门关保守默认）。
+
+        改前此处断言 fear；WARN-3 fear 专属门落地后，默认门关→回退 rage 是正确的议会裁定行为。
+        零回归口径：fear 本就该默认关，此处改预期为 rage 是「正确的默认行为变更」而非破坏。
+        """
+        assert "动机系统=rage" in self._summary(-0.5, fear_domain_enabled=False)
+
+    def test_low_coping_summary_gate_open_shows_fear(self) -> None:
+        """coping_potential=-0.5 + fear_domain_enabled=True → fear（门开·路径二接线生效）。
+
+        对称用例：显式开门后，低 coping 正常产 fear（接线验证）。
+        """
+        assert "动机系统=fear" in self._summary(-0.5, fear_domain_enabled=True)
 
     def test_high_coping_summary_shows_rage(self) -> None:
         """control_appraisal 高（0.5）→ 摘要动机系统=rage。"""

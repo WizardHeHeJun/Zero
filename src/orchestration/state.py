@@ -288,6 +288,15 @@ class AffectState(BaseModel):
     # True → 允许 text_coping_prior 参与 B3 融合（分支2/4）。
     # 经 SessionConfig.text_coping_enabled → to_state_flags() → ainvoke 贯通。
     text_coping_enabled: bool = False  # 默认关=零回归
+    # ── fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1）──
+    # False（默认）→ 任何路径**不得产出 fear 域激活**（两条泄漏路径均须覆盖·零回归）：
+    #   路径一（流卫生）：perception._compute_text_coping 中 survival_narrative 域信号硬弃
+    #     （不论方向·anger confrontational 路径完全不受此门）。
+    #   路径二（单点完整）：emotion_lexicon.motivational_system coping<COPING_FEAR_THRESHOLD
+    #     分支返回 rage 而非 fear（保守默认·非 fear 域激活）。
+    # True → 两路径解除硬弃/回退，fear 域激活可经正常门控产生（须 env 显式开）。
+    # 语义边界：fear 专属门·anger confrontational 路径完全不受此门（仅 survival 域关）。
+    fear_domain_enabled: bool = False  # WARN-3 fear 专属门·默认关=零回归·B1 BLOCK 前置
     # ── text_coping_prior：独立标量流入口 ──
     # None=门关=零回归（每轮归零防 LastValue 残留，仿 external_priors）；
     # 非 None=本轮 PerceptionAgent 产出的文本 coping 估计 ∈ [-1,1]。

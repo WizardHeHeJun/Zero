@@ -191,8 +191,25 @@ class AppraisalAgent:
         #   测量层次差异在 writer-D IAA≈0.54 天花板下筛选后仍残留，靠 π_t≤0.10 对冲。
         #
         # ── 非对称可靠性与命名边界（议会 2026-07-20·SemEval OOD 后订正·域条件化解锁）──
+        # ── A2：anger 三源 R 披露（数学席·议会 2026-07-21·可采纳）──
+        # anger 三源 confrontational 域 Wilson LB：SemEval 0.857 / EmoryNLP 0.776 / DailyDialog 0.730。  # noqa: E501
+        # P2 域散度：range=极差 0.127 < 0.20 → d_HΔH(confrontational 各体裁) 可估·泛化误差上界
+        #   ≤ 0.127/2 = 0.064（Ben-David et al. 2010 DOI:10.1007/s10994-009-5152-4）。
+        # R 披露（须明注）：
+        #   (a) ED 叙事域 anger LB≈0.68 < bar(0.70) → 不解锁（域失配·行动路径关闭·Kelley 2013）。
+        #   (b) E-c 多标签（SemEval emotion-c）宽于纯 approach-anger → LB=0.857 对纯 approach-anger
+        #       可能轻微高估（宽定义·残余不确定性·数学席）。
+        #   (c) τ 弃权门当前无统计增益（<2pp·FWER≈18.5%·见 perception.py A4 注释）。
+        # 比 fear 单源（d_HΔH 未量化·单源幻觉历史）信息论保证更强——见 A6 注释。
+        #
         # ① 非对称来源与**双向域依赖**（可靠性是域特异的·非本质属性）：fear 回避锚皮层下
-        #    PAG/杏仁核生存回路、anger 趋近依赖前额叶可行动性评价（Harmon-Jones 2003 EEG 直证）。
+        #    PAG/杏仁核生存回路、anger 趋近依赖前额叶可行动性评价。
+        #    ── A5：Harmon-Jones 2003 双引区分（议会 2026-07-21）──
+        #    Harmon-Jones et al. (2003) EEG 实验直证（anger coping & frontal cortex·
+        #      Cognition & Emotion 17(1):1-24·PubMed:29715737）→ anger 前额叶激活·趋近动机直证。
+        #    Harmon-Jones, E. (2003) BAS 理论综述（anger & behavioral approach system·
+        #      Pers. Individ. Differ. 35:995-1005·DOI:10.1016/S0191-8869(02)00313-6）→ BAS 理论框架。  # noqa: E501
+        #    两文作者部分重叠但体裁不同（Cog&Emo=EEG 实验·PAID=理论综述）；勿混引。
         #    实测（SemEval-2018 Twitter vs EmpatheticDialogues）——anger/fear **各有弱域**：
         #      anger：confrontational 域（Twitter·当下·可行动性在线）LB=0.857 恢复；叙事/倾诉域
         #        （ED·行动路径关闭·Kelley 2013 沉思型右额叶）LB≈0.68。~74% 是 ED 域下限、非普遍。
@@ -201,7 +218,7 @@ class AppraisalAgent:
         #        是 ED 单源幻觉。
         #    「情境无关」限皮层下生存回路的**防御行为触发**层面（LeDoux&Brown 2017），非意识 fear
         #    感受本身（Barrett 2017）。E-c 多标签 anger 宽于纯 approach-anger·LB=0.857 对后者可能
-        #    轻微高估（残余不确定性·数学席）。详见 notes/2026-07-20-anger-unlock-decision-council。
+        #    轻微高估（残余不确定性·数学席·见 A2 R 披露(b)）。详见 notes/2026-07-20-anger-unlock-decision-council。  # noqa: E501
         # ② 与 coping_potential 的边界（议会三轮正名）：本 text 先验的**训练方案**已定为符号
         #    监督 motivational_direction_prior，是 anger/fear 类别的**趋近-回避方向符号先验**，
         #    非 Lazarus/Scherer 意义的应对评价连续量；上方 SAM-D 段描述的是被取代的旧回归
@@ -239,6 +256,15 @@ class AppraisalAgent:
         #    工程近似非数学充分·「单源幻觉」历史）；残余风险 ε≤p_mis+(1−LB_ED)≈p_mis+0.10。
         #    须第二生存叙事源（LB≥0.80）才升为可解锁——见
         #    notes/2026-07-21-dailydialog-fear-unlock-council.md。
+        # ── A6：anger 三源信息论保证（神经席·议会 2026-07-21）──
+        # anger 三体裁（SemEval Twitter / EmoryNLP / DailyDialog confrontational）交叉收敛效度：
+        #   三源 d_HΔH 可估（Ben-David 2010）·极差 0.127·泛化误差上界 ≤0.064。
+        #   Harmon-Jones & Gable 2018（Psychophysiology DOI:10.1111/psyp.12879）跨 30+ 实验室
+        #   确认 confrontational anger 左前额叶 BAS·体裁无关的神经机制收敛。
+        #   三体裁交叉收敛效度比 fear 单源（d_HΔH 未量化·单源幻觉·「ED 0.90」跨域即崩）
+        #   信息论保证**更强**——这是议会 2026-07-21 四席 PASS anger 的核心依据。
+        #   fear 解锁须第二生存叙事源 LB≥0.80（单源 ED 幻觉历史·d_HΔH 须量化）；
+        #   当前 fear 维持默认关（B-fe·ZERO_FEAR_DOMAIN_ENABLED 默认 False）。
         coping_updates: dict = {}
         if state.coping_potential_enabled and stim is not None:
             ctrl = stim.control_appraisal  # float | None

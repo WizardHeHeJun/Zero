@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # 议会解锁门：这两个字段**只受 ZERO_MCP_* env 治理**，client config overrides 中的同名键
 # 被 _build_session_config 静默忽略（A5·A6·2026-07-21）——防「生产关·MCP 开」旁路。
 _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
-    {"coping_potential_enabled", "text_coping_enabled"}
+    {"coping_potential_enabled", "text_coping_enabled", "fear_domain_enabled"}
 )
 
 
@@ -75,6 +75,10 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # 默认 False：与生产/chat 零回归一致（A5·2026-07-21）——text_coping 需议会解锁，
         # 仅 ZERO_MCP_TEXT_COPING_ENABLED env 治理；client override 被 gated_flags 静默忽略。
         "text_coping_enabled": _env_flag("ZERO_MCP_TEXT_COPING_ENABLED", False),
+        # 默认 False：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1）——任何路径不产
+        # fear 域激活；仅 ZERO_MCP_FEAR_DOMAIN_ENABLED env 治理，client override 被 gated_flags
+        # 静默忽略（与 text_coping_enabled 同一治理模式）。
+        "fear_domain_enabled": _env_flag("ZERO_MCP_FEAR_DOMAIN_ENABLED", False),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),

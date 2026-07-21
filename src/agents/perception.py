@@ -256,20 +256,37 @@ class PerceptionAgent:
             prior,
         )
 
-        # A1 域门（B2·议会 2026-07-20·热路径·域×方向匹配）
+        # ── A1 域门（B2·议会 2026-07-20·热路径·域×方向匹配；A4 τ 注释同段）──
         # A-W1：domain=None → 整门旁路，prior 逐字不变（零回归）；
         #        domain 非 None → 谓词只处理非 None domain（None 旁路由此 if 包裹）。
         # prior is not None 防止 None 入谓词（符号比较对 None 无意义）。
+        #
+        # ── A1-fear 专属门（WARN-3·B1 BLOCK·议会 2026-07-21）──
+        # state.fear_domain_enabled=False（默认）→ survival_narrative 域信号一律硬弃
+        # （不论方向；流卫生，路径一）。anger confrontational 路径**完全不受此门**——
+        # 仅 domain=="survival_narrative" 的 prior 才受 fear_domain_enabled 约束；
+        # confrontational 域正常走下方的 _domain_direction_accepts 方向门。
+        #
+        # ── A4 τ 弃权门注释（保留 inert·议会 T-1 折中）──
+        # 数学视角（Geifman & El-Yaniv 2017 NeurIPS arXiv:1705.08500 / Ben-David et al. 2010
+        #   Machine Learning DOI:10.1007/s10994-009-5152-4）：τ 当前无统计增益（<2pp）；
+        #   多阈值扫 FWER≈18.5%；ED 标定迁 confrontational 域 d_HΔH≈0.177，无领域适应正当性。
+        # 心理/神经视角（Kelley et al. 2013 PubMed:23449843 / Carver & Harmon-Jones 2009
+        #   Psychol. Bull. DOI:10.1037/a0013965）：沉思型 anger（右额叶）即便 confrontational 诱因
+        #   也无趋近动机，τ 弃权可识别此类失真信号（非丢有效信号）；域不纯 12-20% 保护。
+        # 激活条件：须独立 confrontational 留出集重 calibrate 出合理 τ（统计显著·不扫多阈值）
+        #   方可从 0.0 激活；当前 τ=0.0 inert，实质等价全覆盖，避免数学/心理视角争议。
         domain = stim.domain
-        # 注意：prior is None（τ 弃权门已置 None）时整个域门条件短路为 False → 整门跳过，
-        # prior 不再被置 None，直接透传（与下方 domain is None 旁路分支外观对称，
-        # 但语义不同——防后续维护者误改条件顺序将「弃权」混同「域失配置 None」）。
-        if (
+        # A1-fear 专属门：survival_narrative 域 + fear 门关 → 直接硬弃（路径一·流卫生）
+        if domain == "survival_narrative" and not state.fear_domain_enabled:
+            prior = None  # A1-fear 专属门(WARN-3)：survival 域信号一律硬弃(流卫生·不论方向)·anger 不受此门  # noqa: E501
+            logger.debug("text_coping fear_domain 门关·survival_narrative 硬弃 prior→None")
+        elif (
             domain is not None
             and prior is not None
             and not _domain_direction_accepts(domain, prior)
         ):
-            prior = None  # 域失配 → 硬弃（off-domain π_t 近似为 0）
+            prior = None  # 原 off-domain 硬弃（confrontational×fear / neutral×any）
             logger.debug("text_coping 域失配·硬弃 domain=%r prior→None", domain)
         # domain is None → 整门旁路·prior 逐字不变（零回归）
 

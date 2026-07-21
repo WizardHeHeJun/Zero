@@ -324,14 +324,34 @@ class TestMotivationalSystemMiddleBandFirewall:
         result = motivational_system(-0.6, 0.6, coping_potential=0.4, text_coping_source=True)
         assert result == "rage"
 
-    def test_text_source_below_fear_threshold_returns_fear(self) -> None:
-        """(-v,+a), text_coping_source=True, coping=-0.5（<-0.3 FEAR 阈值）→ fear（极端段放行）。"""
+    def test_text_source_below_fear_threshold_gate_closed_is_rage(self) -> None:
+        """(-v,+a), text_coping_source=True, coping=-0.5, fear_domain_enabled=False(默认) → rage。
+
+        WARN-3 fear 专属门（A1 路径二）落地后，门关时极端段也回退 rage（保守默认）。
+        """
         result = motivational_system(-0.6, 0.6, coping_potential=-0.5, text_coping_source=True)
+        assert result == "rage"
+
+    def test_text_source_below_fear_threshold_gate_open_is_fear(self) -> None:
+        """(-v,+a) text_source=True coping=-0.5 fear_domain_enabled=True → fear（放行）。"""
+        result = motivational_system(
+            -0.6, 0.6, coping_potential=-0.5, text_coping_source=True, fear_domain_enabled=True
+        )
         assert result == "fear"
 
-    def test_text_source_coping_at_fear_boundary_passthrough(self) -> None:
-        """(-v,+a), text_coping_source=True, coping=-0.31（刚过 -0.3 FEAR 阈值）→ fear（放行）。"""
+    def test_text_source_coping_at_fear_boundary_gate_closed_is_rage(self) -> None:
+        """(-v,+a), text_coping_source=True, coping=-0.31（刚过 -0.3 FEAR 阈值）+ 门关 → rage。
+
+        WARN-3 门默认关，极端段也保守回退 rage。
+        """
         result = motivational_system(-0.6, 0.6, coping_potential=-0.31, text_coping_source=True)
+        assert result == "rage"
+
+    def test_text_source_coping_at_fear_boundary_gate_open_is_fear(self) -> None:
+        """(-v,+a), text_coping_source=True, coping=-0.31（刚过 -0.3 FEAR 阈值）+ 门开 → fear。"""
+        result = motivational_system(
+            -0.6, 0.6, coping_potential=-0.31, text_coping_source=True, fear_domain_enabled=True
+        )
         assert result == "fear"
 
     # ── text_coping_source=False（旧调用方）任意 coping → 逐字旧行为（零回归） ──
@@ -348,9 +368,20 @@ class TestMotivationalSystemMiddleBandFirewall:
         result = motivational_system(-0.6, 0.6, coping_potential=-0.1, text_coping_source=False)
         assert result == "rage"
 
-    def test_old_caller_text_source_false_below_fear_threshold(self) -> None:
-        """text_coping_source=False, coping=-0.5 → fear（旧行为：极端段 < FEAR_THRESHOLD）。"""
+    def test_old_caller_text_source_false_below_fear_threshold_gate_closed_rage(self) -> None:
+        """text_coping_source=False, coping=-0.5, fear_domain_enabled=False(默认) → rage。
+
+        WARN-3 fear 专属门落地后，默认门关时极端段也保守回退 rage（非「旧行为」变更，
+        是议会裁定的正确默认：fear 本就该默认关）。
+        """
         result = motivational_system(-0.6, 0.6, coping_potential=-0.5, text_coping_source=False)
+        assert result == "rage"
+
+    def test_old_caller_text_source_false_below_fear_threshold_gate_open_fear(self) -> None:
+        """text_coping_source=False, coping=-0.5, fear_domain_enabled=True → fear（门开正路）。"""
+        result = motivational_system(
+            -0.6, 0.6, coping_potential=-0.5, text_coping_source=False, fear_domain_enabled=True
+        )
         assert result == "fear"
 
     def test_old_caller_no_text_source_arg_any_coping_unchanged(self) -> None:

@@ -101,6 +101,11 @@ class SessionConfig(BaseModel):
     # text_coping_enabled=False → AppraisalAgent B3 走分支1/3（仅 ctrl 路径）→ 词典层零回归。
     # text_coping_source 是 AppraisalAgent 输出 flag，不是会话级输入，不进 SessionConfig。
     text_coping_enabled: bool = False
+    # ── fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1）──
+    # False（默认）→ 两条泄漏路径均硬弃 fear 域激活·与生产/chat 零回归一致；
+    # True → 解除硬弃，须 env 显式开（ZERO_FEAR_DOMAIN_ENABLED）。
+    # anger confrontational 路径完全不受此门（仅 survival_narrative 域关）。
+    fear_domain_enabled: bool = False
     # π_t 精度上界（le=0.10 在此层 fail-fast；AffectState 层不加 le 防 checkpoint 反序列化 fail）。
     # 单源 EmoBank·议会 2026-07-16·π_t≤0.10·方向判据过后 CI 下界≥0.70 可升 0.15。
     text_coping_precision: float = Field(default=0.08, gt=0.0, le=0.10)
@@ -245,6 +250,8 @@ async def run(
     # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
     text_coping_enabled: bool = False,
     text_coping_precision: float = 0.08,
+    # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）
+    fear_domain_enabled: bool = False,
     # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
     facs_extended: bool = False,
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
@@ -338,6 +345,8 @@ async def run(
                 # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
                 "text_coping_enabled": text_coping_enabled,
                 "text_coping_precision": text_coping_precision,
+                # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关）
+                "fear_domain_enabled": fear_domain_enabled,
                 # text_coping 每轮防御归零（INFO-2·与 ConversationSession.step() 基准一致）：
                 # 批跑不逐轮注入 text_coping_prior，但显式归零防 checkpoint 残留（一致性+防御）。
                 "text_coping_prior": None,
@@ -442,6 +451,8 @@ class ConversationSession:
         # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
         text_coping_enabled: bool = False,
         text_coping_precision: float = 0.08,
+        # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）
+        fear_domain_enabled: bool = False,
         # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
         facs_extended: bool = False,
         # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
@@ -517,6 +528,8 @@ class ConversationSession:
                 # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
                 text_coping_enabled=text_coping_enabled,
                 text_coping_precision=text_coping_precision,
+                # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）  # noqa: E501
+                fear_domain_enabled=fear_domain_enabled,
                 # facs_extended：AU 扩展集合门控（默认关=零回归）
                 facs_extended=facs_extended,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）

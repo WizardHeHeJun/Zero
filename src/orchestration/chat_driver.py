@@ -702,6 +702,15 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         "on",
     )
     text_coping_precision = float(os.getenv("ZERO_TEXT_COPING_PRECISION", "0.08"))
+    # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1；默认关=零回归）。
+    # False → 任何路径不产 fear 域激活（两泄漏路径均硬弃/回退）；True 须 env 显式开。
+    # anger confrontational 路径完全不受此门。
+    fear_domain_enabled = os.getenv("ZERO_FEAR_DOMAIN_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）。
     # True → ExpressionAgent 占位路径用 coping_potential_state 驱动 11-AU 扩展集合。
     # 占位路径（decoder=None）经 ExpressionAgent 消费；注入 decoder 若实现 predict_channels_coping
@@ -774,6 +783,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）。
         text_coping_enabled=text_coping_enabled,
         text_coping_precision=text_coping_precision,
+        # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）。
+        fear_domain_enabled=fear_domain_enabled,
         # facs_extended：AU 扩展集合门控（默认关=零回归）。
         facs_extended=facs_extended,
         # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。

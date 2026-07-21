@@ -97,6 +97,7 @@ def motivational_system(
     distinguish_fear: bool = False,
     coping_potential: float = 0.0,
     text_coping_source: bool = False,
+    fear_domain_enabled: bool = False,
 ) -> str:
     """VA → Panksepp 主导情绪系统标签（动机色彩）。
 
@@ -134,17 +135,32 @@ def motivational_system(
         由 AppraisalAgent 产出 coping_potential_state；经 language._appraisal_summary 读 state
         透传至此（仅 appraisal_conditioning 开时经该摘要消费，与 distinguish_fear 同一路径）。
 
-        非对称可靠性与命名边界（议会 2026-07-20·SemEval OOD 后订正）：可靠性**域特异·各有弱域**
-        ——fear 回避锚皮层下 PAG/杏仁核生存回路（ED 叙事域 Wilson LB≈0.90 稳；但 Twitter 社交焦虑域
-        降至 LB=0.709·EmoryNLP 表演对话 0.264 崩·Davis&Walker 2009 BNST——「fear 全域稳」证伪·fear 也
-        须域条件化(home 域=生存叙事)；「情境无关」限防御行为
-        触发层面 LeDoux&Brown 2017，非意识 fear 感受本身 Barrett 2017）、anger 趋近依赖前额叶可行动
-        性评价（叙事/倾诉域 ~74%·confrontational 域恢复 LB=0.857·非本质下限）。
-        故 text 来源 coping 是 anger/fear 的**趋近-回避方向符号先验**（训练方案=符号监督
-        motivational_direction_prior；W1 已接线 2026-07-20：PerceptionAgent 经 DirectionHead
+        非对称可靠性与命名边界（议会 2026-07-20·SemEval OOD 后订正；A3 订正 2026-07-21）：
+        可靠性**域特异·各有弱域**——
+        **fear**：ED 生存叙事域 LB≈0.90（单源稳定）；SemEval Twitter 社交焦虑 LB=0.709（仅过 bar）；
+          EmoryNLP 表演对话 LB=0.264 崩（-32pp，对话体裁构念异质·Lazarus anxiety 非 fear）。
+          「fear 全域稳」是 ED 单源幻觉（A3 订正：旧注释「跨源 LB≈0.90 稳」错误·fear 亦须域条件化·
+          home 域=survival_narrative；三源梯度 ED 0.90>SemEval 0.709>EmoryNLP 0.264 不可忽视）。
+          fear 生产解锁须第二生存叙事源 LB≥0.80；
+          见 notes/2026-07-21-dailydialog-fear-unlock-council。
+        **anger**：叙事/倾诉域（ED）LB≈0.68（FAIL·行动路径关闭·Kelley 2013 沉思型右额叶）；
+          confrontational 域（Twitter）LB=0.857 恢复（PASS）；三源交叉收敛效度确立。
+        「情境无关」限皮层下生存回路防御行为触发层面（LeDoux&Brown 2017），非意识 fear 感受本身
+        （Barrett 2017）。fear 回避锚皮层下 PAG/杏仁核
+        （Davis&Walker 2009 DOI:10.1038/npp.2009.109）。text 来源 coping 是 anger/fear 的
+        趋近-回避方向符号先验（训练方案=符号监督 motivational_direction_prior；
+        W1 已接线 2026-07-20：PerceptionAgent 经 DirectionHead
         opt-in 产出 text_coping_prior，见 appraisal.py 同段注释），
         非 Lazarus/Scherer 应对评价连续量；anger 侧约 12–20% 低置信弃权回退默认
         （三路切分验证见 scripts/validate_anger_abstain.py），调用者不得假设 anger 信号总在。
+
+    fear_domain_enabled : bool
+        WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1；默认 False=零回归）。
+        False（默认）→ coping_potential<COPING_FEAR_THRESHOLD 分支返回 "rage"（保守默认），
+        **不产 fear 域激活**（路径二·单点完整·与 perception 路径一联合覆盖）。
+        True → 解除回退，该分支正常返回 "fear"（须 env 显式开）。
+        anger confrontational 路径（coping_potential>COPING_RAGE_THRESHOLD→"rage"）
+        完全不受此门约束。
 
     text_coping_source : bool
         默认 False=旧调用方零回归（不触发中间带哑火）。
@@ -185,7 +201,10 @@ def motivational_system(
         if coping_potential > COPING_RAGE_THRESHOLD:
             return "rage"
         if coping_potential < COPING_FEAR_THRESHOLD:
-            return "fear"
+            # A1-fear 专属门路径二（WARN-3·B1 BLOCK·议会 2026-07-21）：
+            # fear_domain_enabled=False（默认）→ 回退 rage（保守默认·不产 fear 域激活）。
+            # fear_domain_enabled=True → 正常产 fear（须 env 显式开）。
+            return "fear" if fear_domain_enabled else "rage"
         # 中间段 [-0.3, 0.3]：保守默认 rage（与旧 (-v,+a)→rage 逐字兼容）
         # 旧 distinguish_fear 路径（tombstone 标注；coping_potential=0 时走此回退）
         if distinguish_fear and arousal >= PANKSEPP_FEAR_AROUSAL_THRESHOLD:

@@ -90,6 +90,7 @@ def _make_state(
     text_coping_enabled: bool = True,
     domain: str | None = None,
     control_appraisal: float | None = None,
+    fear_domain_enabled: bool = False,
 ) -> AffectState:
     """构造最小 AffectState，域轴可注入。"""
     stim = Stimulus(
@@ -100,7 +101,11 @@ def _make_state(
         control_appraisal=control_appraisal,
         domain=domain,  # type: ignore[arg-type]
     )
-    return AffectState(stimulus=stim, text_coping_enabled=text_coping_enabled)
+    return AffectState(
+        stimulus=stim,
+        text_coping_enabled=text_coping_enabled,
+        fear_domain_enabled=fear_domain_enabled,
+    )
 
 
 # ===========================================================================
@@ -242,13 +247,33 @@ class TestDomainGateIntegration:
         out = agent(state)
         assert out["text_coping_prior"] is None
 
-    def test_survival_narrative_fear_logit_negative_passes(
+    def test_survival_narrative_fear_logit_negative_gate_closed_prior_none(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """survival_narrative + fear logit(−) → prior≈tanh(logit)（域匹配·透传）。"""
+        """survival_narrative + fear logit(−) + fear_domain_enabled=False(默认) → prior=None。
+
+        WARN-3 fear 专属门（A1 路径一）：门关时 survival_narrative 域信号一律硬弃。
+        """
         _patch_encode_texts(monkeypatch)
         agent = _make_agent_with_fake_head(logit=-1.0, abstain_threshold=0.0)
-        state = _make_state(domain="survival_narrative", text_coping_enabled=True)
+        state = _make_state(
+            domain="survival_narrative", text_coping_enabled=True, fear_domain_enabled=False
+        )
+        out = agent(state)
+        assert out["text_coping_prior"] is None
+
+    def test_survival_narrative_fear_logit_negative_gate_open_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """survival_narrative + fear logit(−) + fear_domain_enabled=True → prior≈tanh(-1.0)。
+
+        WARN-3 fear 专属门开启后，fear home 域方向信号正常透传（A1 路径一·门开放行）。
+        """
+        _patch_encode_texts(monkeypatch)
+        agent = _make_agent_with_fake_head(logit=-1.0, abstain_threshold=0.0)
+        state = _make_state(
+            domain="survival_narrative", text_coping_enabled=True, fear_domain_enabled=True
+        )
         out = agent(state)
         assert out["text_coping_prior"] == pytest.approx(math.tanh(-1.0), abs=1e-5)
 
