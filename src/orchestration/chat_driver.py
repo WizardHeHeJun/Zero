@@ -29,7 +29,11 @@ from src.agents.affect_math import (
     emotion_decay_step,
     habituation_factor,
 )
-from src.agents.emotion_lexicon import affect_label, appraise_standard_compliance
+from src.agents.emotion_lexicon import (
+    affect_label,
+    appraise_standard_compliance,
+    infer_domain,
+)
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
 from src.agents.models.composite import CompositeChannelDecoder
@@ -176,6 +180,7 @@ class ChatDriver:
     - inject_min: ZERO_RECALL_INJECT_MIN 默认 0.5
     - sample_sigma_cap: ZERO_SAMPLE_SIGMA_MAX 默认 None（未设=用引擎常量 MAX_SAMPLE_SIGMA）
     - standard_compliance_enabled: ZERO_STANDARD_COMPLIANCE 默认 False（门控关=零回归）
+    - text_domain_enabled: ZERO_TEXT_DOMAIN_ENABLED 默认 False（B opt-in·默认关=零回归）
     - attitude_arousal_weight: ZERO_ATTITUDE_AROUSAL_WEIGHT 默认 0.0（零回归）
     - sensitization_gain: ZERO_HABITUATION_SENSITIZATION_GAIN 默认 0.0（零回归）
     - sensitization_threshold: ZERO_SENSITIZATION_THRESHOLD 默认 0.5（零回归）
@@ -216,6 +221,7 @@ class ChatDriver:
         inject_min: float = 0.5,
         importance_scale: float = 30.0,
         standard_compliance_enabled: bool = False,
+        text_domain_enabled: bool = False,
         # B（B7a·两时间尺度旋钮）：默认值均为旧行为（零回归）
         attitude_arousal_weight: float = 0.0,
         sensitization_gain: float = 0.0,
@@ -267,6 +273,8 @@ class ChatDriver:
         # B6：OCC 分支 B 通电开关。默认 False → step 构造 Stimulus 时不传 standard_compliance
         # （保持默认 0.0，逐字零回归）；True 时调确定性评价桥 appraise_standard_compliance 填充。
         self.standard_compliance_enabled = standard_compliance_enabled
+        # B opt-in：开→step 调 infer_domain 注入 domain·关→domain=None 零回归
+        self.text_domain_enabled = text_domain_enabled
         # B（B7a·两时间尺度旋钮）：构造期固化，step 热路径读 self.* 不重读 env。
         # A-P2-E：attitude_step 唤醒加权累积率（ZERO_ATTITUDE_AROUSAL_WEIGHT 默认 0.0，零回归）；
         # 高唤醒 stimulus 使态度累积加速（McGaugh 2004 唤醒调制记忆巩固）。
@@ -313,10 +321,12 @@ class ChatDriver:
         )
         if self.standard_compliance_enabled:
             stim_kwargs["standard_compliance"] = appraise_standard_compliance(user_text)
-        # A-bd（domain 缺口显式化）：canonical 构造当前不传 domain（默认 None=旁路·合法）。
-        # 若将来此路径需注入 domain，须知 Stimulus 的 @model_validator _check_domain_ctrl_sign
-        # 已集中覆盖 (domain, ctrl) 符号一致性 fail-fast（mapping.py 已落地）；
-        # 接线时跟进即可、此处无需另加 assert。
+        # B opt-in（ZERO_TEXT_DOMAIN_ENABLED·议会 2026-07-21）：
+        # 开→infer_domain 词典桥每轮二值判 confrontational/None 注入 domain；
+        # 关→不传→Stimulus.domain 默认 None 旁路零回归。
+        # 不传 control_appraisal（ctrl=None·_check_domain_ctrl_sign no-op 合法）。
+        if self.text_domain_enabled:
+            stim_kwargs["domain"] = infer_domain(user_text)
         stim = Stimulus(**stim_kwargs)
         # P3 1-C：任一共情 alpha>0（门开）把 interlocutor_va 注入每轮 state_overrides；
         # 全关（默认）→ 不传 state_overrides → session.step(stim) 调用签名与改前逐字一致（零回归）。
@@ -621,6 +631,14 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         "yes",
         "on",
     )
+    # B opt-in：live-chat 域注入开关（ZERO_TEXT_DOMAIN_ENABLED·议会 2026-07-21·默认关=零回归）。
+    # 关→domain=None 旁路；翻 ZERO_TEXT_COPING_ENABLED 不会全域生效（域条件化守住）。
+    text_domain_enabled = os.getenv("ZERO_TEXT_DOMAIN_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # B（B7a·两时间尺度旋钮）：默认未设 → 旧默认值 → 零回归。
     # A-P2-E：attitude_step 唤醒加权累积率（ZERO_ATTITUDE_AROUSAL_WEIGHT 默认 0.0，零回归）
     attitude_arousal_weight = float(os.getenv("ZERO_ATTITUDE_AROUSAL_WEIGHT", "0"))
@@ -821,6 +839,7 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         inject_min=inject_min,
         importance_scale=importance_scale,
         standard_compliance_enabled=standard_compliance_enabled,
+        text_domain_enabled=text_domain_enabled,
         # B（B7a）：两时间尺度旋钮透传（默认=旧行为，零回归）
         attitude_arousal_weight=attitude_arousal_weight,
         sensitization_gain=sensitization_gain,

@@ -20,6 +20,7 @@ torch-free / API-free，不动 affect_math.text_label 以保零回归）：
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 from src.agents.affect_math import clamp
 
@@ -433,6 +434,49 @@ def appraise_standard_compliance(text: str) -> float:
     c_score = min(c_raw, _MAX_SIGNALS) / _MAX_SIGNALS  # [0, 1]
     net = c_score - v_score  # ∈ [-1, 1]
     return float(clamp(net, -1.0, 1.0))
+
+
+# ---------------------------------------------------------------------------
+# live-chat 域注入桥（A+D 底座·议会 2026-07-21）
+# ---------------------------------------------------------------------------
+# 纯词典规则·torch/LLM-free（同 appraise_standard_compliance·守热路径确定性）。
+# 值域硬约束 {confrontational, None}：
+#   - 绝不产 survival_narrative（36pp 悬崖·CS+神经席 BLOCK·议会 2026-07-21）
+#   - 只做 confrontational 二值；三路体裁分类属 FPN 离线不在词汇层
+#   - None=absent 旁路·非 neutral 显式弃权（语义不同·state.py:42-43）
+# 权重≥1.0 强信号才触发·0.5 轻度词弃权（心理席·方向性盲区留 B-direction）。
+
+
+def infer_domain(text: str) -> Literal["confrontational"] | None:
+    """从用户文本词典桥推断当前对话域，返回 'confrontational' 或 None。
+
+    返回值域硬约束 {'confrontational', None}（assert 双保险）：
+    - 绝不产 survival_narrative（36pp 悬崖·CS+神经席 BLOCK·议会 2026-07-21）。
+    - 只做 confrontational 二值；三路体裁分类属 FPN 离线不在词汇层。
+    - None=absent 旁路·非 neutral 显式弃权（语义不同·state.py:42-43）。
+
+    算法：
+    1. lower = text.lower()
+    2. 遍历 _VIOLATION_WEIGHTS.items()，筛选 weight >= 1.0 的强信号词
+       （0.5 轻度词「蠢/笨/丑/无聊」自动排除，从 weight 过滤不 hardcode 词表）。
+    3. 命中词须满足：word in lower AND 非自指
+       （复用 _is_self_referential，防「我白痴了」误判为对他人攻击）。
+    4. 任一命中 → 返回 'confrontational'；否则返回 None。
+
+    纯词典规则·torch/LLM-free（同 appraise_standard_compliance·守热路径确定性）。
+    权重>=1.0 强信号才触发·0.5 轻度词弃权（心理席·方向性盲区留 B-direction）。
+    """
+    lower = text.lower()
+    result: Literal["confrontational"] | None = None
+    for word, weight in _VIOLATION_WEIGHTS.items():
+        if weight < 1.0:
+            continue
+        if word in lower and not _is_self_referential(lower, word):
+            result = "confrontational"
+            break
+    # 值域硬约束双保险（BLOCK·议会 2026-07-21·绝不产 survival_narrative）
+    assert result in ("confrontational", None), f"infer_domain 值域违例: {result!r}"
+    return result
 
 
 def intensity_envelope(
