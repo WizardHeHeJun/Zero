@@ -592,12 +592,24 @@ def _decode_facs_extended(
         coping_pos = max(0.0, coping_potential)  # relu，coping<0 时=0
         facs_au["AU23"] = clamp(K_COPING * coping_pos * va_weight, 0.0, 1.0)
 
+        # ── fear-AU 段与 WARN-3 fear 门正交（议会 2026-07-21 B-facs-fear·PASS）──
+        # 表情层 fear-AU（AU01/02/20·coping<0 驱动）由 facs_extended+coping_potential_enabled
+        # 双层容量门独立治理；WARN-3 fear 专属门（fear_domain_enabled·state.py:291）治标签/符号层，
+        # 与本层正交、不在此叠门——表情忠实兑现 coping_potential 连续映射，不在运动解码层再做域归类。
+        # 依据：面部运动系统（CN VII 锥体外路自发通路）与情绪判定层临床双向解离（Rinn 1984；
+        # Gothard 2014）；防御行为输出≠情绪意识（LeDoux & Brown 2017）；AU 非情绪类别等价、
+        # fear-AU 配置一致性在全情绪类别中唯一低于偶然（Barrett et al. 2019）。
+        # ⚠ 悬置 B-facs-fear-unlock：fear 域正式解锁（B-fe-unlock）时须重裁本段是否加 fear 门。
+        # ⚠ 悬置 B-AU04：Ekman fear 原型=AU1+2+4+5+7+20+26，本段缺 AU04（corrugator·fear vs
+        #   surprise 解剖区分件）→当前组合与 surprise 重叠，是否加 coping 驱动 AU04 待议会。
         # AU01/AU02：恐惧扬眉，coping<0 时高（联动同升，两 AU 值相等）
         # ⚖ 连续映射：relu(-coping)·va_weight·K_COPING；coping≥0 时输出自然为 0
         coping_neg = max(0.0, -coping_potential)  # relu(-coping)
         fear_score = clamp(K_COPING * coping_neg * va_weight, 0.0, 1.0)
         facs_au["AU01"] = fear_score
-        facs_au["AU02"] = fear_score  # 联动同升（Ekman 1978；Gentsch 2015 frontalis 整体响应）
+        # 联动同升（Ekman 1978）；⚠ Gentsch 2015（gambling task）仅报 coping×effort 交互效应·
+        # frontalis 主效应不显著·且未测 AU20→此处方向属 CPM 理论预测，非 Gentsch 主效应实证（A1）。
+        facs_au["AU02"] = fear_score
 
         # AU20：笑肌横拉唇，恐惧（coping<0）时高
         # ⚖ 连续映射：同 AU01/02 的 coping 负部驱动（Ekman 1978 AU20 = 恐惧特有）

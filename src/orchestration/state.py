@@ -296,6 +296,10 @@ class AffectState(BaseModel):
     #     分支返回 rage 而非 fear（保守默认·非 fear 域激活）。
     # True → 两路径解除硬弃/回退，fear 域激活可经正常门控产生（须 env 显式开）。
     # 语义边界：fear 专属门·anger confrontational 路径完全不受此门（仅 survival 域关）。
+    # 边界·表情层正交（议会 2026-07-21 B-facs-fear·PASS）：本门仅治标签/符号层两路径；
+    #   表情层 fear-AU（affect_math.py:595-604·AU01/02/20·coping<0 驱动）由 facs_extended
+    #   +coping_potential_enabled 双层容量门独立治理·与本门正交（面部运动 vs 情绪判定层解离·
+    #   Rinn 1984 / Barrett 2019）。悬置 B-facs-fear-unlock：fear 域解锁时须重裁表情层是否加门。
     fear_domain_enabled: bool = False  # WARN-3 fear 专属门·默认关=零回归·B1 BLOCK 前置
     # ── text_coping_prior：独立标量流入口 ──
     # None=门关=零回归（每轮归零防 LastValue 残留，仿 external_priors）；
