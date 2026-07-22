@@ -31,6 +31,12 @@ CONDITION_TO_VA: dict[int, tuple[float, float]] = {
 }
 
 
+# TODO(D-dim): WESAD 无逐样本连续 D（Dominance）标注。
+# 当前仅用 condition 标签映射 (v,a)；若要扩展 D 维监督，需数据采集 + 研究决策：
+#   - WESAD 实验设计（stress/amusement/meditation）未采集 SAM Dominance 评分；
+#   - 缺失 D 标注意味着无法从生理信号学习 D 回归，D 维监督单源 EmoBank（文本）；
+#   - 扩 D 属数据采集阻塞，在议会明确操作化定义并获得含 D 标注的数据集前不推进；
+#   - 见议会 notes 2026-07-13 #2 及数学席对跨通道融合方差估计不可靠的警告。
 def estimate_heart_rate(ecg: np.ndarray, *, fs: int = CHEST_FS) -> float:
     """从 ECG 段经 R 波检测估计心率（bpm）；不足两拍返回 0。"""
     signal = np.asarray(ecg, dtype=float).reshape(-1)

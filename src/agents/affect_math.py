@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # 仅注解用（PEP 563 惰性注解下不产生运行时 import）——external_prior 是编排层叶子协议
+    # 类型（无任何 import），置于 TYPE_CHECKING 顶部消 code-reviewer W1 的末尾延迟 import 味道。
+    from src.orchestration.external_prior import ExternalPrior
 
 # 数值边界，避免精度/方差退化或采样发散
 MIN_SIGMA = 0.05
@@ -409,22 +414,43 @@ def text_label(valence: float, arousal: float) -> str:
     return "angry" if arousal >= 0.33 else "sad"
 
 
-def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
+def decode_channels(
+    affect: tuple[float, float],
+    *,
+    coping_potential: float = 0.0,
+    facs_extended: bool = False,
+    k_arousal: float = 1.5,
+    k_coping: float = 1.2,
+) -> dict[str, Any]:
     """把 (valence, arousal) 占位解码为 4 个表达通道的结构化结果。
 
     通道：FACS AU 向量 / 文本情绪标签 / 生理信号模拟 / 语音韵律参数。
+
+    Args:
+        affect: (valence, arousal) 后验情感坐标，各维 ∈ [-1, 1]。
+        coping_potential: 控制评价（AppraisalAgent 产出的 state.coping_potential_state），
+            ∈ [-1, 1]。仅在 facs_extended=True 时生效；默认 0.0 无影响，零回归。
+            正值→高控制感（愤怒方向），负值→低控制感（恐惧方向）。
+            来源：直接读 state.coping_potential_state，**不在表情层重估**（防构念重复）。
+        facs_extended: False（默认）→ 旧 5-AU 逐字行为，零回归；
+            True → 输出 13-AU 扩展集合（含 coping 驱动的区分性 AU + AU17/AU26 通用 AU）。
+        k_arousal: ⚖ AU05/07 对 arousal 的增益（工程可动；默认 1.5=现值，零回归）。
+            方向由议会定，不可改符号/单调；仅幅度可调。由 CompositeChannelDecoder 注入。
+        k_coping: ⚖ 区分性 AU 对 coping 强度的增益（工程可动；默认 1.2=现值，零回归）。
+            方向由议会定，不可改符号/单调；仅幅度可调。由 CompositeChannelDecoder 注入。
+
+    热路径：纯标量（clamp/sigmoid），无 torch/LLM/网络调用。
     """
     valence, arousal = affect
 
-    # 1) FACS AU：正效价→AU12/AU6（拉嘴角/抬脸颊），负效价→AU15/AU4（压嘴角/皱眉）
-    facs_au: dict[str, float] = {}
-    if valence >= 0:
-        facs_au["AU12"] = clamp(valence, 0.0, 1.0)
-        facs_au["AU06"] = clamp(0.6 * valence, 0.0, 1.0)
+    # 1) FACS AU
+    if facs_extended:
+        facs_au = _decode_facs_extended(
+            valence, arousal, coping_potential, k_arousal=k_arousal, k_coping=k_coping
+        )
     else:
-        facs_au["AU15"] = clamp(-valence, 0.0, 1.0)
-        facs_au["AU04"] = clamp(-0.6 * valence, 0.0, 1.0)
-    facs_au["intensity"] = clamp(abs(arousal), 0.0, 1.0)
+        # 旧 5-AU 逐字行为（零回归）
+        facs_au = _decode_facs_legacy(valence, arousal)
 
     # 2) 文本情绪标签：按 valence-arousal 象限映射离散词
     label = text_label(valence, arousal)
@@ -449,7 +475,153 @@ def decode_channels(affect: tuple[float, float]) -> dict[str, Any]:
         "text_label": label,
         "physiology": physiology,
         "prosody": prosody,
+        # prosody 量纲标记（zero-link Q1 拍板 2026-07-14）：解析占位出**倍率口径**——
+        # speech_rate/pitch 以 1.0 为基线、energy∈[0,1] → "ratio"。canonical 目标口径是
+        # normalized [0,1]（专用 ProsodyDecoder 达标）；MCP 情感 TTS mapper 按此 tag 分支消费，
+        # 收窄校验。兄弟键（非塞进 prosody 子 dict）——保 prosody 通道纯 3 值、零回归。
+        "prosody_scale": "ratio",
     }
+
+
+def _decode_facs_legacy(valence: float, arousal: float) -> dict[str, float]:
+    """旧 5-AU 占位映射（零回归基准）。正效价→AU12/AU06；负效价→AU15/AU04；intensity∝|arousal|。"""
+    # 正效价→AU12/AU6（拉嘴角/抬脸颊），负效价→AU15/AU4（压嘴角/皱眉）
+    facs_au: dict[str, float] = {}
+    if valence >= 0:
+        facs_au["AU12"] = clamp(valence, 0.0, 1.0)
+        facs_au["AU06"] = clamp(0.6 * valence, 0.0, 1.0)
+    else:
+        facs_au["AU15"] = clamp(-valence, 0.0, 1.0)
+        facs_au["AU04"] = clamp(-0.6 * valence, 0.0, 1.0)
+    facs_au["intensity"] = clamp(abs(arousal), 0.0, 1.0)
+    return facs_au
+
+
+def _decode_facs_extended(
+    valence: float,
+    arousal: float,
+    coping_potential: float,
+    *,
+    k_arousal: float = 1.5,
+    k_coping: float = 1.2,
+) -> dict[str, float]:
+    """13-AU 扩展映射（facs_extended=True 分支；任务 D 起含 AU17/AU26 通用 AU）。
+
+    ⚖ 议会定方向、系数工程可动区间、待真数据校准（Gentsch 2015 fEMG 实证）。
+    热路径：纯标量（clamp/sigmoid），禁 torch/LLM/网络。
+
+    映射方向（design.md 议会裁决）：
+      AU04/06/12/15/intensity：保持旧向不变（零回归基准）。
+      AU05：随 arousal+ 升（高唤醒瞪眼，愤怒/恐惧共有；Ekman 1978 AU5 = 上睑抬）。
+      AU07：随 arousal+ 且 v<0 升（眼部紧张，高唤醒负效价共有）。
+      AU17（颏肌下巴上推）：随 −valence 主驱 + arousal 轻调制升（厌恶/悲伤；无象限守卫，
+        联动 AU15 约 0.5×；议会 D·通用 AU 不进 coping 判别）。
+      AU26（下颌落）：随 arousal 主驱 + 正 valence 轻压制升（恐惧/惊讶共有；无象限守卫，
+        cap 因东亚惊讶少用 AU26 保守；议会 D·通用 AU 不进 coping 判别）。
+      区分性 AU 仅在 (v<0, a≥0) 象限激活（象限守卫）：
+        AU23（口轮匝肌唇紧）：coping>0→高（愤怒对抗准备；Carver & Harmon-Jones 2009）。
+          ⚠ 跨文化注：Cordaro 2018 跨文化核心愤怒为 AU4+AU7，AU23 未入核心（~29% 出现率）；
+          此占位依 Ekman & Friesen 1978 + Scherer CPM 设计，待真权重从数据学习后修正。
+        AU01/AU02（额肌扬眉）：coping<0→高（恐惧，须联动同升；Ekman 1978）。
+        AU20（笑肌横拉唇）：coping<0→高（恐惧；Ekman 1978 AU20 = 唇横拉）。
+      连续映射：用 relu(x)·abs(v)·|a| 风格，无 ±0.3 硬阈值；
+        push 层（锥体外路泄漏）是连续渐变的（Gentsch 2015 fEMG 连续测量）。
+
+    Args:
+        k_arousal: ⚖ AU05/07 对 arousal 的增益（工程可动；默认 1.5）。
+            方向由议会定，不可改符号/单调；仅幅度可调（via ZERO_FACS_K_AROUSAL env）。
+        k_coping: ⚖ 区分性 AU 对 coping 强度的增益（工程可动；默认 1.2）。
+            方向由议会定，不可改符号/单调；仅幅度可调（via ZERO_FACS_K_COPING env）。
+    """
+    # ── 系数（⚖ 议会定方向、工程可动区间；方向不可私拍，仅幅度可调）──
+    K_AROUSAL: float = k_arousal  # ⚖ AU05/07 arousal 增益（经参数注入，默认 1.5）
+    K_COPING: float = k_coping  # ⚖ 区分性 AU coping 增益（经参数注入，默认 1.2）
+
+    facs_au: dict[str, float] = {}
+
+    # ── 旧向不变通道（零回归基准）──
+    if valence >= 0:
+        facs_au["AU12"] = clamp(valence, 0.0, 1.0)
+        facs_au["AU06"] = clamp(0.6 * valence, 0.0, 1.0)
+    else:
+        facs_au["AU15"] = clamp(-valence, 0.0, 1.0)
+        facs_au["AU04"] = clamp(-0.6 * valence, 0.0, 1.0)
+    facs_au["intensity"] = clamp(abs(arousal), 0.0, 1.0)
+
+    # ── 新增共有通道（arousal 驱动，无象限守卫）──
+    # AU05：上睑抬，随 arousal+ 升（愤怒/恐惧共有，连续）
+    # ⚖ 议会定方向：高唤醒→瞪眼（Ekman 1978；Gentsch 2015 AU5 出现率随 arousal 线性升）
+    arousal_pos = max(0.0, arousal)
+    facs_au["AU05"] = clamp(K_AROUSAL * arousal_pos, 0.0, 1.0)
+
+    # AU07：睑紧，随 arousal+ 且 v<0（高唤醒负效价共有，连续）
+    # ⚖ 议会定方向：负效价高唤醒（愤怒/恐惧均有）→ 眼周肌紧（Gentsch 2015 AU7）
+    neg_valence_gate = max(0.0, -valence)  # v<0 时 >0，v≥0 时 =0（连续软门控 = relu(-valence)）
+    facs_au["AU07"] = clamp(K_AROUSAL * arousal_pos * neg_valence_gate, 0.0, 1.0)
+
+    # AU17：颏肌下巴上推，厌恶(主)/悲伤(次)。−valence 主驱 + arousal 轻调制，联动 AU15（约 0.5×）。
+    # ⚖ 议会 D 定方向（Baird 2024：AU17~arousal 显著 p=.003 / valence 负向趋势；Gentsch 2015：
+    #   goal-obstructive 组、非 coping 符号判别）——**通用 AU、无象限守卫（厌恶/悲伤跨低-高唤醒）、
+    #   不进 coping 判别**。系数工程可动、待真数据校准（走内置默认，不拉 env 全链）。
+    K_AU17_V = 0.5  # ⚖ −valence 主驱增益（联动 AU15 的 ~0.5×，互补非冗余）
+    K_AU17_A = 0.2  # ⚖ arousal 轻调制增益（k_v ≫ k_a）
+    facs_au["AU17"] = clamp(K_AU17_V * neg_valence_gate + K_AU17_A * arousal_pos, 0.0, 1.0)
+
+    # AU26：下颌落，恐惧+惊讶共有。arousal 主驱 + 正 valence 轻压制（惊喜开口＜惊恐），无象限守卫。
+    # ⚖ 议会 D 定方向（Baird 2024：AU26 与 v/a 线性相关不显著→占位给理论方向、真脸细节留真模型学；
+    #   Cordaro 2018：东亚惊讶少用 AU26→cap 保守）——**通用 AU、不进 coping 判别**。系数工程可动。
+    K_AU26 = 1.5  # ⚖ arousal 主驱增益
+    AU26_V_SUPPRESS = 0.4  # ⚖ 正 valence 压制系数（惊喜时开口幅度小于惊恐）
+    AU26_CAP = 0.6  # ⚖ 跨文化保守上限（东亚惊讶少用 AU26）
+    pos_valence = max(0.0, valence)
+    facs_au["AU26"] = clamp(
+        K_AU26 * arousal_pos * (1.0 - AU26_V_SUPPRESS * pos_valence), 0.0, AU26_CAP
+    )
+
+    # ── 区分性 AU：仅 (v<0, a≥0) 象限激活（象限守卫）──
+    # 愤怒(coping>0) vs 恐惧(coping<0) 分野在 Scherer CPM + Gentsch 2015 实证
+    in_quadrant = valence < 0.0 and arousal >= 0.0  # 高唤醒负效价象限
+    if in_quadrant:
+        # 共有强度权重：|v|·|a| 让信号在象限边界自然归零（连续，无硬阈值）
+        va_weight = abs(valence) * abs(arousal)
+
+        # AU23：愤怒对抗准备，coping>0 时高
+        # ⚖ 连续映射：relu(coping)·va_weight·K_COPING；coping≤0 时输出自然为 0
+        # ⚠ 跨文化注（Cordaro 2018）：AU23 非跨文化核心愤怒 AU，此处依 Ekman 1978 + CPM 占位；
+        #   待真权重从 AffectNet/DISFA 数据学习后修正（Q3）。
+        coping_pos = max(0.0, coping_potential)  # relu，coping<0 时=0
+        facs_au["AU23"] = clamp(K_COPING * coping_pos * va_weight, 0.0, 1.0)
+
+        # ── fear-AU 段与 WARN-3 fear 门正交（议会 2026-07-21 B-facs-fear·PASS）──
+        # 表情层 fear-AU（AU01/02/20·coping<0 驱动）由 facs_extended+coping_potential_enabled
+        # 双层容量门独立治理；WARN-3 fear 专属门（fear_domain_enabled·state.py:291）治标签/符号层，
+        # 与本层正交、不在此叠门——表情忠实兑现 coping_potential 连续映射，不在运动解码层再做域归类。
+        # 依据：面部运动系统（CN VII 锥体外路自发通路）与情绪判定层临床双向解离（Rinn 1984；
+        # Gothard 2014）；防御行为输出≠情绪意识（LeDoux & Brown 2017）；AU 非情绪类别等价、
+        # fear-AU 配置一致性在全情绪类别中唯一低于偶然（Barrett et al. 2019）。
+        # ⚠ 悬置 B-facs-fear-unlock：fear 域正式解锁（B-fe-unlock）时须重裁本段是否加 fear 门。
+        # ⚠ 悬置 B-AU04：Ekman fear 原型=AU1+2+4+5+7+20+26，本段缺 AU04（corrugator·fear vs
+        #   surprise 解剖区分件）→当前组合与 surprise 重叠，是否加 coping 驱动 AU04 待议会。
+        # AU01/AU02：恐惧扬眉，coping<0 时高（联动同升，两 AU 值相等）
+        # ⚖ 连续映射：relu(-coping)·va_weight·K_COPING；coping≥0 时输出自然为 0
+        coping_neg = max(0.0, -coping_potential)  # relu(-coping)
+        fear_score = clamp(K_COPING * coping_neg * va_weight, 0.0, 1.0)
+        facs_au["AU01"] = fear_score
+        # 联动同升（Ekman 1978）；⚠ Gentsch 2015（gambling task）仅报 coping×effort 交互效应·
+        # frontalis 主效应不显著·且未测 AU20→此处方向属 CPM 理论预测，非 Gentsch 主效应实证（A1）。
+        facs_au["AU02"] = fear_score
+
+        # AU20：笑肌横拉唇，恐惧（coping<0）时高
+        # ⚖ 连续映射：同 AU01/02 的 coping 负部驱动（Ekman 1978 AU20 = 恐惧特有）
+        facs_au["AU20"] = clamp(K_COPING * coping_neg * va_weight, 0.0, 1.0)
+    else:
+        # 象限外：区分性 AU 归零（防意外激活）
+        facs_au["AU23"] = 0.0
+        facs_au["AU01"] = 0.0
+        facs_au["AU02"] = 0.0
+        facs_au["AU20"] = 0.0
+
+    return facs_au
 
 
 def fast_survival_prior(
@@ -763,3 +935,95 @@ def cortisol_trigger(
     if goal_congruence < -theta_goal and intensity > theta_intensity:
         return impulse
     return 0.0
+
+
+# ── 外部多模态先验流展开（议会 2026-07-15 M1–M6；PRP 外部多模态先验流注入口）──
+# ExternalPrior 类型注解 import 见文件顶部 TYPE_CHECKING 块（同层·叶子协议·无反向依赖）。
+# 生理流前缀集合（M2·议会生物席强制）：以任一前缀开头的流名视为生理信号流，
+# 无条件覆写 Πv=MIN_PRECISION（EDA/HRV/瞳孔/SCR 对效价盲，Kreibig 2010）。
+_PHYSIO_PREFIXES: tuple[str, ...] = ("physio", "eda", "hrv", "pupil", "scr")
+
+
+def expand_external_priors(
+    external_priors: list[ExternalPrior],
+    *,
+    precision_cap: float,
+    max_streams: int,
+) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
+    """外部多模态先验流展开 + 防御性校验，返回可直接 extend 进 streams 的列表。
+
+    M6（数学席·流数上界）：len(external_priors) > max_streams → raise ValueError。
+    校验精度来自 MCP payload，Zero 只校验+防御——不硬编码各模态精度。
+
+    形状良构校验（澄清 2）：每条须 (str, (float, float), (float, float))；
+    name 必须是 str，mu/prec 各须是 2 元 float tuple；防 MCP 传标量精度或错元数。
+
+    M3（CS 席·fail-fast 放展开处）：
+      - Πv > 0 且 Πa > 0，否则 raise ValueError（精度须正）。
+      - Πv ≤ precision_cap 且 Πa ≤ precision_cap，否则 raise ValueError。
+      fail-fast 在此处（非 SessionConfig）：external_priors 是每轮 state_overrides
+      动态内容，SessionConfig 只能管会话级默认，管不到每轮 payload（design.md M3）。
+
+    M2（生物席强制·唯一「失真必改」）：name 以 _PHYSIO_PREFIXES 任一前缀开头
+    （小写比较）→ 无条件覆写 Πv = MIN_PRECISION，即便 MCP 给了有意义值也归零。
+    依据：EDA/HRV/瞳孔只编码交感唤醒输出、对效价盲（Kreibig 2010）；
+    给 valence 精度 = 主动注入偏差（design.md §二·生物席强制·收敛 a）。
+
+    返回与 affect_core.py:77 streams 类型完全一致的列表，可直接 extend（M1）。
+    不进 occ_prior/survival 入口（design.md 受约束方案 c）。
+
+    引文：Kreibig S.D. (2010). Biol. Psychol. 84(3):394-421.
+    https://doi.org/10.1016/j.biopsycho.2010.03.010
+    设计决策见 design.md M1–M6（议会 2026-07-15）。
+    """
+    # M6：流数上界
+    if len(external_priors) > max_streams:
+        raise ValueError(
+            f"external_priors 条数 {len(external_priors)} 超过 max_external_streams={max_streams}；"
+            f"请检查 MCP 传参（ZERO_MAX_EXTERNAL_STREAMS 调大或减少注入流数）"
+        )
+
+    result: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
+    for i, prior in enumerate(external_priors):
+        # 形状良构校验（澄清 2）
+        if (
+            not isinstance(prior, tuple)
+            or len(prior) != 3
+            or not isinstance(prior[0], str)
+            or not (isinstance(prior[1], tuple) and len(prior[1]) == 2)
+            or not (isinstance(prior[2], tuple) and len(prior[2]) == 2)
+            or not all(isinstance(x, (int, float)) for x in prior[1])
+            or not all(isinstance(x, (int, float)) for x in prior[2])
+        ):
+            raise ValueError(
+                f"external_priors[{i}] 形状不合法：须为 (str, (float,float), (float,float))，"
+                f"实际为 {prior!r}；请检查 MCP as_zero_streams() 输出格式"
+            )
+        name: str = prior[0]
+        mu: tuple[float, float] = (float(prior[1][0]), float(prior[1][1]))
+        pi_v: float = float(prior[2][0])
+        pi_a: float = float(prior[2][1])
+
+        # M2：生理流 valence 精度强制归 MIN_PRECISION（无条件·唯一失真必改）。
+        # 置于 M3 校验之前（code-reviewer W1 2026-07-15）：physio 的 Πv 无条件覆写，
+        # 不因 MCP 误传超 cap / 非正 Πv 而在 M3 处误报——覆写后 Πv=MIN_PRECISION∈(0,cap]。
+        if name.lower().startswith(_PHYSIO_PREFIXES):
+            pi_v = MIN_PRECISION
+
+        # M3：精度正值校验（physio Πv 已被 M2 覆写为 MIN_PRECISION>0；Πa 恒校验）
+        if pi_v <= 0.0 or pi_a <= 0.0:
+            raise ValueError(
+                f"external_priors[{i}] ({name!r}) 精度须 >0，"
+                f"实际 Πv={pi_v}, Πa={pi_a}；请检查 MCP 传参"
+            )
+        # M3：精度上界校验（physio Πv=MIN_PRECISION<<cap 必过；Πa 恒校验）
+        if pi_v > precision_cap or pi_a > precision_cap:
+            raise ValueError(
+                f"external_priors[{i}] ({name!r}) 精度超过上界 {precision_cap}，"
+                f"实际 Πv={pi_v}, Πa={pi_a}；请降低 MCP 精度或调高 "
+                f"ZERO_EXTERNAL_PRIOR_PRECISION_CAP"
+            )
+
+        result.append((name, mu, (pi_v, pi_a)))
+
+    return result

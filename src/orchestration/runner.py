@@ -93,6 +93,40 @@ class SessionConfig(BaseModel):
     cortisol_impulse: float | None = None
     cortisol_theta_goal: float | None = None
     cortisol_theta_intensity: float | None = None
+    # ── coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）──
+    # coping_potential_enabled=False → AppraisalAgent 不产 coping_potential_state → 词典层零回归。
+    # coping_potential 只进 Checkpointer，绝不写入图谱（CS 红线）。
+    coping_potential_enabled: bool = False
+    # ── text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）──
+    # text_coping_enabled=False → AppraisalAgent B3 走分支1/3（仅 ctrl 路径）→ 词典层零回归。
+    # text_coping_source 是 AppraisalAgent 输出 flag，不是会话级输入，不进 SessionConfig。
+    text_coping_enabled: bool = False
+    # ── fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1）──
+    # False（默认）→ 两条泄漏路径均硬弃 fear 域激活·与生产/chat 零回归一致；
+    # True → 解除硬弃，须 env 显式开（ZERO_FEAR_DOMAIN_ENABLED）。
+    # anger confrontational 路径完全不受此门（仅 survival_narrative 域关）。
+    fear_domain_enabled: bool = False
+    # π_t 精度上界（le=0.10 在此层 fail-fast；AffectState 层不加 le 防 checkpoint 反序列化 fail）。
+    # 单源 EmoBank·议会 2026-07-16·π_t≤0.10·方向判据过后 CI 下界≥0.70 可升 0.15。
+    text_coping_precision: float = Field(default=0.08, gt=0.0, le=0.10)
+    # ── facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）──
+    # True → ExpressionAgent 占位路径把 coping_potential_state 透传给 decode_channels，
+    # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
+    # 占位路径（decoder=None）经 ExpressionAgent 消费；注入 decoder 若实现 predict_channels_coping
+    # 也拿到 per-turn coping（议会遗留 2·方案 b 已落地），否则回退 predict_channels(v,a)。
+    facs_extended: bool = False
+    # ── voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]──
+    # 自发头全量传 coping、随意头传 coping×leak（意志部分压制 coping-driven AU）。
+    # 默认 1.0=两头等值=零回归；推荐 0.3。仅 facs_extended=True 时对 facs_au 生效。
+    voluntary_coping_leak: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    # ── 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）──
+    # external_priors 本身是每轮 state_overrides 内容（同 interlocutor_affect），不在此收口。
+    # 此处只存会话级固定的校验参数（precision_cap / max_streams）。
+    # ZERO_EXTERNAL_PRIOR_PRECISION_CAP 默认 0.8；ZERO_MAX_EXTERNAL_STREAMS 默认 5。
+    external_prior_precision_cap: float = Field(default=0.8, gt=0.0)
+    max_external_streams: int = Field(default=5, ge=0)
+
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
     # 此处只存会话级固定系数（contagion/care/vicarious alpha + threshold）。
@@ -159,6 +193,8 @@ def _state_to_entry(stim_name: str, state: AffectState) -> dict[str, Any]:
         "expression": state.expression,
         # P3 1-B：皮质醇慢变量（供 chat_driver 消费 cortisol→ATTITUDE_RATE；仅标量观测，不入图谱）
         "cortisol_state": state.cortisol_state,
+        # coping_potential：情境控制感标量（可观测，供校准/观测；仅标量、不入图谱，同 cortisol）
+        "coping_potential_state": state.coping_potential_state,
     }
 
 
@@ -209,6 +245,20 @@ async def run(
     care_bias_alpha: float = 0.0,
     vicarious_alpha: float = 0.0,
     vicarious_threshold: float = 0.3,
+    # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+    coping_potential_enabled: bool = False,
+    # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+    text_coping_enabled: bool = False,
+    text_coping_precision: float = 0.08,
+    # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）
+    fear_domain_enabled: bool = False,
+    # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
+    facs_extended: bool = False,
+    # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
+    voluntary_coping_leak: float = 1.0,
+    # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+    external_prior_precision_cap: float = 0.8,
+    max_external_streams: int = 5,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -219,6 +269,11 @@ async def run(
     expression_decoder：可选注入训练好的真通道解码器，走真网络表达。
     language_model：可选注入的语言模型（鸭子类型），开启 language_enabled 后驱动
     affect↔language 双向收敛回路；未注入则用占位模板模型。
+
+    external_prior_precision_cap / max_external_streams 是外部先验流的**校验**参数（M3/M6）；
+    external_priors 本身（每轮的 (name,(μv,μa),(Πv,Πa)) 数据）**不经 run() 注入**——它是每轮
+    可变量，经 `ConversationSession.step(stim, state_overrides={"external_priors": [...]})` 注入
+    （同 interlocutor_affect）。run() 批量接口每条 stimulus 不携带外部先验（code-reviewer W5）。
     """
     client = (
         memory
@@ -285,6 +340,24 @@ async def run(
                 "care_bias_alpha": care_bias_alpha,
                 "vicarious_alpha": vicarious_alpha,
                 "vicarious_threshold": vicarious_threshold,
+                # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+                "coping_potential_enabled": coping_potential_enabled,
+                # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+                "text_coping_enabled": text_coping_enabled,
+                "text_coping_precision": text_coping_precision,
+                # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关）
+                "fear_domain_enabled": fear_domain_enabled,
+                # text_coping 每轮防御归零（INFO-2·与 ConversationSession.step() 基准一致）：
+                # 批跑不逐轮注入 text_coping_prior，但显式归零防 checkpoint 残留（一致性+防御）。
+                "text_coping_prior": None,
+                "text_coping_source": False,
+                # facs_extended：AU 扩展集合门控（默认关=零回归）
+                "facs_extended": facs_extended,
+                # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
+                "voluntary_coping_leak": voluntary_coping_leak,
+                # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+                "external_prior_precision_cap": external_prior_precision_cap,
+                "max_external_streams": max_external_streams,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -373,6 +446,20 @@ class ConversationSession:
         care_bias_alpha: float = 0.0,
         vicarious_alpha: float = 0.0,
         vicarious_threshold: float = 0.3,
+        # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+        coping_potential_enabled: bool = False,
+        # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+        text_coping_enabled: bool = False,
+        text_coping_precision: float = 0.08,
+        # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）
+        fear_domain_enabled: bool = False,
+        # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
+        facs_extended: bool = False,
+        # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
+        voluntary_coping_leak: float = 1.0,
+        # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+        external_prior_precision_cap: float = 0.8,
+        max_external_streams: int = 5,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -436,6 +523,20 @@ class ConversationSession:
                 care_bias_alpha=care_bias_alpha,
                 vicarious_alpha=vicarious_alpha,
                 vicarious_threshold=vicarious_threshold,
+                # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）
+                coping_potential_enabled=coping_potential_enabled,
+                # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）
+                text_coping_enabled=text_coping_enabled,
+                text_coping_precision=text_coping_precision,
+                # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）  # noqa: E501
+                fear_domain_enabled=fear_domain_enabled,
+                # facs_extended：AU 扩展集合门控（默认关=零回归）
+                facs_extended=facs_extended,
+                # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
+                voluntary_coping_leak=voluntary_coping_leak,
+                # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
+                external_prior_precision_cap=external_prior_precision_cap,
+                max_external_streams=max_external_streams,
             )
 
     @property
@@ -464,6 +565,21 @@ class ConversationSession:
             "group_id": self.group_id,
             "task_complete": False,
             **self.config.to_state_flags(),
+            # external_priors 每轮显式归零（M4·code-reviewer B1 2026-07-15）：它是 LastValue
+            # channel，若不在本轮 ainvoke input 里显式给值，会从 checkpoint 恢复上一轮注入的
+            # 非空 list → 跨轮残留（同 text_affect 被 PerceptionAgent 每轮显式归零的教训）。
+            # state_overrides 若含 external_priors 会覆盖此空基准（下方 base.update）。
+            "external_priors": [],
+            # text_coping 每轮显式归零（B3·议会 2026-07-16 约束5）：两者皆是 LastValue channel，
+            # 不归零会从 checkpoint 恢复上轮值造成残留（仿 external_priors 归零先例）。
+            # state_overrides 若含 text_coping_prior 会覆盖此 None 基准（下方 base.update）。
+            "text_coping_prior": None,
+            "text_coping_source": False,
+            # recalled_episode_ids 每轮显式归零（B 类·记忆巩固·2026-07-22）：
+            # LastValue channel，不归零会跨轮残留上一轮召回的 episode id，
+            # 导致 Supervisor 对已过期 episode 重复更新 access_count。
+            # 仿 external_priors 归零先例。
+            "recalled_episode_ids": [],
         }
         if state_overrides is not None:
             base.update(state_overrides)

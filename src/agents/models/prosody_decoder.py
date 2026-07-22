@@ -15,14 +15,13 @@ PROSODY_DIM = 3  # [speech_rate, pitch, energy]，均归一化到 [0,1]
 class ProsodyDecoder(nn.Module):
     """(v,a) → 3 维归一化韵律特征的 MLP，sigmoid 输出 [0,1]。"""
 
-    def __init__(self, hidden: int = 16) -> None:
+    def __init__(self, hidden: int = 16, num_layers: int = 1) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(2, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, PROSODY_DIM),
-            nn.Sigmoid(),
-        )
+        layers: list[nn.Module] = [nn.Linear(2, hidden), nn.ReLU()]
+        for _ in range(num_layers - 1):
+            layers += [nn.Linear(hidden, hidden), nn.ReLU()]
+        layers += [nn.Linear(hidden, PROSODY_DIM), nn.Sigmoid()]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
@@ -35,9 +34,9 @@ class ProsodyDecoder(nn.Module):
         return {"speech_rate": vec[0], "pitch": vec[1], "energy": vec[2]}
 
 
-def load_prosody_decoder(path: str, hidden: int = 16) -> ProsodyDecoder:
+def load_prosody_decoder(path: str, hidden: int = 16, num_layers: int = 1) -> ProsodyDecoder:
     """从权重文件加载已训练的韵律解码器。"""
-    model = ProsodyDecoder(hidden=hidden)
+    model = ProsodyDecoder(hidden=hidden, num_layers=num_layers)
     model.load_state_dict(torch.load(path, map_location="cpu"))
     model.eval()
     return model

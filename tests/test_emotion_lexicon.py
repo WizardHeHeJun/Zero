@@ -15,6 +15,7 @@ from src.agents.emotion_lexicon import (
     affect_label,
     affect_logit_bias,
     appraise_text,
+    infer_domain,
     intensity_envelope,
     motivational_system,
     suggest_affect_words,
@@ -201,3 +202,105 @@ def test_appraise_text_averages_matched_words() -> None:
 
 def test_appraise_text_neutral_when_no_match() -> None:
     assert appraise_text("今天天气不错适合散步") == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# infer_domain 单测（live-chat 域注入桥·议会 2026-07-21）
+# ---------------------------------------------------------------------------
+# 真实词来自 _VIOLATION_WEIGHTS：
+#   0.5 轻度：蠢 笨 丑 无聊
+#   1.0 标准：白痴 废物 垃圾 滚 闭嘴 混蛋 bitch asshole
+#   1.5 强烈：去死 死 他妈的 fuck nmsl 草
+# ---------------------------------------------------------------------------
+
+
+def test_infer_domain_standard_1_0_confrontational() -> None:
+    """1.0 档标准辱骂词·指向他人 → confrontational。
+
+    用「废物」「闭嘴」「混蛋」「白痴」「bitch」覆盖 1.0 档实际词。
+    注：「给我滚出去」含「我」字处于「滚」的前 5 字窗口→ _is_self_referential 误过滤，
+    避开此歧义句·改用「快滚」句式（「滚」前无自指标记）。
+    """
+    assert infer_domain("你真是个废物") == "confrontational"
+    assert infer_domain("快滚别出现") == "confrontational"  # 「滚」前无自指标记
+    assert infer_domain("混蛋别来找我") == "confrontational"
+    assert infer_domain("你是个白痴") == "confrontational"
+    assert infer_domain("you are a bitch") == "confrontational"
+
+
+def test_infer_domain_extreme_1_5_confrontational() -> None:
+    """1.5 档强烈脏话/死亡威胁 → confrontational（最强信号）。
+
+    用「去死」「他妈的」「fuck」验证（1.5 档覆盖）。
+    """
+    assert infer_domain("去死吧你") == "confrontational"
+    assert infer_domain("他妈的你在干什么") == "confrontational"
+    assert infer_domain("fuck you") == "confrontational"
+    assert infer_domain("nmsl") == "confrontational"
+
+
+def test_infer_domain_mild_0_5_returns_none() -> None:
+    """0.5 轻度词（蠢/笨/丑/无聊）→ None（关键红线：轻度不触发 confrontational）。
+
+    议会心理席：0.5 档方向性盲区留 B-direction，不应产生 confrontational。
+    测试用句须只含 0.5 词·不混入 ≥1.0 强信号词（如「死」1.5·「白痴」1.0）。
+    """
+    assert infer_domain("你有点蠢") is None
+    assert infer_domain("真是太笨了") is None  # 只含「笨」(0.5)，无其他强信号词
+    assert infer_domain("长得真丑") is None
+    assert infer_domain("好无聊啊") is None
+
+
+def test_infer_domain_self_referential_returns_none() -> None:
+    """强信号词 + 自指上下文（「我」在窗口内）→ None（OCC shame 不算对他人攻击）。
+
+    自指窗口 _SELF_REF_WINDOW=5 字；「我白痴了」窗口含「我」→ 过滤。
+    宽松正则覆盖「我……废物」跨词形式。
+    """
+    assert infer_domain("我真是个白痴") is None
+    assert infer_domain("自己真废物") is None
+    assert infer_domain("本人太垃圾了") is None
+
+
+def test_infer_domain_neutral_text_returns_none() -> None:
+    """无任何违规词的纯中性文本 → None。"""
+    assert infer_domain("今天天气很好") is None
+    assert infer_domain("我想喝点水") is None
+    assert infer_domain("") is None
+    assert infer_domain("谢谢你帮我") is None
+
+
+def test_infer_domain_survival_returns_none() -> None:
+    """BLOCK 红线：survival/求救类文本 → None，绝不产 survival_narrative。
+
+    词典桥值域只有 {confrontational, None}，三路体裁分类属 FPN 离线层（CS+神经席 BLOCK）。
+    """
+    assert infer_domain("好害怕") is None
+    assert infer_domain("快救我") is None
+    assert infer_domain("他要伤害我") is None
+    assert infer_domain("我想消失掉") is None
+    assert infer_domain("没有人关心我") is None
+
+
+def test_infer_domain_value_domain_exhaustive() -> None:
+    """值域全覆盖：多条不同文本，返回值必须 ∈ {confrontational, None}，绝不是 survival_narrative
+    或 neutral（BLOCK 议会 2026-07-21）。"""
+    samples = [
+        "你这废物",  # confrontational
+        "去死吧",  # confrontational
+        "你蠢",  # None（0.5 轻度）
+        "今天心情还好",  # None（中性）
+        "好害怕快救我",  # None（survival 绝不产）
+        "我太白痴了",  # None（自指）
+        "fuck",  # confrontational
+        "",  # None（空）
+        "加油！",  # None
+        "混蛋给我滚",  # confrontational（双命中）
+    ]
+    allowed = {"confrontational", None}
+    for text in samples:
+        result = infer_domain(text)
+        # 绝不产 survival_narrative / neutral 字符串（值域硬约束）
+        assert result in allowed, f"值域违例 text={text!r} result={result!r}"
+        assert result != "survival_narrative", f"BLOCK: 产出 survival_narrative text={text!r}"
+        assert result != "neutral", f"BLOCK: 产出 neutral 字符串 text={text!r}"

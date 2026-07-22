@@ -223,3 +223,150 @@ async def test_build_chat_driver_reads_env(monkeypatch: pytest.MonkeyPatch) -> N
     assert driver.decay_k == pytest.approx(0.5)
     assert driver.fam_tau == pytest.approx(15.0)
     assert driver.baseline_w == pytest.approx(0.8)
+
+
+# ---------------------------------------------------------------------------
+# Task 4：text_domain_enabled 门控集成测试（议会 2026-07-21）
+# ---------------------------------------------------------------------------
+# _FakeDomainSession：独立 fake·不改现有 _FakeSession·捕获 stim.domain 供断言。
+# 签名含 state_overrides=None（与 tom_gate_open 路径兼容）。
+# ---------------------------------------------------------------------------
+
+
+class _FakeDomainSession:
+    """捕获传入 stim 的 domain 字段（供 text_domain_enabled 门控集成断言）。
+
+    step 签名含 state_overrides=None·与 tom_gate_open 路径兼容·不改现有 _FakeSession。
+    """
+
+    def __init__(self) -> None:
+        self.seen_domain: str | None = _SENTINEL  # type: ignore[assignment]
+
+    async def step(self, stim: Any, state_overrides: Any = None) -> dict[str, Any]:
+        self.seen_domain = stim.domain
+        return {"valence_arousal": (0.0, 0.0), "recalled_context": []}
+
+
+# 哨兵值：区分「从未被赋值」与「赋值为 None」
+_SENTINEL: object = object()
+
+
+async def test_text_domain_enabled_confrontational_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """text_domain_enabled=True + 强信号 confrontational 文本
+    → session 收到的 stim.domain == 'confrontational'。
+
+    使用「废物」（1.0 档标准辱骂·_VIOLATION_WEIGHTS 实际词·指向他人）作为测试句。
+    """
+    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+    log = ConversationLog(":memory:")
+    fake = _FakeDomainSession()
+    driver = ChatDriver(
+        thread="t",
+        lm=None,
+        log=log,
+        session=fake,  # type: ignore[arg-type]
+        history=[],
+        attitude=(0.0, 0.0),
+        mode="test",
+        noise_std=0.0,
+        text_domain_enabled=True,  # 门开
+    )
+    await driver.step("你这废物给我滚")
+    assert fake.seen_domain == "confrontational"
+    log.close()
+
+
+async def test_text_domain_disabled_domain_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """text_domain_enabled=False（默认·零回归）+ 同样强信号文本
+    → stim.domain is None（domain 不注入·Stimulus 保持默认旁路）。
+
+    这是门控零回归断言：默认关时 chat_driver 行为与改前完全一致。
+    """
+    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+    log = ConversationLog(":memory:")
+    fake = _FakeDomainSession()
+    driver = ChatDriver(
+        thread="t",
+        lm=None,
+        log=log,
+        session=fake,  # type: ignore[arg-type]
+        history=[],
+        attitude=(0.0, 0.0),
+        mode="test",
+        noise_std=0.0,
+        text_domain_enabled=False,  # 默认关·零回归
+    )
+    await driver.step("你这废物给我滚")
+    assert fake.seen_domain is None  # 门关 → domain 不注入
+    log.close()
+
+
+async def test_text_domain_default_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ChatDriver 默认构造（不传 text_domain_enabled）→ self.text_domain_enabled=False。
+
+    确保新参数的默认值不破坏任何现有调用路径（零回归守线）。
+    """
+    monkeypatch.setattr("src.orchestration.chat_driver.random.gauss", lambda *a: 0.0)
+    log = ConversationLog(":memory:")
+    fake = _FakeDomainSession()
+    driver = ChatDriver(
+        thread="t",
+        lm=None,
+        log=log,
+        session=fake,  # type: ignore[arg-type]
+        history=[],
+        attitude=(0.0, 0.0),
+        mode="test",
+        noise_std=0.0,
+        # 不传 text_domain_enabled → 使用默认值
+    )
+    assert driver.text_domain_enabled is False  # 默认关
+    await driver.step("你这废物")
+    assert fake.seen_domain is None  # 门关 → domain 不注入
+    log.close()
+
+
+async def test_text_domain_env_gate_off_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """工厂·未设 ZERO_TEXT_DOMAIN_ENABLED → text_domain_enabled=False（默认关零回归）。"""
+    from src.orchestration.chat_driver import build_chat_driver
+
+    # 确保 env 里无此 key
+    monkeypatch.delenv("ZERO_TEXT_DOMAIN_ENABLED", raising=False)
+    driver = build_chat_driver(thread="test-domain-env-default")
+    assert driver.text_domain_enabled is False
+
+
+async def test_text_domain_env_gate_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """build_chat_driver 工厂·ZERO_TEXT_DOMAIN_ENABLED=true → text_domain_enabled=True。"""
+    from src.orchestration.chat_driver import build_chat_driver
+
+    monkeypatch.setenv("ZERO_TEXT_DOMAIN_ENABLED", "true")
+    driver = build_chat_driver(thread="test-domain-env-on")
+    assert driver.text_domain_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# aclose 接线：--chat 入口侧调用断言（B 类·2026-07-22）
+# ---------------------------------------------------------------------------
+
+
+async def test_aclose_called_in_chat_repl_finally() -> None:
+    """main._chat_repl finally 段含 await driver.aclose()（接线完整性·空悬防护）。
+
+    用反射确认 _chat_repl 源码含 aclose 调用——若日后被删则此测试检出回归。
+    consolidation_enabled=False（默认）时 aclose 是 no-op，补接线不影响现有行为（零回归）。
+    """
+    import inspect
+
+    import main as _main
+
+    src = inspect.getsource(_main._chat_repl)
+    assert "aclose" in src, (
+        "main._chat_repl 的 finally 段应含 await driver.aclose()（B 类接线完整性）"
+    )

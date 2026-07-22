@@ -17,6 +17,7 @@ from src.agents.affect_math import (
     MIN_PRECISION,
     MIN_SIGMA,
     evidence_from_value,
+    expand_external_priors,
     fast_survival_prior,
     fuse_terms,
     gaussian_fuse,
@@ -91,6 +92,17 @@ class AffectCoreAgent:
                         "text",
                         state.text_affect,
                         (state.text_affect_precision, state.text_affect_precision),
+                    )
+                )
+            # 外部多模态先验流注入（T4·议会 2026-07-15 M1；design.md 受约束方案 c）。
+            # 仅读 state，只 extend 局部 streams，不写任何 state 字段（节点契约）。
+            # 不进 occ_prior/survival 入口（守 text 流先例：独立低精度竞争流，非底噪）。
+            if state.external_priors:
+                streams.extend(
+                    expand_external_priors(
+                        state.external_priors,
+                        precision_cap=state.external_prior_precision_cap,
+                        max_streams=state.max_external_streams,
                     )
                 )
             terms, ignited = ignite(

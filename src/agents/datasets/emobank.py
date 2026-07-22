@@ -19,23 +19,37 @@ from src.agents.models.text_affect_regressor import TEXT_FEATURE_DIM, hash_featu
 
 
 def read_emobank_rows(
-    path: str | Path, *, limit: int | None = None
+    path: str | Path, *, limit: int | None = None, include_d: bool = False
 ) -> tuple[list[str], list[list[float]]]:
-    """读取 EmoBank CSV，返回 (texts, Y=(v,a))。V/A 由 1~5 归一化到 [-1,1]。
+    """读取 EmoBank CSV，返回 (texts, Y)。V/A/D 由 1~5 归一化到 [-1,1]。
 
     供哈希词袋与句向量两种 loader 共用同一数据解析/归一化源。无数据行时抛 ValueError。
+
+    Args:
+        path: EmoBank CSV 路径。
+        limit: 最多读取行数，None 表示全量。
+        include_d: 默认 False（零回归），Y shape=(n,2) 只含 V/A；
+            True 时 Y shape=(n,3)，第三列为 D，归一化公式同 V/A：
+            clamp((D-3)/2, -1, 1)。
+
+    Note:
+        D 列为 SAM Dominance 标注（Bradley & Lang 1994 SAM 量表，感受量非评价前件）。
+        议会 2026-07-15 裁定「有条件可用」（结 2026-07-13 #2）：须选 writer perspective
+        + 社会支配子集筛选 + 验证集方向校验(≥80%) + 训后独立性门控 r(V,D_pred)≤0.50；
+        未执行修正=不可用。见 notes/2026-07-15-text-coping-potential-emobank-d-council.md。
     """
     texts: list[str] = []
     ys: list[list[float]] = []
     with open(path, newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
             texts.append(row["text"])
-            ys.append(
-                [
-                    clamp((float(row["V"]) - 3.0) / 2.0, -1.0, 1.0),
-                    clamp((float(row["A"]) - 3.0) / 2.0, -1.0, 1.0),
-                ]
-            )
+            entry: list[float] = [
+                clamp((float(row["V"]) - 3.0) / 2.0, -1.0, 1.0),
+                clamp((float(row["A"]) - 3.0) / 2.0, -1.0, 1.0),
+            ]
+            if include_d:
+                entry.append(clamp((float(row["D"]) - 3.0) / 2.0, -1.0, 1.0))
+            ys.append(entry)
             if limit is not None and len(texts) >= limit:
                 break
 

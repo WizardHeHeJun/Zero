@@ -85,9 +85,12 @@ def test_composite_decoder_overrides_prosody_only() -> None:
     channels = composite.predict_channels(0.5, 0.5)
     assert CHANNELS.issubset(channels)
     assert channels["prosody"] == model.predict_prosody(0.5, 0.5)  # 韵律来自真模型
+    # zero-link Q1（2026-07-14）：专用韵律真模型出归一 [0,1] → 量纲标记 "normalized"
+    assert channels["prosody_scale"] == "normalized"
     # 未注入韵律模型时回退解析占位
     fallback = CompositeChannelDecoder().predict_channels(0.5, 0.5)
     assert CHANNELS.issubset(fallback)
+    assert fallback["prosody_scale"] == "ratio"  # 占位倍率口径
 
 
 def test_expression_agent_with_composite_preserves_contract() -> None:

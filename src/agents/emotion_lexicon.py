@@ -20,6 +20,7 @@ torch-free / API-free，不动 affect_math.text_label 以保零回归）：
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 from src.agents.affect_math import clamp
 
@@ -95,6 +96,9 @@ def motivational_system(
     arousal: float,
     *,
     distinguish_fear: bool = False,
+    coping_potential: float = 0.0,
+    text_coping_source: bool = False,
+    fear_domain_enabled: bool = False,
 ) -> str:
     """VA → Panksepp 主导情绪系统标签（动机色彩）。
 
@@ -124,6 +128,48 @@ def motivational_system(
         True 时按 arousal 阈值（PANKSEPP_FEAR_AROUSAL_THRESHOLD）次级区分 fear/rage。
         ⚠ 议会 2026-07-02 判该阈值无可辩护文献依据，生产不建议开启。
 
+    coping_potential : float
+        情境控制感 ∈ [-1,1]（默认 0.0=零回归，(-v,+a) 一律→ rage，与旧行为逐字兼容）。
+        非零时在 (-v,+a) 象限用 control_appraisal 分离 rage/fear（议会 2026-07-13 P1-D）：
+        >COPING_RAGE_THRESHOLD → rage（高控制/趋近）；<COPING_FEAR_THRESHOLD → fear（低控制/回避）；
+        中间带哑火（text 来源·B3 约束3）见 text_coping_source 参数。
+        由 AppraisalAgent 产出 coping_potential_state；经 language._appraisal_summary 读 state
+        透传至此（仅 appraisal_conditioning 开时经该摘要消费，与 distinguish_fear 同一路径）。
+
+        非对称可靠性与命名边界（议会 2026-07-20·SemEval OOD 后订正；A3 订正 2026-07-21）：
+        可靠性**域特异·各有弱域**——
+        **fear**：ED 生存叙事域 LB≈0.90（单源稳定）；SemEval Twitter 社交焦虑 LB=0.709（仅过 bar）；
+          EmoryNLP 表演对话 LB=0.264 崩（-32pp，对话体裁构念异质·Lazarus anxiety 非 fear）。
+          「fear 全域稳」是 ED 单源幻觉（A3 订正：旧注释「跨源 LB≈0.90 稳」错误·fear 亦须域条件化·
+          home 域=survival_narrative；三源梯度 ED 0.90>SemEval 0.709>EmoryNLP 0.264 不可忽视）。
+          fear 生产解锁须第二生存叙事源 LB≥0.80；
+          见 notes/2026-07-21-dailydialog-fear-unlock-council。
+        **anger**：叙事/倾诉域（ED）LB≈0.68（FAIL·行动路径关闭·Kelley 2013 沉思型右额叶）；
+          confrontational 域（Twitter）LB=0.857 恢复（PASS）；三源交叉收敛效度确立。
+        「情境无关」限皮层下生存回路防御行为触发层面（LeDoux&Brown 2017），非意识 fear 感受本身
+        （Barrett 2017）。fear 回避锚皮层下 PAG/杏仁核
+        （Davis&Walker 2009 DOI:10.1038/npp.2009.109）。text 来源 coping 是 anger/fear 的
+        趋近-回避方向符号先验（训练方案=符号监督 motivational_direction_prior；
+        W1 已接线 2026-07-20：PerceptionAgent 经 DirectionHead
+        opt-in 产出 text_coping_prior，见 appraisal.py 同段注释），
+        非 Lazarus/Scherer 应对评价连续量；anger 侧约 12–20% 低置信弃权回退默认
+        （三路切分验证见 scripts/validate_anger_abstain.py），调用者不得假设 anger 信号总在。
+
+    fear_domain_enabled : bool
+        WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1；默认 False=零回归）。
+        False（默认）→ coping_potential<COPING_FEAR_THRESHOLD 分支返回 "rage"（保守默认），
+        **不产 fear 域激活**（路径二·单点完整·与 perception 路径一联合覆盖）。
+        True → 解除回退，该分支正常返回 "fear"（须 env 显式开）。
+        anger confrontational 路径（coping_potential>COPING_RAGE_THRESHOLD→"rage"）
+        完全不受此门约束。
+
+    text_coping_source : bool
+        默认 False=旧调用方零回归（不触发中间带哑火）。
+        True=本轮 coping_potential 值来自文本先验（B3 分支2/4），在 (-v,+a) 象限且
+        |coping_potential|≤TEXT_COPING_MIDDLE_BAND 时哑火返回 rage（保守默认），
+        防止低信度文本先验在中间带错误翻转 rage/fear（议会 2026-07-16 神经席约束3）。
+        仅影响 (-v,+a) 象限的 rage/fear 判断，其余象限无影响。
+
     env 贯通状态：已接 ZERO_PANKSEPP_DISTINGUISH_FEAR（默认关=零回归）。经
     chat_driver/runner → SessionConfig → AffectState.panksepp_distinguish_fear →
     language.py::_appraisal_summary 读 state 传入（仅 appraisal_conditioning 开时经该摘要可见）。
@@ -131,6 +177,11 @@ def motivational_system(
 
     返回小写枚举串，便于下游条件化与单测。
     """
+    # text 来源 coping 中间带哑火边界（议会 2026-07-16 神经席；Wacker et al. 2003）：
+    # 极端段方可分 rage/fear；[-0.15,+0.15] 方向可靠度不足，保守回落 rage。
+    # 暂定·待方向判据（留出集 Wilson CI 下界≥0.70）后回工程升/降，
+    # 届时仿 ignition_beta 走 env 注入（新增 state 字段 + ZERO_TEXT_COPING_MIDDLE_BAND）。
+    TEXT_COPING_MIDDLE_BAND = 0.15
     r, _ = _polar(valence, arousal)
     if r < NEUTRAL_RADIUS:
         return "neutral"
@@ -138,6 +189,25 @@ def motivational_system(
         return "seeking" if arousal >= 0.0 else "care"
     # (-v, +a) 象限
     if arousal >= 0.0:
+        # ── 中间带哑火 guard（B3 约束3）：text 来源且 |coping| 在中间带 → 保守 rage ──
+        # 必须在 COPING_RAGE_THRESHOLD/COPING_FEAR_THRESHOLD 判断之前执行（R3）。
+        # 与旧 (-v,+a)→rage 保守默认逐字兼容（中间带 → rage，非 fear）。
+        if text_coping_source and abs(coping_potential) <= TEXT_COPING_MIDDLE_BAND:
+            return "rage"
+        # coping_potential 分离路径（议会 2026-07-13 P1-D）。阈值为函数体内局部变量：
+        # ⚖ 议会初值(Smith & Ellsworth 1985 control 维)，待 P1 观测校准，工程不私拍。
+        # P1 校准出新值后走 env 注入（仿 ignition_beta 新增 state 透传），届时改此为参数。
+        COPING_RAGE_THRESHOLD = 0.3
+        COPING_FEAR_THRESHOLD = -0.3
+        if coping_potential > COPING_RAGE_THRESHOLD:
+            return "rage"
+        if coping_potential < COPING_FEAR_THRESHOLD:
+            # A1-fear 专属门路径二（WARN-3·B1 BLOCK·议会 2026-07-21）：
+            # fear_domain_enabled=False（默认）→ 回退 rage（保守默认·不产 fear 域激活）。
+            # fear_domain_enabled=True → 正常产 fear（须 env 显式开）。
+            return "fear" if fear_domain_enabled else "rage"
+        # 中间段 [-0.3, 0.3]：保守默认 rage（与旧 (-v,+a)→rage 逐字兼容）
+        # 旧 distinguish_fear 路径（tombstone 标注；coping_potential=0 时走此回退）
         if distinguish_fear and arousal >= PANKSEPP_FEAR_AROUSAL_THRESHOLD:
             return "fear"
         return "rage"
@@ -364,6 +434,49 @@ def appraise_standard_compliance(text: str) -> float:
     c_score = min(c_raw, _MAX_SIGNALS) / _MAX_SIGNALS  # [0, 1]
     net = c_score - v_score  # ∈ [-1, 1]
     return float(clamp(net, -1.0, 1.0))
+
+
+# ---------------------------------------------------------------------------
+# live-chat 域注入桥（A+D 底座·议会 2026-07-21）
+# ---------------------------------------------------------------------------
+# 纯词典规则·torch/LLM-free（同 appraise_standard_compliance·守热路径确定性）。
+# 值域硬约束 {confrontational, None}：
+#   - 绝不产 survival_narrative（36pp 悬崖·CS+神经席 BLOCK·议会 2026-07-21）
+#   - 只做 confrontational 二值；三路体裁分类属 FPN 离线不在词汇层
+#   - None=absent 旁路·非 neutral 显式弃权（语义不同·state.py:42-43）
+# 权重≥1.0 强信号才触发·0.5 轻度词弃权（心理席·方向性盲区留 B-direction）。
+
+
+def infer_domain(text: str) -> Literal["confrontational"] | None:
+    """从用户文本词典桥推断当前对话域，返回 'confrontational' 或 None。
+
+    返回值域硬约束 {'confrontational', None}（assert 双保险）：
+    - 绝不产 survival_narrative（36pp 悬崖·CS+神经席 BLOCK·议会 2026-07-21）。
+    - 只做 confrontational 二值；三路体裁分类属 FPN 离线不在词汇层。
+    - None=absent 旁路·非 neutral 显式弃权（语义不同·state.py:42-43）。
+
+    算法：
+    1. lower = text.lower()
+    2. 遍历 _VIOLATION_WEIGHTS.items()，筛选 weight >= 1.0 的强信号词
+       （0.5 轻度词「蠢/笨/丑/无聊」自动排除，从 weight 过滤不 hardcode 词表）。
+    3. 命中词须满足：word in lower AND 非自指
+       （复用 _is_self_referential，防「我白痴了」误判为对他人攻击）。
+    4. 任一命中 → 返回 'confrontational'；否则返回 None。
+
+    纯词典规则·torch/LLM-free（同 appraise_standard_compliance·守热路径确定性）。
+    权重>=1.0 强信号才触发·0.5 轻度词弃权（心理席·方向性盲区留 B-direction）。
+    """
+    lower = text.lower()
+    result: Literal["confrontational"] | None = None
+    for word, weight in _VIOLATION_WEIGHTS.items():
+        if weight < 1.0:
+            continue
+        if word in lower and not _is_self_referential(lower, word):
+            result = "confrontational"
+            break
+    # 值域硬约束双保险（BLOCK·议会 2026-07-21·绝不产 survival_narrative）
+    assert result in ("confrontational", None), f"infer_domain 值域违例: {result!r}"
+    return result
 
 
 def intensity_envelope(

@@ -2,6 +2,9 @@
 
 用法：python -m scripts.train_text_affect --csv data/emobank.csv --epochs 300
 数据获取/格式见 src/agents/datasets/emobank.py 模块文档。
+
+注意：训更大网络（--hidden/--num-layers 非默认值）需从头重训；
+原 Release 权重仅兼容默认形状（hidden=64, num_layers=1）。
 """
 
 from __future__ import annotations
@@ -25,11 +28,13 @@ def train(
     epochs: int = 300,
     lr: float = 1e-3,
     limit: int | None = None,
+    hidden: int = 64,
+    num_layers: int = 1,
     out: str = "artifacts/text_affect_regressor.pt",
 ) -> float:
     """加载 EmoBank、全批量训练 TextAffectRegressor 并保存权重，返回最终 MSE。"""
     x, y = load_emobank(csv_path, limit=limit)
-    model = TextAffectRegressor()
+    model = TextAffectRegressor(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
@@ -57,9 +62,18 @@ def main() -> None:
     parser.add_argument("--csv", required=True, help="EmoBank CSV 路径")
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--hidden", type=int, default=64)
+    parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/text_affect_regressor.pt")
     args = parser.parse_args()
-    final = train(args.csv, epochs=args.epochs, limit=args.limit, out=args.out)
+    final = train(
+        args.csv,
+        epochs=args.epochs,
+        limit=args.limit,
+        hidden=args.hidden,
+        num_layers=args.num_layers,
+        out=args.out,
+    )
     print(f"done, final loss={final:.6f}")
 
 

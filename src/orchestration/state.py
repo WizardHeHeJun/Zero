@@ -8,11 +8,12 @@ state 不放大对象（向量/文档）；trace 仅存标量中间量。运行�
 from __future__ import annotations
 
 import operator
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.memory.types import Fact
+from src.orchestration.external_prior import ExternalPrior
 
 
 class Stimulus(BaseModel):
@@ -27,6 +28,61 @@ class Stimulus(BaseModel):
     standard_compliance: float = 0.0  # 与标准的契合（行为维度）
     attitude_appeal: float = 0.0  # 对象的喜好（吸引力维度）
     intensity: float = 1.0  # 事件显著度/强度
+    # 情境控制感评价维度（议会 2026-07-13 T2；Smith & Ellsworth 1985 control 维）。
+    # 独立于 goal_congruence——目标可实现但感觉无法掌控（如意外之喜）。
+    # +1=高控制/趋近（愤怒端），-1=低控制/回避（恐惧端）。
+    # None=absent cue（B3：absent cue 精度趋零，不参与 B3 融合）；
+    # 0.0=genuine-zero（显式真中性，参与 B3 融合，但贡献极小）。
+    control_appraisal: float | None = None
+    # 域轴：当前事件的体裁/情境类别（B2·议会 2026-07-20；正交于 control_appraisal 方向轴）。
+    #
+    # 语义：
+    #   None（默认）= absent/未指定 → 域门整体旁路，现有路径逐字不变（零回归）。
+    #   "confrontational" = anger home 域（Twitter 式当下对抗·SemEval anger LB=0.857）。
+    #   "survival_narrative" = fear home 域（ED 式生存/防御叙事·ED fear LB=0.90）。
+    #   "neutral" = 显式两不属 → text_coping_prior 弃权（≠ None 旁路；两者语义不同·A-W1）。
+    #
+    # A-C2（对称门工程注意事项·神经层次不对等）：
+    #   confrontational 域的 anger 激活依赖前额叶评价（可行动性·Harmon-Jones 2003
+    #   DOI:10.1016/S0191-8869(02)00313-6），属皮层依赖过程；survival_narrative 域的 fear
+    #   激活依赖皮层下防御回路（CeA-PAG·Davis&Walker 2009 DOI:10.1038/npp.2009.109），
+    #   属皮层下生存机制。"对称门"是工程近似，两者神经层次不对等——anger 需语境中
+    #   行动可行性、fear 则情境依赖性弱得多。
+    #   重要：CeA/BNST 的解剖标签在此是**机制假说非确立事实**；Grogans et al. (2023 SCAN)
+    #   meta 分析显示 CeA/BNST 无显著区域×确定性解离（效度不足）——故域定义以体裁/情境为锚，
+    #   不以解剖结构为一级依据。
+    #   domain_confidence（c_domain 精度衰减字段）属 B 类议会定，本轮不实施。
+    #
+    # None → 旁路；neutral → 显式弃权；domain_confidence 属 B 类（Feldman&Friston 2010 B 类）。
+    domain: Literal["confrontational", "survival_narrative", "neutral"] | None = None
+
+    @model_validator(mode="after")
+    def _check_domain_ctrl_sign(self) -> Stimulus:
+        """边界层 fail-fast（A-bd·议会 2026-07-20 T-1）：domain 非 None 且 control_appraisal
+        非 None 时，校验二者符号一致性，防不一致注入抵达 appraisal 分支4 MLE。
+
+        confrontational → ctrl >= 0（anger home 域不接受 fear 符号注入）；
+        survival_narrative → ctrl <= 0（fear home 域不接受 anger 符号注入）；
+        neutral / domain=None / ctrl=None → no-op，直接 return self（零回归）。
+
+        违反时抛 ValueError（fail-fast，非静默）；消息含 domain 与 ctrl 值供调试。
+        """
+        domain = self.domain
+        ctrl = self.control_appraisal
+        if domain is None or ctrl is None:
+            return self
+        # neutral → no-op（跳过两 if·self 直接返回·防误加 neutral 的 ctrl 校验）
+        if domain == "confrontational" and ctrl < 0.0:
+            raise ValueError(
+                f"domain={domain!r} 要求 control_appraisal >= 0，"
+                f"但收到 ctrl={ctrl}（fear 符号注入 confrontational 域·边界层拒绝）"
+            )
+        if domain == "survival_narrative" and ctrl > 0.0:
+            raise ValueError(
+                f"domain={domain!r} 要求 control_appraisal <= 0，"
+                f"但收到 ctrl={ctrl}（anger 符号注入 survival_narrative 域·边界层拒绝）"
+            )
+        return self
 
 
 class AffectState(BaseModel):
@@ -72,6 +128,24 @@ class AffectState(BaseModel):
 
     # Mood（A.7 慢变心境：时间深度/滞后）—— 运行态，进 Checkpointer，不入图谱
     mood: tuple[float, float] | None = None
+
+    # coping_potential 独立标量流（议会 2026-07-13；运行态慢变量）—— 进 Checkpointer，绝不入图谱
+    # coping_potential_state: 情境控制感 ∈ [-1,1]（同 mood 先例：Checkpointer 持久，非图谱）
+    # +1=趋近/高控制/愤怒端，-1=回避/低控制/恐惧端；经 language._appraisal_summary 消费
+    # coping_potential_enabled=False 门控关 → 现路径逐字不变（零回归）
+    coping_potential_state: float = 0.0
+    coping_potential_enabled: bool = False  # 总门控（默认关=零回归）
+    # facs_extended 扩展 AU 门控（设计门 PASS·路径 b；默认关=零回归）
+    # True → ExpressionAgent 占位路径把 coping_potential_state 透传给 decode_channels，
+    # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
+    # 经 chat_driver 读 ZERO_FACS_EXTENDED → SessionConfig → to_state_flags 贯通。
+    facs_extended: bool = False  # 默认关=零回归
+    # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。
+    # 自发头(push·锥体外路·皮层下驱动)全量传 coping；随意头(pull·锥体束意志调控)传
+    # coping×voluntary_coping_leak（意志可部分压制 coping-driven AU，Rinn 1984）。
+    # 默认 1.0 = 两头等值 = 逐字旧行为（零回归）；推荐 0.3；经 ZERO_VOLUNTARY_COPING_LEAK 注入。
+    # 仅在 facs_extended=True 时对 facs_au 生效（legacy 模式 coping 不参与→自动零回归）。
+    voluntary_coping_leak: float = Field(default=1.0, ge=0.0, le=1.0)
 
     # HPA/皮质醇慢回路（P3 1-B；运行态慢变量）—— 进 Checkpointer，**绝不写入长期记忆图谱**
     # cortisol_state: 归一皮质醇水平 ∈ [0, 1]（同 mood 先例：Checkpointer 持久，非图谱）
@@ -192,3 +266,58 @@ class AffectState(BaseModel):
     # _appraisal_summary（appraisal_conditioning 开时）消费；精确阈值/坐标待议会 P1-D。
     panksepp_distinguish_fear: bool = False
     task_complete: bool = False
+
+    # 外部多模态先验流注入口（议会 2026-07-15 M1–M6；PRP 外部多模态先验流注入口）。
+    # 每条 ExternalPrior = (name, (μv, μa), (Πv, Πa))，逐维精度与 affect_core.py:77
+    # streams 类型原生一致，AffectCoreAgent 展开后直接 extend 进 streams 竞争融合。
+    # ⚠ 无任何图节点写此字段——每轮经 state_overrides 注入（interlocutor_affect 先例）；
+    # 进 Checkpointer 不入图谱；默认空列表=零回归（workspace_enabled 下才有意义）。
+    external_priors: list[ExternalPrior] = Field(default_factory=list)
+    # 单条外部先验精度上界（M3；ZERO_EXTERNAL_PRIOR_PRECISION_CAP env；默认 0.8）。
+    # 超出 → expand_external_priors raise ValueError（fail-fast 指向 MCP 传参错误）。
+    # 经 SessionConfig → to_state_flags 贯通；MCP 保守低精度推荐见 design.md §五。
+    external_prior_precision_cap: float = Field(default=0.8, gt=0.0)
+    # 每轮外部流数上界（M6；ZERO_MAX_EXTERNAL_STREAMS env；默认 5）。
+    # len(external_priors) > max → expand_external_priors raise ValueError（数学席 Σπ 虚增保险）。
+    # 经 SessionConfig → to_state_flags 贯通；N≤5 保守（fuse_terms MIN_SIGMA 已给隐式上界）。
+    max_external_streams: int = Field(default=5, ge=0)
+
+    # text_coping 独立标量流（议会 2026-07-16 B3；来源：PerceptionAgent 词典/回归产出）。
+    # ── text_coping_enabled：B3 总门控（默认 False=零回归）──
+    # False → AppraisalAgent B3 强制 text=None，只走分支1/3（纯 ctrl 路径），逐字旧行为；
+    # True → 允许 text_coping_prior 参与 B3 融合（分支2/4）。
+    # 经 SessionConfig.text_coping_enabled → to_state_flags() → ainvoke 贯通。
+    text_coping_enabled: bool = False  # 默认关=零回归
+    # ── fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1）──
+    # False（默认）→ 任何路径**不得产出 fear 域激活**（两条泄漏路径均须覆盖·零回归）：
+    #   路径一（流卫生）：perception._compute_text_coping 中 survival_narrative 域信号硬弃
+    #     （不论方向·anger confrontational 路径完全不受此门）。
+    #   路径二（单点完整）：emotion_lexicon.motivational_system coping<COPING_FEAR_THRESHOLD
+    #     分支返回 rage 而非 fear（保守默认·非 fear 域激活）。
+    # True → 两路径解除硬弃/回退，fear 域激活可经正常门控产生（须 env 显式开）。
+    # 语义边界：fear 专属门·anger confrontational 路径完全不受此门（仅 survival 域关）。
+    # 边界·表情层正交（议会 2026-07-21 B-facs-fear·PASS）：本门仅治标签/符号层两路径；
+    #   表情层 fear-AU（affect_math.py:595-604·AU01/02/20·coping<0 驱动）由 facs_extended
+    #   +coping_potential_enabled 双层容量门独立治理·与本门正交（面部运动 vs 情绪判定层解离·
+    #   Rinn 1984 / Barrett 2019）。悬置 B-facs-fear-unlock：fear 域解锁时须重裁表情层是否加门。
+    fear_domain_enabled: bool = False  # WARN-3 fear 专属门·默认关=零回归·B1 BLOCK 前置
+    # ── text_coping_prior：独立标量流入口 ──
+    # None=门关=零回归（每轮归零防 LastValue 残留，仿 external_priors）；
+    # 非 None=本轮 PerceptionAgent 产出的文本 coping 估计 ∈ [-1,1]。
+    # 绝不入 fuse_terms/occ_prior/fast_survival_prior/hierarchical_fuse（来源正交）；
+    # 唯一消费者经 AppraisalAgent 更新 coping_potential_state；每轮 step() 归零。
+    text_coping_prior: float | None = None
+    # ── text_coping_source：AppraisalAgent 输出 flag ──
+    # True=本轮 coping_potential_state 的值来自 text（供 motivational_system 中间带哑火）；
+    # False=来自 control_appraisal 或两皆 None（默认）；每轮 step() 归零。
+    text_coping_source: bool = False
+    # ── text_coping_precision：π_t（议会定 ≤0.10·缺省 0.08）──
+    # B3 融合精度：两者皆有时 π_ctrl=1.0（固定）vs π_t（此字段）做精度加权。
+    # ⚠ 不加 le 约束——避免 pydantic checkpoint 反序列化 fail（le 由 SessionConfig 层 fail-fast）。
+    # 仿 text_affect_precision 注释风格；由 ZERO_TEXT_COPING_PRECISION env 注入。
+    text_coping_precision: float = 0.08
+    # ── recalled_episode_ids：本轮语义召回命中的 episode rowid 列表 ──
+    # MemoryRecallAgent 填写；Supervisor 任务完成节点读出并经 MemoryClient
+    # 节流更新 access_count（ACT-R 频率）。每轮 step() 归零防 LastValue 残留
+    # （仿 external_priors 先例，见 runner.py）；不加 pydantic 约束防反序列化失败。
+    recalled_episode_ids: list[str] = Field(default_factory=list)

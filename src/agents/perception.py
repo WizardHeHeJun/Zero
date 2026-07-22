@@ -4,17 +4,25 @@
 
 文本路径（ZERO_TEXT_AFFECT_BACKEND=st）：用句向量回归器预测 (valence, arousal)；
 OCC 占位路径（默认关）：直接取 OCC 评价维度；两路径输出接口完全兼容。
+
+text_coping 独立标量流（W1·议会 2026-07-20·默认关=零回归）：
+  ZERO_DIRECTION_HEAD_MODEL_PATH 未设 → direction_head=None → text_coping_prior 恒 None。
+  state.text_coping_enabled=False（默认）→ 归零（不读 env·节点看 state）。
+  两条件均满足时产出 tanh(logit) ∈ [-1, 1]，写入 text_coping_prior。
+  弃权门 τ 读 ZERO_ANGER_ABSTAIN_LOGIT_THRESHOLD（默认 0.0=不弃权）。
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import TYPE_CHECKING
 
 from src.orchestration.state import AffectState
 
 if TYPE_CHECKING:
+    from src.agents.models.direction_head import DirectionHead
     from src.agents.models.text_affect_regressor_st import STTextAffectRegressor
 
 logger = logging.getLogger(__name__)
@@ -53,6 +61,52 @@ def _build_text_affect_regressor() -> STTextAffectRegressor | None:
         return None
 
 
+def _build_direction_head() -> DirectionHead | None:
+    """工厂函数：按环境变量决定是否加载 DirectionHead（motivational_direction_prior）。
+
+    - ZERO_DIRECTION_HEAD_MODEL_PATH 未设置或为空 → 返回 None（默认关·不引 torch）。
+    - 设了路径 → 延迟 import src.agents.models.direction_head 加载；
+      任何异常 → warning + 返回 None（fail-soft）。
+    """
+    model_path = os.getenv("ZERO_DIRECTION_HEAD_MODEL_PATH", "")
+    if not model_path:
+        return None
+
+    try:
+        from src.agents.models.direction_head import load_direction_head
+
+        head = load_direction_head(model_path)
+        logger.info("已加载 DirectionHead，权重路径=%s", model_path)
+        return head
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "加载 DirectionHead 失败（%s），text_coping_prior 将恒 None", exc, exc_info=True
+        )
+        return None
+
+
+def _domain_direction_accepts(domain: str, direction_sign: float) -> bool:
+    """域×方向匹配谓词：仅在信号的 home 域接受该方向。
+
+    confrontational → direction_sign > 0（anger home 域）。
+    survival_narrative → direction_sign < 0（fear home 域）。
+    neutral（或其余未知值）→ False（显式两不属·弃权）。
+
+    重要（A-W1·议会 2026-07-20 WARN-1）：
+      domain 参数必须非 None——None 旁路由调用点 `if domain is not None` 处理。
+      本谓词的 `return False`（neutral 分支）是显式弃权，语义上≠ None 旁路；
+      若将 None 传入此谓词会产生 False，导致 text_coping_prior 被置 None，
+      与「None=整门旁路、prior 逐字不变」的零回归语义分叉——严禁混用。
+
+    热路径：纯枚举+符号比较，LLM-free，无判别器（域由调用方注入）。
+    """
+    if domain == "confrontational":
+        return direction_sign > 0.0  # anger home
+    if domain == "survival_narrative":
+        return direction_sign < 0.0  # fear home
+    return False  # neutral → 显式两不属 → 弃权（≠ None 旁路）
+
+
 class PerceptionAgent:
     """从 stimulus 抽取特征向量。
 
@@ -61,15 +115,38 @@ class PerceptionAgent:
 
     文本路径（ZERO_TEXT_AFFECT_BACKEND=st）：用句向量回归器预测 (valence, arousal)，
     features 为 [valence, arousal, intensity, 0.0]。
+
+    text_coping 独立标量流（W1·默认关=零回归）：
+      ZERO_DIRECTION_HEAD_MODEL_PATH 设了 + state.text_coping_enabled=True 时，
+      产出 text_coping_prior = tanh(logit) ∈ [-1, 1]（+1≈anger趋近·-1≈fear回避）。
+      弃权门 τ（ZERO_ANGER_ABSTAIN_LOGIT_THRESHOLD，默认 0.0=不弃权）：
+        abs(logit) < τ → text_coping_prior=None（弃权·B1 科学决策·当前 τ=0 inert）。
+
+    B2 域门（A1 热路径·议会 2026-07-20）：
+      _compute_text_coping 在 τ 弃权门之后施 A1 域×方向匹配门：
+        domain=None（默认）→ 整门旁路，prior 逐字不变（零回归，保 1061 passed）。
+        domain 非 None → 调用 _domain_direction_accepts(domain, prior) 检查方向：
+          失配（off-domain）→ prior=None（硬弃·off-domain π_t 近似为 0）。
+          匹配 → prior 逐字传出。
+      域门只置 text_coping_prior=None，绝不进 fuse_terms/occ_prior/其余流（来源正交）。
     """
 
     def __init__(self) -> None:
         self.text_regressor: STTextAffectRegressor | None = _build_text_affect_regressor()
+        self.direction_head: DirectionHead | None = _build_direction_head()
+        # 弃权门阈值：工厂/init 期读，默认 0.0（inert·旋钮 inert·B1 科学决策后再调）
+        self.abstain_threshold: float = float(
+            os.getenv("ZERO_ANGER_ABSTAIN_LOGIT_THRESHOLD", "0.0")
+        )
 
     def __call__(self, state: AffectState) -> dict:
         stim = state.stimulus
         if stim is None:
-            return {}
+            # 无 stimulus 也显式归零 text_coping_prior，防 LastValue 残留（节点契约·WARN-1）
+            return {"text_coping_prior": None}
+
+        # ── text_coping 独立标量流（W1·节点契约：每条路径都显式写键，防 LastValue 残留）──
+        text_coping_delta = self._compute_text_coping(state)
 
         if self.text_regressor is not None and stim.text is not None:
             # 文本路径：句向量回归器预测 (valence, arousal)
@@ -87,8 +164,14 @@ class PerceptionAgent:
                 "features": features,
                 "backend": backend_tag,
                 "text_affect": (valence, arousal),
+                **text_coping_delta,
             }
-            return {"features": features, "text_affect": (valence, arousal), "trace": [entry]}
+            return {
+                "features": features,
+                "text_affect": (valence, arousal),
+                "trace": [entry],
+                **text_coping_delta,
+            }
         else:
             # OCC 占位路径（默认）
             features = [
@@ -99,6 +182,112 @@ class PerceptionAgent:
             ]
             backend_tag = "occ_placeholder"
 
-        entry = {"node": "perception", "features": features, "backend": backend_tag}
+        entry = {
+            "node": "perception",
+            "features": features,
+            "backend": backend_tag,
+            **text_coping_delta,
+        }
         # 显式归零 text_affect：防止多轮同 thread 时上轮文本路径的值残留进 AffectCore
-        return {"features": features, "text_affect": None, "trace": [entry]}
+        return {
+            "features": features,
+            "text_affect": None,
+            "trace": [entry],
+            **text_coping_delta,
+        }
+
+    def _compute_text_coping(self, state: AffectState) -> dict:
+        """产出 text_coping_prior 增量（节点契约：每条路径都返回该键，防 LastValue 残留）。
+
+        text_coping_source（bool）是 AppraisalAgent 的输出 flag，PerceptionAgent 不写。
+        PerceptionAgent 只负责产出 text_coping_prior（float | None）。
+
+        门控逻辑（短路，按优先级）：
+          1. state.text_coping_enabled is False（默认）→ 归零（零回归·分支 1/3）。
+          2. self.direction_head is None → 归零（未加载权重）。
+          3. stim 或 stim.text 缺失 → 归零。
+          4. 产出路径：encode_texts → logit → 弃权门 τ → A1 域门 → tanh(logit) 或 None。
+
+        A1 域门（B2·议会 2026-07-20·热路径单门）：
+          τ 弃权门之后，在 return 之前施 A1 域×方向匹配门（_domain_direction_accepts）：
+            stim.domain=None（默认）→ 整门旁路，prior 逐字不变（零回归，保 1061 passed）。
+            stim.domain 非 None 且 prior 非 None → 调用谓词：
+              匹配 → prior 不变；失配 → prior=None（硬弃·off-domain π_t 近似为 0）。
+          域门只置 text_coping_prior=None，绝不触及 fuse_terms/occ_prior 等流。
+
+        节点读 state.text_coping_enabled，不读 ZERO_TEXT_COPING_ENABLED env
+        （env 在驱动层注入 state·守节点契约）。
+        """
+        _null: dict = {"text_coping_prior": None}
+
+        # 门控 1：总开关（默认 False=零回归）
+        if not state.text_coping_enabled:
+            return _null
+
+        # 门控 2：权重未加载
+        if self.direction_head is None:
+            return _null
+
+        # 门控 3：stim/text 缺失
+        stim = state.stimulus
+        if stim is None or stim.text is None:
+            return _null
+
+        # 产出路径：延迟 import encode_texts（torch 重依赖，与 direction_head 同批）
+        import torch
+
+        from src.agents.models.text_affect_regressor_st import encode_texts
+
+        with torch.no_grad():
+            emb = encode_texts([stim.text])  # (1, dim)
+            logit_t = self.direction_head(emb)  # (1,) or scalar
+            logit: float = float(logit_t[0] if logit_t.dim() >= 1 else logit_t)
+
+        # 弃权门（τ 默认 0.0=不弃权·B1 科学决策后再定激活值）
+        if abs(logit) < self.abstain_threshold:
+            prior: float | None = None
+        else:
+            prior = math.tanh(logit)
+
+        logger.debug(
+            "text_coping logit=%.4f abstain_τ=%.4f prior=%s",
+            logit,
+            self.abstain_threshold,
+            prior,
+        )
+
+        # ── A1 域门（B2·议会 2026-07-20·热路径·域×方向匹配；A4 τ 注释同段）──
+        # A-W1：domain=None → 整门旁路，prior 逐字不变（零回归）；
+        #        domain 非 None → 谓词只处理非 None domain（None 旁路由此 if 包裹）。
+        # prior is not None 防止 None 入谓词（符号比较对 None 无意义）。
+        #
+        # ── A1-fear 专属门（WARN-3·B1 BLOCK·议会 2026-07-21）──
+        # state.fear_domain_enabled=False（默认）→ survival_narrative 域信号一律硬弃
+        # （不论方向；流卫生，路径一）。anger confrontational 路径**完全不受此门**——
+        # 仅 domain=="survival_narrative" 的 prior 才受 fear_domain_enabled 约束；
+        # confrontational 域正常走下方的 _domain_direction_accepts 方向门。
+        #
+        # ── A4 τ 弃权门注释（保留 inert·议会 T-1 折中）──
+        # 数学视角（Geifman & El-Yaniv 2017 NeurIPS arXiv:1705.08500 / Ben-David et al. 2010
+        #   Machine Learning DOI:10.1007/s10994-009-5152-4）：τ 当前无统计增益（<2pp）；
+        #   多阈值扫 FWER≈18.5%；ED 标定迁 confrontational 域 d_HΔH≈0.177，无领域适应正当性。
+        # 心理/神经视角（Kelley et al. 2013 PubMed:23449843 / Carver & Harmon-Jones 2009
+        #   Psychol. Bull. DOI:10.1037/a0013965）：沉思型 anger（右额叶）即便 confrontational 诱因
+        #   也无趋近动机，τ 弃权可识别此类失真信号（非丢有效信号）；域不纯 12-20% 保护。
+        # 激活条件：须独立 confrontational 留出集重 calibrate 出合理 τ（统计显著·不扫多阈值）
+        #   方可从 0.0 激活；当前 τ=0.0 inert，实质等价全覆盖，避免数学/心理视角争议。
+        domain = stim.domain
+        # A1-fear 专属门：survival_narrative 域 + fear 门关 → 直接硬弃（路径一·流卫生）
+        if domain == "survival_narrative" and not state.fear_domain_enabled:
+            prior = None  # A1-fear 专属门(WARN-3)：survival 域信号一律硬弃(流卫生·不论方向)·anger 不受此门  # noqa: E501
+            logger.debug("text_coping fear_domain 门关·survival_narrative 硬弃 prior→None")
+        elif (
+            domain is not None
+            and prior is not None
+            and not _domain_direction_accepts(domain, prior)
+        ):
+            prior = None  # 原 off-domain 硬弃（confrontational×fear / neutral×any）
+            logger.debug("text_coping 域失配·硬弃 domain=%r prior→None", domain)
+        # domain is None → 整门旁路·prior 逐字不变（零回归）
+
+        return {"text_coping_prior": prior}

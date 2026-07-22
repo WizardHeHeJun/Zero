@@ -126,7 +126,14 @@ def _appraisal_summary(state: AffectState) -> str:
     v = state.appraisal.get("valence")
     a = state.appraisal.get("arousal")
     system = (
-        motivational_system(v, a, distinguish_fear=state.panksepp_distinguish_fear)
+        motivational_system(
+            v,
+            a,
+            distinguish_fear=state.panksepp_distinguish_fear,
+            coping_potential=state.coping_potential_state,
+            text_coping_source=state.text_coping_source,
+            fear_domain_enabled=state.fear_domain_enabled,
+        )
         if v is not None and a is not None
         else "?"
     )

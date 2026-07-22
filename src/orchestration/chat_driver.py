@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random
@@ -29,9 +30,14 @@ from src.agents.affect_math import (
     emotion_decay_step,
     habituation_factor,
 )
-from src.agents.emotion_lexicon import affect_label, appraise_standard_compliance
+from src.agents.emotion_lexicon import (
+    affect_label,
+    appraise_standard_compliance,
+    infer_domain,
+)
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
+from src.agents.models.composite import CompositeChannelDecoder
 from src.agents.persona import Persona, load_persona
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
@@ -120,6 +126,41 @@ def _relationship_hint(exposure: int) -> str:
     return "已经比较熟络"
 
 
+def _build_expression_decoder(facs_extended: bool) -> CompositeChannelDecoder | None:
+    """env 门控构造真表情解码器：`ZERO_FACS_MODEL_PATH` 未设/空 → None（占位路径，零回归）。
+
+    设了权重路径才延迟 import torch 侧 `load_facs_decoder`（同 OpenAILanguageModel 先例：
+    默认路径不引重依赖）。`extended` 与运行时 `state.facs_extended` **同源**——调用方传入
+    同一 `ZERO_FACS_EXTENDED` 解析值（守 CompositeChannelDecoder 的键集对齐契约）；权重形状
+    与 extended 不配对时 `load_state_dict` fail-fast，不静默回退占位（config-only-via-env）。
+    加载失败**不学 perception.py 文本通道的 fail-soft**（那是辅助流，缺模型可降级 OCC 路径）：
+    FACS 配了权重路径即声明真模型为表情主路径，静默降级占位会掩盖配置错误，故一律 fail-fast；
+    文件缺失/不可读时翻译成指向本 env 的 RuntimeError（不裸抛 torch 堆栈）。
+    系数 k_arousal/k_coping/residual_alpha：⚖ 方向议会定、幅度工程可动——构造期一次读 env，
+    默认=构造函数默认（1.5/1.2/1.0）=零回归；residual_alpha 越界由 CompositeChannelDecoder
+    构造抛 ValueError（fail-fast）。
+    """
+    model_path = os.getenv("ZERO_FACS_MODEL_PATH", "")
+    if not model_path:
+        return None
+    from src.agents.models.facs_decoder import load_facs_decoder  # 延迟：设了权重才需 torch
+
+    try:
+        facs_model = load_facs_decoder(model_path, extended=facs_extended)
+    except OSError as e:  # 文件缺失/不可读（FileNotFoundError ⊂ OSError）；形状不配对的
+        # RuntimeError 原样穿透（本身已含 size mismatch 详情）。
+        raise RuntimeError(
+            f"ZERO_FACS_MODEL_PATH={model_path!r} 指向的权重文件不可读，请检查配置"
+        ) from e
+    return CompositeChannelDecoder(
+        facs_model=facs_model,
+        facs_extended=facs_extended,
+        k_arousal=float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
+        k_coping=float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
+        residual_alpha=float(os.getenv("ZERO_FACS_RESIDUAL_ALPHA", "1.0")),
+    )
+
+
 class ChatDriver:
     """对话驱动：持有跨轮状态（history / emotion / attitude），每调一次 `step` 推进一轮。
 
@@ -140,6 +181,7 @@ class ChatDriver:
     - inject_min: ZERO_RECALL_INJECT_MIN 默认 0.5
     - sample_sigma_cap: ZERO_SAMPLE_SIGMA_MAX 默认 None（未设=用引擎常量 MAX_SAMPLE_SIGMA）
     - standard_compliance_enabled: ZERO_STANDARD_COMPLIANCE 默认 False（门控关=零回归）
+    - text_domain_enabled: ZERO_TEXT_DOMAIN_ENABLED 默认 False（B opt-in·默认关=零回归）
     - attitude_arousal_weight: ZERO_ATTITUDE_AROUSAL_WEIGHT 默认 0.0（零回归）
     - sensitization_gain: ZERO_HABITUATION_SENSITIZATION_GAIN 默认 0.0（零回归）
     - sensitization_threshold: ZERO_SENSITIZATION_THRESHOLD 默认 0.5（零回归）
@@ -149,6 +191,14 @@ class ChatDriver:
     - care_bias_alpha: ZERO_CARE_BIAS_ALPHA 默认 0.0（零回归）
     - vicarious_alpha: ZERO_VICARIOUS_ALPHA 默认 0.0（零回归）
     - vicarious_threshold: ZERO_VICARIOUS_THRESHOLD 默认 0.3
+    - consolidation_enabled: ZERO_CONSOLIDATION_ENABLED 默认 False（B 类·零回归）
+    - actr_enabled: ZERO_ACTR_ENABLED 默认 False（B 类·零回归）
+    - d_session: ZERO_CONSOLIDATION_D_SESSION 默认 0.8
+    - d_user: ZERO_CONSOLIDATION_D_USER 默认 0.3
+    - consolidation_count_min: ZERO_CONSOLIDATION_COUNT_MIN 默认 3
+    - consolidation_salience_threshold: ZERO_CONSOLIDATION_SALIENCE_THRESHOLD 默认 0.25
+    - actr_b_scale: ZERO_ACTR_B_SCALE 默认 3.0
+    - consolidation_timeout: ZERO_CONSOLIDATION_TIMEOUT 默认 30.0
     """
 
     def __init__(
@@ -180,6 +230,7 @@ class ChatDriver:
         inject_min: float = 0.5,
         importance_scale: float = 30.0,
         standard_compliance_enabled: bool = False,
+        text_domain_enabled: bool = False,
         # B（B7a·两时间尺度旋钮）：默认值均为旧行为（零回归）
         attitude_arousal_weight: float = 0.0,
         sensitization_gain: float = 0.0,
@@ -194,6 +245,17 @@ class ChatDriver:
         care_bias_alpha: float = 0.0,
         vicarious_alpha: float = 0.0,
         vicarious_threshold: float = 0.3,
+        # B 类·记忆巩固旋钮（默认全关=零回归；aclose 时触发·不在 step 热路径）
+        # ZERO_CONSOLIDATION_ENABLED=0 → aclose no-op；开启后会话结束时跑 Ebbinghaus+睡眠巩固。
+        consolidation_enabled: bool = False,
+        actr_enabled: bool = False,  # ACT-R recency 替换门（ZERO_ACTR_ENABLED）
+        d_session: float = 0.8,  # SESSION 幂律衰减指数（ZERO_CONSOLIDATION_D_SESSION）
+        d_user: float = 0.3,  # USER 幂律衰减指数（ZERO_CONSOLIDATION_D_USER）
+        consolidation_count_min: int = 3,  # 睡眠巩固最低强化次数门（ZERO_CONSOLIDATION_COUNT_MIN）
+        actr_b_scale: float = 3.0,  # Petrov B sigmoid scale（ZERO_ACTR_B_SCALE）
+        consolidation_timeout: float = 30.0,  # aclose 巩固超时秒（ZERO_CONSOLIDATION_TIMEOUT）
+        # salience 升迁门（Hill 归一后·默认 0.25·议会 2026-07-22）
+        consolidation_salience_threshold: float = 0.25,
     ) -> None:
         self.thread = thread
         self.lm = lm
@@ -231,6 +293,8 @@ class ChatDriver:
         # B6：OCC 分支 B 通电开关。默认 False → step 构造 Stimulus 时不传 standard_compliance
         # （保持默认 0.0，逐字零回归）；True 时调确定性评价桥 appraise_standard_compliance 填充。
         self.standard_compliance_enabled = standard_compliance_enabled
+        # B opt-in：开→step 调 infer_domain 注入 domain·关→domain=None 零回归
+        self.text_domain_enabled = text_domain_enabled
         # B（B7a·两时间尺度旋钮）：构造期固化，step 热路径读 self.* 不重读 env。
         # A-P2-E：attitude_step 唤醒加权累积率（ZERO_ATTITUDE_AROUSAL_WEIGHT 默认 0.0，零回归）；
         # 高唤醒 stimulus 使态度累积加速（McGaugh 2004 唤醒调制记忆巩固）。
@@ -251,6 +315,15 @@ class ChatDriver:
         self.care_bias_alpha = care_bias_alpha
         self.vicarious_alpha = vicarious_alpha
         self.vicarious_threshold = vicarious_threshold
+        # B 类·记忆巩固旋钮（构造期固化；aclose 时消费；不在 step 热路径）
+        self.consolidation_enabled = consolidation_enabled
+        self.actr_enabled = actr_enabled
+        self.d_session = d_session
+        self.d_user = d_user
+        self.consolidation_count_min = consolidation_count_min
+        self.actr_b_scale = actr_b_scale
+        self.consolidation_timeout = consolidation_timeout
+        self.consolidation_salience_threshold = consolidation_salience_threshold
 
     async def step(self, user_text: str) -> ChatTurn:
         """推进一轮：评价→引擎→两时间尺度情绪→生成回复→落盘，返回本轮结果。"""
@@ -277,6 +350,12 @@ class ChatDriver:
         )
         if self.standard_compliance_enabled:
             stim_kwargs["standard_compliance"] = appraise_standard_compliance(user_text)
+        # B opt-in（ZERO_TEXT_DOMAIN_ENABLED·议会 2026-07-21）：
+        # 开→infer_domain 词典桥每轮二值判 confrontational/None 注入 domain；
+        # 关→不传→Stimulus.domain 默认 None 旁路零回归。
+        # 不传 control_appraisal（ctrl=None·_check_domain_ctrl_sign no-op 合法）。
+        if self.text_domain_enabled:
+            stim_kwargs["domain"] = infer_domain(user_text)
         stim = Stimulus(**stim_kwargs)
         # P3 1-C：任一共情 alpha>0（门开）把 interlocutor_va 注入每轮 state_overrides；
         # 全关（默认）→ 不传 state_overrides → session.step(stim) 调用签名与改前逐字一致（零回归）。
@@ -432,6 +511,50 @@ class ChatDriver:
             attitude=self.attitude,
         )
 
+    async def aclose(self) -> None:
+        """会话结束清理：触发记忆巩固批处理，关闭语义后端连接。
+
+        B 类·记忆巩固（2026-07-22）：
+        - consolidation_enabled=False（默认）→ 巩固段 no-op，直接关连接（零回归）。
+        - 开启后：asyncio.wait_for 包裹巩固，超时（consolidation_timeout 秒）降级 warning，
+          不崩对话退出流程。巩固经 MemoryClient.run_consolidation_batch（守三层单向）。
+        - 末尾调 self.memory.aclose() 关闭语义后端（SqliteVectorStore/Graphiti 连接）。
+        - 无记忆句柄时整体 no-op。
+        延迟 import consolidation 模块（aclose 路径·非热路径；仅门开时实际触发）。
+        """
+        if self.memory is None:
+            return
+        if self.consolidation_enabled:
+            try:
+                await asyncio.wait_for(
+                    self.memory.run_consolidation_batch(
+                        scope_session="session",
+                        scope_user="user",
+                        key=self.seed_key or self.thread,
+                        consolidation_enabled=self.consolidation_enabled,
+                        d_session=self.d_session,
+                        d_user=self.d_user,
+                        salience_threshold=self.consolidation_salience_threshold,
+                        consolidation_count_min=self.consolidation_count_min,
+                        actr_b_scale=self.actr_b_scale,
+                    ),
+                    timeout=self.consolidation_timeout,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "aclose consolidation 超时 (%.1fs) thread=%s，降级跳过",
+                    self.consolidation_timeout,
+                    self.thread,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "aclose consolidation 失败 thread=%s: %s，降级跳过",
+                    self.thread,
+                    exc,
+                    exc_info=True,
+                )
+        await self.memory.aclose()
+
     async def _maybe_seed_memories(self) -> None:
         """L3：首次接触此人时把 persona 预置的共同记忆幂等写入 user 作用域语义库（只一次）。
 
@@ -469,7 +592,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     之前设好；本工厂只读已就绪的 env，不写 os.environ、不改全局 logger 级别。
     人格经 `load_persona()` 读入（未配置 → 中性 Persona()，逐字现有行为）：L1 人设卡入 lm、
     L2 气质/L3 种子透传给 ChatDriver。记忆后端显式构造一次、同时注入 session 与 ChatDriver，
-    使种子记忆落在召回会查的同一 user/key 下。
+    使种子记忆落在召回会查的同一 user/key 下。表情通道经 `_build_expression_decoder` 装配：
+    `ZERO_FACS_MODEL_PATH` 门控注入真解码器（未设 → None → 占位路径零回归）。
     """
     resolved_thread = thread or os.getenv("ZERO_CHAT_THREAD") or "chat"
     persona = load_persona()  # 人格定义（env/JSON 文件；未配置 → 中性 Persona()，零回归）
@@ -580,6 +704,14 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         "yes",
         "on",
     )
+    # B opt-in：live-chat 域注入开关（ZERO_TEXT_DOMAIN_ENABLED·议会 2026-07-21·默认关=零回归）。
+    # 关→domain=None 旁路；翻 ZERO_TEXT_COPING_ENABLED 不会全域生效（域条件化守住）。
+    text_domain_enabled = os.getenv("ZERO_TEXT_DOMAIN_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # B（B7a·两时间尺度旋钮）：默认未设 → 旧默认值 → 零回归。
     # A-P2-E：attitude_step 唤醒加权累积率（ZERO_ATTITUDE_AROUSAL_WEIGHT 默认 0.0，零回归）
     attitude_arousal_weight = float(os.getenv("ZERO_ATTITUDE_AROUSAL_WEIGHT", "0"))
@@ -643,6 +775,79 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     care_bias_alpha = float(os.getenv("ZERO_CARE_BIAS_ALPHA", "0"))
     vicarious_alpha = float(os.getenv("ZERO_VICARIOUS_ALPHA", "0"))
     vicarious_threshold = float(os.getenv("ZERO_VICARIOUS_THRESHOLD", "0.3"))
+    # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）。
+    # step() 构造 Stimulus 不传 control_appraisal（默认 None），ChatDriver 不持有该旋钮。
+    coping_potential_enabled = os.getenv("ZERO_COPING_POTENTIAL_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）。
+    # ZERO_TEXT_COPING_ENABLED 未设/false → False → AppraisalAgent B3 走仅 ctrl/两皆 None 分支。
+    # ZERO_TEXT_COPING_PRECISION：π_t 上限 ≤0.10（SessionConfig 层 fail-fast）；缺省 0.08。
+    text_coping_enabled = os.getenv("ZERO_TEXT_COPING_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    text_coping_precision = float(os.getenv("ZERO_TEXT_COPING_PRECISION", "0.08"))
+    # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1；默认关=零回归）。
+    # False → 任何路径不产 fear 域激活（两泄漏路径均硬弃/回退）；True 须 env 显式开。
+    # anger confrontational 路径完全不受此门。
+    fear_domain_enabled = os.getenv("ZERO_FEAR_DOMAIN_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）。
+    # True → ExpressionAgent 占位路径用 coping_potential_state 驱动 11-AU 扩展集合。
+    # 占位路径（decoder=None）经 ExpressionAgent 消费；注入 decoder 若实现 predict_channels_coping
+    # 也拿到 per-turn coping（议会遗留 2·方案 b 已落地）。
+    facs_extended = os.getenv("ZERO_FACS_EXTENDED", "").lower() in ("1", "true", "yes", "on")
+    # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。默认 1.0=两头
+    # 等值=零回归；推荐 0.3（随意头仅保留自发头 30% coping-driven 强度）。仅 facs_extended 时生效。
+    voluntary_coping_leak = float(os.getenv("ZERO_VOLUNTARY_COPING_LEAK", "1.0"))
+    # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）。
+    # external_priors 本身每轮由 state_overrides 注入（MCP 侧），不在此读取。
+    # 此处只读会话级固定的校验参数：精度上界 + 流数上界。
+    external_prior_precision_cap = float(os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8"))
+    max_external_streams = int(os.getenv("ZERO_MAX_EXTERNAL_STREAMS", "5"))
+    # 真表情解码器注入（composite 工厂接线）：ZERO_FACS_MODEL_PATH 未设 → None → ExpressionAgent
+    # 走解析占位路径（逐字零回归）；设了 → 加载真权重构 CompositeChannelDecoder，训好的真模型在
+    # 跑图里生效（per-turn coping 经可选 predict_channels_coping 已可达，议会遗留 2·方案 b）。
+    # k_arousal/k_coping：⚖ 方向议会定、幅度工程可动——占位路径用 decode_channels 内置默认
+    # （1.5/1.2，不为系数拉 state 字段）；composite 路径经 ZERO_FACS_K_AROUSAL/K_COPING 构造期读入。
+    expression_decoder = _build_expression_decoder(facs_extended)
+    # B 类·记忆巩固旋钮（仿 cortisol_tau 模式：env 读一次传构造，默认全关=零回归）
+    # ZERO_CONSOLIDATION_ENABLED：主门，默认 0=关；开启后 aclose 触发 Ebbinghaus+睡眠巩固。
+    consolidation_enabled = os.getenv("ZERO_CONSOLIDATION_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # ZERO_ACTR_ENABLED：ACT-R recency 替换门，默认 0=关（_rank_episodes 用幂律 Δt^(-d)）。
+    actr_enabled = os.getenv("ZERO_ACTR_ENABLED", "").lower() in ("1", "true", "yes", "on")
+    # SESSION 幂律衰减指数（ZERO_CONSOLIDATION_D_SESSION 默认 0.8；快衰对应海马快速存储）
+    d_session = float(os.getenv("ZERO_CONSOLIDATION_D_SESSION", "0.8"))
+    # USER 幂律衰减指数（ZERO_CONSOLIDATION_D_USER 默认 0.3；慢衰对应新皮层慢整合）
+    d_user = float(os.getenv("ZERO_CONSOLIDATION_D_USER", "0.3"))
+    # 睡眠巩固最低强化次数门（ZERO_CONSOLIDATION_COUNT_MIN 默认 3）
+    consolidation_count_min = int(os.getenv("ZERO_CONSOLIDATION_COUNT_MIN", "3"))
+    # Petrov B sigmoid 归一 scale（ZERO_ACTR_B_SCALE 默认 3.0；越小频率效应越激进）
+    actr_b_scale = float(os.getenv("ZERO_ACTR_B_SCALE", "3.0"))
+    # aclose 巩固超时秒（ZERO_CONSOLIDATION_TIMEOUT 默认 30.0；超时降级 warning 不崩）
+    _consolidation_timeout_env = os.getenv("ZERO_CONSOLIDATION_TIMEOUT")
+    consolidation_timeout = (
+        float(_consolidation_timeout_env) if _consolidation_timeout_env else 30.0
+    )
+    # salience 升迁门（Hill 归一后·默认 0.25·议会 2026-07-22）
+    consolidation_salience_threshold = float(
+        os.getenv("ZERO_CONSOLIDATION_SALIENCE_THRESHOLD", "0.25")
+    )
     # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
     # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
     # cortisol 动力学常数：env → SessionConfig → state → AppraisalAgent（None→回退常量=零回归）。
@@ -691,6 +896,22 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         care_bias_alpha=care_bias_alpha,
         vicarious_alpha=vicarious_alpha,
         vicarious_threshold=vicarious_threshold,
+        # coping_potential 独立标量流（议会 2026-07-13；默认关=零回归）。
+        coping_potential_enabled=coping_potential_enabled,
+        # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）。
+        text_coping_enabled=text_coping_enabled,
+        text_coping_precision=text_coping_precision,
+        # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）。
+        fear_domain_enabled=fear_domain_enabled,
+        # facs_extended：AU 扩展集合门控（默认关=零回归）。
+        facs_extended=facs_extended,
+        # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。
+        voluntary_coping_leak=voluntary_coping_leak,
+        # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）。
+        external_prior_precision_cap=external_prior_precision_cap,
+        max_external_streams=max_external_streams,
+        # 真表情解码器（ZERO_FACS_MODEL_PATH 门控；None=占位路径零回归）。
+        expression_decoder=expression_decoder,
     )
     return ChatDriver(
         thread=resolved_thread,
@@ -718,6 +939,7 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         inject_min=inject_min,
         importance_scale=importance_scale,
         standard_compliance_enabled=standard_compliance_enabled,
+        text_domain_enabled=text_domain_enabled,
         # B（B7a）：两时间尺度旋钮透传（默认=旧行为，零回归）
         attitude_arousal_weight=attitude_arousal_weight,
         sensitization_gain=sensitization_gain,
@@ -730,4 +952,13 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         care_bias_alpha=care_bias_alpha,
         vicarious_alpha=vicarious_alpha,
         vicarious_threshold=vicarious_threshold,
+        # B 类·记忆巩固旋钮透传（默认全关=零回归）
+        consolidation_enabled=consolidation_enabled,
+        actr_enabled=actr_enabled,
+        d_session=d_session,
+        d_user=d_user,
+        consolidation_count_min=consolidation_count_min,
+        actr_b_scale=actr_b_scale,
+        consolidation_timeout=consolidation_timeout,
+        consolidation_salience_threshold=consolidation_salience_threshold,
     )

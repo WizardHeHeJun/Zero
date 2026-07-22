@@ -93,6 +93,7 @@ async def _chat_repl() -> None:
                 f" | 对你的态度=({turn.attitude[0]:+.2f},{turn.attitude[1]:+.2f})\n"
             )
     finally:
+        await driver.aclose()  # B 类·会话结束巩固 + 关语义后端连接（默认关=no-op，零回归）
         driver.log.close()  # 显式释放 sqlite 句柄（Windows 防文件锁；W2）
 
 
@@ -125,7 +126,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     # 统一日志：每次启动落一份新日志文件（入口无关，实现见 src/observability）。
-    # 本入口零核心逻辑：默认对话转发给 chat_driver；--trace/--workspace/--llm 转发给 scripts.cli_modes。
+    # 本入口零核心逻辑：默认对话转发给 chat_driver；
+    # --trace/--workspace/--llm 转发给 scripts.cli_modes。
     setup_logging()
     if args.trace or args.workspace or args.llm:
         from scripts.cli_modes import run_core, run_llm, run_workspace
