@@ -316,3 +316,8 @@ class AffectState(BaseModel):
     # ⚠ 不加 le 约束——避免 pydantic checkpoint 反序列化 fail（le 由 SessionConfig 层 fail-fast）。
     # 仿 text_affect_precision 注释风格；由 ZERO_TEXT_COPING_PRECISION env 注入。
     text_coping_precision: float = 0.08
+    # ── recalled_episode_ids：本轮语义召回命中的 episode rowid 列表 ──
+    # MemoryRecallAgent 填写；Supervisor 任务完成节点读出并经 MemoryClient
+    # 节流更新 access_count（ACT-R 频率）。每轮 step() 归零防 LastValue 残留
+    # （仿 external_priors 先例，见 runner.py）；不加 pydantic 约束防反序列化失败。
+    recalled_episode_ids: list[str] = Field(default_factory=list)

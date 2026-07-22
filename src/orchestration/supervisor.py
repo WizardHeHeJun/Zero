@@ -10,6 +10,10 @@
 - 对话 transcript 与 attitude 短期态属运行态，由 src/storage/conversation_log.py 的
   ConversationLog 管理（turns 表 + meta 表，SQLite，无需 MemoryClient）。
 - 两套存储并行运行——不在此处读写对话历史，不在 ConversationLog 写情感记忆。
+
+层归属修正（B 类·2026-07-22）：
+- ACT-R access_count 更新经 MemoryClient.batch_update_access_count，不直接访问
+  self.memory.semantic（守三层单向：编排层→记忆层 API，不跨到存储层）。
 """
 
 from __future__ import annotations
@@ -140,5 +144,14 @@ class SupervisorAgent:
                     key=state.user_id,
                     embed_text=gist_text,
                 )
+
+        # B 类·ACT-R 节流更新：任务完成节点读 recalled_episode_ids，
+        # 经 MemoryClient.batch_update_access_count 更新 access_count（不直连 semantic）。
+        # 层归属修正：Supervisor→MemoryClient→semantic，守三层单向。
+        # 不在召回节点更新（CS BLOCK：避免污染当轮排序自一致性）。
+        episode_ids = state.recalled_episode_ids
+        if episode_ids and self.memory is not None:
+            await self.memory.batch_update_access_count(list(episode_ids))
+
         entry = {"node": "supervisor", "task_complete": True}
         return {"task_complete": True, "trace": [entry]}

@@ -28,6 +28,9 @@ class StoredFact:
     valid_at: datetime
     invalid_at: datetime | None = None
     sim: float = 0.0  # D4：语义检索余弦相似度（存储层填真值；确定性后端/非检索路径保持 0.0）
+    # 记忆巩固字段（B 类·Optional 默认·语义后端 search 路径填真值；确定性路径保持 None/0）
+    episode_id: str | None = None  # SqliteVectorStore rowid（str）；确定性后端为 None
+    access_count: int = 0  # ACT-R 频率累计；确定性后端保持 0
 
 
 class GraphStore(Protocol):

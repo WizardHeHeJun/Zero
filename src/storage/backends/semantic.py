@@ -190,8 +190,24 @@ class SqliteVectorStore:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS episodes ("
             "scope TEXT NOT NULL, key TEXT NOT NULL, content TEXT NOT NULL, "
-            "valid_at TEXT NOT NULL, embedding TEXT NOT NULL)"
+            "valid_at TEXT NOT NULL, embedding TEXT NOT NULL, "
+            "access_count INTEGER DEFAULT 0, last_accessed TEXT, "
+            "consolidation_count INTEGER DEFAULT 0, "
+            "decay_weight REAL DEFAULT 1.0, invalid_at TEXT)"
         )
+        # 旧库兼容迁移：新增 5 列（已有列跳过 OperationalError：duplicate column name）。
+        # 新库由 CREATE TABLE 直接含 10 列；此段对新库无害（try/except 吞掉已有列错误）。
+        for _col_ddl in (
+            "ALTER TABLE episodes ADD COLUMN access_count INTEGER DEFAULT 0",
+            "ALTER TABLE episodes ADD COLUMN last_accessed TEXT",
+            "ALTER TABLE episodes ADD COLUMN consolidation_count INTEGER DEFAULT 0",
+            "ALTER TABLE episodes ADD COLUMN decay_weight REAL DEFAULT 1.0",
+            "ALTER TABLE episodes ADD COLUMN invalid_at TEXT",
+        ):
+            try:
+                self.conn.execute(_col_ddl)
+            except sqlite3.OperationalError:
+                pass  # 列已存在，跳过
         self.conn.commit()
         self.db_lock = asyncio.Lock()
         self.client: Any = None
@@ -264,8 +280,11 @@ class SqliteVectorStore:
                 if cosine(emb, existing_emb) > dedup_threshold:
                     return False
             conn.execute(
-                "INSERT INTO episodes (scope, key, content, valid_at, embedding) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO episodes "
+                "(scope, key, content, valid_at, embedding, "
+                "access_count, last_accessed, consolidation_count, "
+                "decay_weight, invalid_at) "
+                "VALUES (?, ?, ?, ?, ?, 0, NULL, 0, 1.0, NULL)",
                 (scope, key, content, valid_at_iso, emb_json),
             )
             conn.commit()
@@ -318,7 +337,9 @@ class SqliteVectorStore:
             conn.execute(
                 "DELETE FROM episodes WHERE scope = ? AND key = ? AND rowid NOT IN ("
                 "SELECT rowid FROM episodes WHERE scope = ? AND key = ? "
-                "ORDER BY valid_at DESC, rowid DESC LIMIT ?)",
+                # 优先保留高 decay_weight（巩固度高）的 episode；同等则保留最新；
+                # rowid 作末位排歧（最后插入=更新=优先保留）。
+                "ORDER BY decay_weight DESC, valid_at DESC, rowid DESC LIMIT ?)",
                 (scope, key, scope, key, max_per_key),
             )
             conn.commit()
@@ -340,14 +361,19 @@ class SqliteVectorStore:
 
         sim_threshold 显式传时使用该值，否则用 self.sim_threshold（来自构造参数/工厂
         ZERO_RECALL_SIM_MIN，默认 0.65）过滤低相似度结果。
+        invalid_at 非 NULL 的行为软删除状态，读路径跳过（巩固迁移后的 session 行）。
+        rowid 作 episode_id 透传，供 Supervisor 节流更新 access_count（ACT-R 频率）。
         SQLite I/O 经 asyncio.to_thread 桥接，不阻塞事件循环。
         """
         q = await self._embed(query)
         conn = self.conn
 
         def _sync_fetch() -> list[tuple]:
+            # 读 rowid + 10 列；WHERE 过滤软删除行（invalid_at IS NULL = 有效）
             return conn.execute(
-                "SELECT scope, key, content, valid_at, embedding FROM episodes WHERE scope = ?",
+                "SELECT rowid, scope, key, content, valid_at, embedding, "
+                "access_count, decay_weight "
+                "FROM episodes WHERE scope = ? AND invalid_at IS NULL",
                 (scope,),
             ).fetchall()
 
@@ -355,7 +381,7 @@ class SqliteVectorStore:
             rows = await asyncio.to_thread(_sync_fetch)
 
         scored: list[tuple[float, StoredFact]] = []
-        for s, k, content, valid_at_str, emb_json in rows:
+        for rowid, s, k, content, valid_at_str, emb_json, _ac, _dw in rows:
             if key is not None and k != key:
                 continue
             valid = datetime.fromisoformat(valid_at_str)
@@ -363,11 +389,192 @@ class SqliteVectorStore:
                 continue
             sim = cosine(q, json.loads(emb_json))
             scored.append(
-                (sim, StoredFact(scope=s, key=k, content=content, valid_at=valid, sim=sim))
+                (
+                    sim,
+                    StoredFact(
+                        scope=s,
+                        key=k,
+                        content=content,
+                        valid_at=valid,
+                        sim=sim,
+                        episode_id=str(rowid),
+                        access_count=_ac if _ac is not None else 0,
+                    ),
+                )
             )
         scored.sort(key=lambda pair: pair[0], reverse=True)
         threshold = sim_threshold if sim_threshold is not None else self.sim_threshold
         return [fact for sim, fact in scored[:limit] if sim >= threshold]
+
+    async def batch_update_access_count(self, episode_ids: list[str]) -> None:
+        """节流更新 access_count + last_accessed（ACT-R 频率·仅 Supervisor 任务完成节点调用）。
+
+        episode_ids 为 search 路径透传的 rowid（str）列表；UPDATE 按 rowid 精确命中。
+        不在召回节点调用（CS BLOCK：召回时更新 access_count 会污染当轮排序自一致性）。
+        SQLite I/O 经 asyncio.to_thread 桥接；db_lock 串行化写段。
+        """
+        if not episode_ids:
+            return
+        conn = self.conn
+        now_iso = datetime.now(UTC).isoformat()
+
+        def _sync_update() -> None:
+            for eid in episode_ids:
+                try:
+                    conn.execute(
+                        "UPDATE episodes SET access_count = access_count + 1, "
+                        "last_accessed = ? WHERE rowid = ?",
+                        (now_iso, int(eid)),
+                    )
+                except (ValueError, sqlite3.Error) as exc:
+                    logger.warning("batch_update_access_count rowid=%s 失败: %s", eid, exc)
+            conn.commit()
+
+        async with self.db_lock:
+            await asyncio.to_thread(_sync_update)
+        logger.debug("sqlite_vector batch_update_access_count n=%d", len(episode_ids))
+
+    async def apply_decay_weights(self, updates: list[tuple[float, str]]) -> None:
+        """批量更新 decay_weight（Ebbinghaus 分层幂律衰减·Consolidation 调用）。
+
+        updates 为 [(new_decay_weight, episode_id), ...]；episode_id = rowid（str）。
+        decay_weight 不物理删除——衰减至低值后由 _trim_capacity 容量管理优先驱逐。
+        SQLite I/O 经 asyncio.to_thread 桥接；db_lock 串行化写段。
+        """
+        if not updates:
+            return
+        conn = self.conn
+
+        def _sync_apply() -> None:
+            for dw, eid in updates:
+                try:
+                    conn.execute(
+                        "UPDATE episodes SET decay_weight = ? WHERE rowid = ?",
+                        (dw, int(eid)),
+                    )
+                except (ValueError, sqlite3.Error) as exc:
+                    logger.warning("apply_decay_weights rowid=%s 失败: %s", eid, exc)
+            conn.commit()
+
+        async with self.db_lock:
+            await asyncio.to_thread(_sync_apply)
+        logger.debug("sqlite_vector apply_decay_weights n=%d", len(updates))
+
+    async def consolidate_session_to_user(
+        self,
+        scope_from: str,
+        scope_to: str,
+        rowids: list[str],
+    ) -> None:
+        """把 SESSION episode 升迁到 USER scope（睡眠巩固·系统巩固工程近似）。
+
+        流程：复制指定 rowid 行到 scope_to（consolidation_count+1）→ 原行 invalid_at=now 软删。
+        不物理删：保留历史溯源；search 路径过滤 invalid_at IS NULL 自动跳过软删行。
+        SQLite I/O 经 asyncio.to_thread 桥接；db_lock 串行化写段。
+        """
+        if not rowids:
+            return
+        conn = self.conn
+        now_iso = datetime.now(UTC).isoformat()
+
+        def _sync_consolidate() -> None:
+            for eid in rowids:
+                try:
+                    rid = int(eid)
+                    row = conn.execute(
+                        "SELECT key, content, valid_at, embedding, "
+                        "access_count, consolidation_count, decay_weight "
+                        "FROM episodes WHERE rowid = ?",
+                        (rid,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    key, content, valid_at, emb, ac, cc, dw = row
+                    conn.execute(
+                        "INSERT INTO episodes "
+                        "(scope, key, content, valid_at, embedding, "
+                        "access_count, last_accessed, consolidation_count, "
+                        "decay_weight, invalid_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)",
+                        (
+                            scope_to,
+                            key,
+                            content,
+                            valid_at,
+                            emb,
+                            ac if ac is not None else 0,
+                            (cc if cc is not None else 0) + 1,
+                            dw if dw is not None else 1.0,
+                        ),
+                    )
+                    # 原 SESSION 行软删（invalid_at=now）
+                    conn.execute(
+                        "UPDATE episodes SET invalid_at = ? WHERE rowid = ?",
+                        (now_iso, rid),
+                    )
+                except (ValueError, sqlite3.Error) as exc:
+                    logger.warning("consolidate_session_to_user rowid=%s 失败: %s", eid, exc)
+            conn.commit()
+
+        async with self.db_lock:
+            await asyncio.to_thread(_sync_consolidate)
+        logger.debug(
+            "sqlite_vector consolidate_session_to_user %s→%s n=%d",
+            scope_from,
+            scope_to,
+            len(rowids),
+        )
+
+    async def fetch_episodes_for_consolidation(
+        self,
+        scope_session: str,
+        scope_user: str,
+        key: str,
+    ) -> list[dict[str, Any]]:
+        """读取 scope_session/scope_user 下指定 key 的有效 episode 元数据（巩固批处理专用）。
+
+        返回 list[dict]，每项键：
+          episode_id       — str(rowid)
+          scope            — scope 字段原值
+          key              — key 字段原值
+          content          — 内容全文（供 salience 代理解析）
+          valid_at         — valid_at 原始 ISO 字符串（调用方自行 fromisoformat）
+          access_count     — int（None 时归 0）
+          consolidation_count — int（None 时归 0）
+          decay_weight     — float（None 时归 1.0）
+
+        只返回 invalid_at IS NULL（有效）行；不含 embedding（避免大对象进记忆层）。
+        SQLite I/O 经 asyncio.to_thread 桥接；db_lock 串行化读段（与 apply_decay_weights 对齐）。
+        """
+        conn = self.conn
+
+        def _sync() -> list[tuple]:
+            return conn.execute(
+                "SELECT rowid, scope, key, content, valid_at, "
+                "access_count, consolidation_count, decay_weight "
+                "FROM episodes "
+                "WHERE (scope = ? OR scope = ?) AND key = ? AND invalid_at IS NULL",
+                (scope_session, scope_user, key),
+            ).fetchall()
+
+        async with self.db_lock:
+            rows = await asyncio.to_thread(_sync)
+
+        result: list[dict[str, Any]] = []
+        for rowid, scope, ep_key, content, valid_at_str, ac, cc, dw in rows:
+            result.append(
+                {
+                    "episode_id": str(rowid),
+                    "scope": scope,
+                    "key": ep_key,
+                    "content": content,
+                    "valid_at": valid_at_str,
+                    "access_count": ac if ac is not None else 0,
+                    "consolidation_count": cc if cc is not None else 0,
+                    "decay_weight": dw if dw is not None else 1.0,
+                }
+            )
+        return result
 
     async def aclose(self) -> None:
         """异步关闭 SQLite 连接（to_thread 桥接，可安全在 async 上下文调用）。"""

@@ -93,6 +93,7 @@ async def _chat_repl() -> None:
                 f" | 对你的态度=({turn.attitude[0]:+.2f},{turn.attitude[1]:+.2f})\n"
             )
     finally:
+        await driver.aclose()  # B 类·会话结束巩固 + 关语义后端连接（默认关=no-op，零回归）
         driver.log.close()  # 显式释放 sqlite 句柄（Windows 防文件锁；W2）
 
 

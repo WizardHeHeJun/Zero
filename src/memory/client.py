@@ -142,6 +142,8 @@ class MemoryClient:
 
         必须显式 scope。无语义后端时返回 `[]`（零回归）——与确定性 `query`（结构化
         (scope,key) 命中）不同，本方法吃 query 文本做语义检索。
+        episode_id / access_count 从 StoredFact 透传（semantic 路径填真值；
+        Graphiti 等无此字段的后端经 getattr 安全降级为 None/0）。
         """
         if not isinstance(scope, Scope):
             raise ValueError("memory.recall 必须显式指定 Scope，禁止默认作用域")
@@ -155,7 +157,15 @@ class MemoryClient:
                 "memory.recall scope=%s key=%s q=%s n=%d", scope.value, key, query, len(stored)
             )
             return [
-                Fact(content=s.content, scope=scope, valid_at=s.valid_at, key=s.key, sim=s.sim)
+                Fact(
+                    content=s.content,
+                    scope=scope,
+                    valid_at=s.valid_at,
+                    key=s.key,
+                    sim=s.sim,
+                    episode_id=getattr(s, "episode_id", None),
+                    access_count=getattr(s, "access_count", 0),
+                )
                 for s in stored
             ]
         except Exception as exc:
@@ -163,3 +173,65 @@ class MemoryClient:
                 "recall failed scope=%s key=%s: %s", scope.value, key, exc, exc_info=True
             )
             return []
+
+    async def batch_update_access_count(self, episode_ids: list[str]) -> None:
+        """节流更新 episode access_count（ACT-R 频率；仅 Supervisor 任务完成节点调用）。
+
+        经 duck-type 检测 semantic 是否具备 batch_update_access_count 能力；
+        无语义后端或后端不支持时 no-op（严格零回归）。
+        不在召回节点调用（CS BLOCK：召回时更新会污染当轮排序自一致性）。
+        层归属修正：Supervisor 通过本方法访问 semantic，不直连存储层（守三层单向）。
+        """
+        if not episode_ids or self.semantic is None:
+            return
+        if not hasattr(self.semantic, "batch_update_access_count"):
+            return
+        try:
+            await self.semantic.batch_update_access_count(episode_ids)  # type: ignore[union-attr]
+            logger.debug("memory_client batch_update_access_count n=%d", len(episode_ids))
+        except Exception as exc:
+            logger.warning(
+                "batch_update_access_count failed n=%d: %s", len(episode_ids), exc, exc_info=True
+            )
+
+    async def run_consolidation_batch(
+        self,
+        *,
+        scope_session: str,
+        scope_user: str,
+        key: str,
+        consolidation_enabled: bool = False,
+        d_session: float = 0.8,
+        d_user: float = 0.3,
+        salience_threshold: float = 0.25,
+        consolidation_count_min: int = 3,
+        actr_b_scale: float = 3.0,
+    ) -> None:
+        """会话结束时触发记忆巩固批处理（经 MemoryClient 封装·守三层单向）。
+
+        把 self.semantic 传给 consolidation.run_consolidation_batch；
+        ChatDriver 调本方法而非直接传 semantic（层归属修正）。
+        consolidation_enabled=False（默认）→ no-op（严格零回归）。
+        无语义后端时同样 no-op。
+        ACT-R 频率归一仅控召回侧 recency 替换，巩固批处理不消费，故无 actr_enabled 参数。
+        """
+        if not consolidation_enabled or self.semantic is None:
+            return
+        # 延迟 import：consolidation 属记忆层，aclose 路径才触发，不在热路径
+        from src.memory.consolidation import run_consolidation_batch
+
+        try:
+            await run_consolidation_batch(
+                self.semantic,
+                scope_session=scope_session,
+                scope_user=scope_user,
+                key=key,
+                consolidation_enabled=consolidation_enabled,
+                d_session=d_session,
+                d_user=d_user,
+                salience_threshold=salience_threshold,
+                consolidation_count_min=consolidation_count_min,
+                actr_b_scale=actr_b_scale,
+            )
+        except Exception as exc:
+            logger.warning("run_consolidation_batch failed key=%s: %s", key, exc, exc_info=True)

@@ -349,3 +349,24 @@ async def test_text_domain_env_gate_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ZERO_TEXT_DOMAIN_ENABLED", "true")
     driver = build_chat_driver(thread="test-domain-env-on")
     assert driver.text_domain_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# aclose 接线：--chat 入口侧调用断言（B 类·2026-07-22）
+# ---------------------------------------------------------------------------
+
+
+async def test_aclose_called_in_chat_repl_finally() -> None:
+    """main._chat_repl finally 段含 await driver.aclose()（接线完整性·空悬防护）。
+
+    用反射确认 _chat_repl 源码含 aclose 调用——若日后被删则此测试检出回归。
+    consolidation_enabled=False（默认）时 aclose 是 no-op，补接线不影响现有行为（零回归）。
+    """
+    import inspect
+
+    import main as _main
+
+    src = inspect.getsource(_main._chat_repl)
+    assert "aclose" in src, (
+        "main._chat_repl 的 finally 段应含 await driver.aclose()（B 类接线完整性）"
+    )

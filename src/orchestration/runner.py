@@ -575,6 +575,11 @@ class ConversationSession:
             # state_overrides 若含 text_coping_prior 会覆盖此 None 基准（下方 base.update）。
             "text_coping_prior": None,
             "text_coping_source": False,
+            # recalled_episode_ids 每轮显式归零（B 类·记忆巩固·2026-07-22）：
+            # LastValue channel，不归零会跨轮残留上一轮召回的 episode id，
+            # 导致 Supervisor 对已过期 episode 重复更新 access_count。
+            # 仿 external_priors 归零先例。
+            "recalled_episode_ids": [],
         }
         if state_overrides is not None:
             base.update(state_overrides)

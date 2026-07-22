@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
+from src.memory.utils import normalize_precision
 from src.orchestration.state import AffectState
 
 logger = logging.getLogger(__name__)
@@ -65,9 +67,30 @@ def normalized_importance(content: str, scale: float = 30.0) -> float:
     C 固定（非自适应集合统计）以守可复现/确定性（CS 席 D8 红线）。
     precision 字段缺失时 parse 返 0.5 → 归一后 ~低位（未知不优先）。
     """
-    p = parse_importance(content)
-    c = scale
-    return p / (p + c) if (p + c) > 0 else 0.0
+    return normalize_precision(parse_importance(content), scale)
+
+
+def _petrov_b_norm(
+    access_count: int,
+    l_days: float,
+    d: float,
+    b_scale: float,
+) -> float:
+    """Petrov 2006 B 近似 + sigmoid 归一到 (0, 1]。模块级纯函数，可单测。
+
+    B ≈ ln(n / (1 − d)) − d · ln(L)；sigmoid(B/b_scale) ∈ (0,1]。
+    替换 _rank_episodes 的 recency 项（actr_enabled=True 时生效·零回归）。
+    access_count=0 或 l_days<=0 → 返回极小正值（不奖励未访问 episode）。
+    d ∈ (0,1)；d=1 时分母趋零→钳到 0.999 防 log 爆炸。
+    """
+    n = max(1, access_count)
+    l_val = max(1.0, l_days)
+    _d = min(0.999, max(0.001, d))
+    try:
+        b = math.log(n / (1.0 - _d)) - _d * math.log(l_val)
+        return 1.0 / (1.0 + math.exp(-b / b_scale))
+    except (ValueError, OverflowError):
+        return 1e-6
 
 
 def _rank_episodes(
@@ -81,17 +104,17 @@ def _rank_episodes(
     gamma: float = 0.33,
     arousal_mod: bool = False,
     importance_scale: float = 30.0,
+    actr_enabled: bool = False,
+    actr_b_scale: float = 3.0,
 ) -> list[Fact]:
-    """三维加权和重排（D3）：`score = α·Δt^(-d) + β·sim + γ_eff·importance`。
+    """三维加权和重排（D3）：`score = α·recency + β·sim + γ_eff·importance`。
 
-    - recency：`Δt = max(1.0, (now-valid_at)/天)`，幂律 `Δt^(-d)`（Wixted&Ebbesen 1991，
-      非指数——指数会系统性高估久远记忆可及性）。
-    - relevance：`fact.sim`（D4 透传的余弦；确定性后端为 0.0，该维自然退化）。
-    - importance：写入时 precision 显著度（`_parse_importance`）；命中 `first_contact=True`
-      时 ×1.2（D5 首因加权，对应系列位置效应 primacy）。
-    加权和而非乘积（任一维为 0 不归零）；**禁 rpe 当第四维**（salience 已含 |rpe|，防 double
-    counting）。`γ_eff = γ·(1+0.5·clamp(arousal,0,1))` 仅当 arousal_mod=True 时生效
-    （对应 ZERO_RECALL_AROUSAL_MOD，默认关，唤醒做 NE 调制代理）。
+    - recency：默认 `Δt^(-d)`（Wixted&Ebbesen 1991 幂律，非指数）；
+      actr_enabled=True 且 fact.episode_id 非空且 access_count>0 时，用 Petrov B 近似
+      替换（ACT-R 频率·归一到 (0,1]·与 sim/importance 同量纲）——零回归。
+    - relevance：`fact.sim`（D4 透传余弦；确定性后端为 0.0，该维自然退化）。
+    - importance：写入时 precision 显著度；first_contact=True 时 ×1.2（D5 首因加权）。
+    加权和而非乘积；`γ_eff = γ·(1+0.5·clamp(arousal,0,1))` 仅 arousal_mod=True 生效。
     纯数值无 LLM，所有旋钮由调用方传入；返回按 score 降序的新列表，不改元素。
     """
     if not facts:
@@ -101,8 +124,12 @@ def _rank_episodes(
     def score(fact: Fact) -> float:
         valid_at = fact.valid_at if fact.valid_at.tzinfo else fact.valid_at.replace(tzinfo=UTC)
         delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
-        recency = delta_days ** (-decay_d)
-        importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一到 (0,1)
+        # ACT-R 门控：有 episode_id 且 access_count>0 才替换 recency（零回归）
+        if actr_enabled and fact.episode_id and fact.access_count > 0:
+            recency = _petrov_b_norm(fact.access_count, delta_days, decay_d, actr_b_scale)
+        else:
+            recency = delta_days ** (-decay_d)
+        importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
         if "first_contact=True" in fact.content:
             importance *= 1.2
         return alpha * recency + beta * fact.sim + gamma_eff * importance
@@ -129,6 +156,15 @@ class MemoryRecallAgent:
             "false",
         )
         self.importance_scale = float(os.getenv("ZERO_RECALL_IMPORTANCE_SCALE", "30"))
+        # ACT-R 频率门控（默认关=零回归）：开启时用 Petrov B 近似替换 recency 项。
+        # ZERO_ACTR_ENABLED 未设/0/false → False → _rank_episodes 用原幂律 Δt^(-d)。
+        self.actr_enabled = os.getenv("ZERO_ACTR_ENABLED", "0").lower() not in (
+            "0",
+            "",
+            "false",
+        )
+        # Petrov B sigmoid 归一 scale（越小越激进·默认 3.0·仅 actr_enabled=True 时生效）
+        self.actr_b_scale = float(os.getenv("ZERO_ACTR_B_SCALE", "3.0"))
 
     async def __call__(self, state: AffectState) -> dict:
         if not state.recall_enabled:
@@ -166,10 +202,17 @@ class MemoryRecallAgent:
                 gamma=self.gamma,
                 arousal_mod=self.arousal_mod,
                 importance_scale=self.importance_scale,
+                actr_enabled=self.actr_enabled,
+                actr_b_scale=self.actr_b_scale,
             )
             out["recalled_context"] = [f.content for f in ranked]
             out["recalled_facts"] = ranked  # D1：供 chat_driver 按 importance 注入 history
             entry["recalled_context_n"] = len(ranked)
+            # B 类：recalled_episode_ids 供 Supervisor 任务完成节点节流更新 access_count。
+            # 不在此节点写 access_count（CS BLOCK：召回时更新污染当轮排序自一致性）。
+            episode_ids = [f.episode_id for f in ranked if f.episode_id]
+            if episode_ids:
+                out["recalled_episode_ids"] = episode_ids
 
         if not out:
             return {}
