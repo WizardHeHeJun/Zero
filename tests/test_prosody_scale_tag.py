@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from src.agents.affect_math import decode_channels
 from src.agents.expression import ExpressionAgent
 from src.agents.models.composite import CompositeChannelDecoder
@@ -88,3 +90,18 @@ def test_both_heads_carry_consistent_scale_default_path() -> None:
     assert expr["spontaneous"]["prosody_scale"] == "ratio"
     assert expr["voluntary"]["prosody_scale"] == "ratio"
     assert expr["voluntary"]["prosody_scale"] == expr["spontaneous"]["prosody_scale"]
+
+
+class _BadProsodyModel:
+    """越界韵律模型替身（返回 >1 值）——验证 composite 打 normalized 前的 [0,1] 防御性 fail-fast。"""
+
+    def predict_prosody(self, valence: float, arousal: float) -> dict[str, float]:
+        return {"speech_rate": 1.5, "pitch": 0.5, "energy": 0.5}
+
+
+def test_out_of_range_prosody_fails_fast() -> None:
+    # 防御性 [0,1] 校验（zero-link T4·2026-07-22）：注入越界韵律模型 → 打 normalized 前 fail-fast，
+    # 不让越界值以 normalized 名义流到 MCP mapper（其 _lerp 会线性外插）。
+    bad = CompositeChannelDecoder(prosody_model=_BadProsodyModel())
+    with pytest.raises(ValueError, match=r"\[0,1\]"):
+        bad.predict_channels(0.5, 0.3)

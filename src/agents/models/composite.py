@@ -113,7 +113,13 @@ class CompositeChannelDecoder:
             k_coping=self.k_coping,
         )  # 解析占位提供全部 4 通道
         if self.prosody_model is not None:
-            channels["prosody"] = self.prosody_model.predict_prosody(valence, arousal)
+            prosody = self.prosody_model.predict_prosody(valence, arousal)
+            # 防御性 [0,1] 校验（zero-link T4·2026-07-22）：normalized 契约要求三值 ∈[0,1]，
+            # 供 MCP mapper 线性映射不外插。sigmoid 的 ProsodyDecoder 本满足；对任意注入的
+            # ProsodyModel 实现越界即 fail-fast（同上 residual_alpha 越界 raise 口径 :81-84）。
+            if any(not 0.0 <= v <= 1.0 for v in prosody.values()):
+                raise ValueError(f"prosody_scale=normalized 要求三值 ∈[0,1]，实为 {prosody}")
+            channels["prosody"] = prosody
             # 专用 ProsodyDecoder 出归一 [0,1]（sigmoid）→ 覆盖 decode_channels 占位的 "ratio"
             # 量纲标记为 "normalized"（zero-link Q1 拍板 2026-07-14·canonical 目标口径）。
             channels["prosody_scale"] = "normalized"

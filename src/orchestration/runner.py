@@ -589,3 +589,20 @@ class ConversationSession:
         )
         state = result if isinstance(result, AffectState) else AffectState(**result)
         return _state_to_entry(stim.name, state)
+
+    async def aclose(self) -> None:
+        """释放运行态 checkpointer 的底层 aiosqlite 连接（sqlite 后端）；InMemory 无连接 = no-op。
+
+        幂等：连接已关 / 事件循环已关不上抛。供边界层（如 MCP `close_session`）显式释放，避免长驻
+        HTTP server 每会话泄漏一条 aiosqlite 连接（否则进程退出报 `Event loop is closed`）。
+        记忆层随对象回收、不在此关（与本方法无关）。
+        """
+        conn = getattr(self.checkpointer, "conn", None)
+        if conn is None:
+            return
+        try:
+            await conn.close()
+        except Exception as e:
+            # best-effort 幂等释放：关连接的任何异常（含 sqlite3.Error/事件循环已关）都吞掉不上抛，
+            # 否则破坏 close_session 的幂等 {ok:true} 语义（清理路径故意宽捕获）。
+            logger.debug("ConversationSession.aclose 关连接忽略异常：%s", e)

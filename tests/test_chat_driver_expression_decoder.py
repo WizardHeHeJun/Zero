@@ -26,11 +26,13 @@ _FACS_ENVS = (
     "ZERO_FACS_K_COPING",
     "ZERO_FACS_RESIDUAL_ALPHA",
     "ZERO_FACS_EXTENDED",
+    # 独立通道门控（zero-link T4）：清掉防真 .env 的 prosody 权重污染 FACS 用例（会翻 normalized）。
+    "ZERO_PROSODY_MODEL_PATH",
 )
 
 
 def _clear_facs_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """钉死 FACS 相关 env 全未设（不受跑测环境 .env 污染），保测试独立。"""
+    """钉死 FACS/prosody 解码器 env 全未设（不受跑测环境 .env 污染），保测试独立。"""
     for name in _FACS_ENVS:
         monkeypatch.delenv(name, raising=False)
 
@@ -42,6 +44,17 @@ def _save_ext_weights(tmp_path: Path) -> str:
 
     model = FacsDecoder(extended=True)
     path = tmp_path / "facs_decoder_ext.pt"
+    torch.save(model.state_dict(), path)
+    return str(path)
+
+
+def _save_prosody_weights(tmp_path: Path) -> str:
+    """存一份默认架构（hidden=16/num_layers=1）的 ProsodyDecoder 权重（随机初始化即可·测接线）。"""
+    torch = pytest.importorskip("torch")
+    from src.agents.models.prosody_decoder import ProsodyDecoder
+
+    model = ProsodyDecoder()
+    path = tmp_path / "prosody_decoder.pt"
     torch.save(model.state_dict(), path)
     return str(path)
 
@@ -155,3 +168,44 @@ def test_factory_extended_same_source(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert session.captured["facs_extended"] is True
     assert isinstance(decoder.facs_model, FacsDecoder)
     assert decoder.facs_model.extended is True
+
+
+def test_prosody_env_gate_wires_prosody_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """设 ZERO_PROSODY_MODEL_PATH → 真 ProsodyDecoder 注入，prosody_scale 翻 normalized。"""
+    _clear_facs_env(monkeypatch)
+    from src.agents.models.composite import CompositeChannelDecoder
+    from src.agents.models.prosody_decoder import ProsodyDecoder
+
+    monkeypatch.setenv("ZERO_PROSODY_MODEL_PATH", _save_prosody_weights(tmp_path))
+    decoder = _build_expression_decoder(False)
+    assert isinstance(decoder, CompositeChannelDecoder)
+    assert isinstance(decoder.prosody_model, ProsodyDecoder)
+    channels = decoder.predict_channels(0.5, 0.5)
+    assert channels["prosody_scale"] == "normalized"
+    assert all(0.0 <= v <= 1.0 for v in channels["prosody"].values())
+
+
+def test_prosody_only_no_facs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """通道独立门控：只设 prosody（facs 未设）→ decoder 非 None、facs_model=None。"""
+    _clear_facs_env(monkeypatch)
+    from src.agents.models.composite import CompositeChannelDecoder
+
+    monkeypatch.setenv("ZERO_PROSODY_MODEL_PATH", _save_prosody_weights(tmp_path))
+    decoder = _build_expression_decoder(False)
+    assert isinstance(decoder, CompositeChannelDecoder)
+    assert decoder.facs_model is None  # facs 未设 → facs_au 仍走解析占位（零回归）
+    assert decoder.prosody_model is not None
+    assert decoder.predict_channels(0.5, 0.5)["prosody_scale"] == "normalized"
+
+
+def test_missing_prosody_weight_fails_fast_with_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """prosody 路径打错/缺失 → RuntimeError 指向 ZERO_PROSODY_MODEL_PATH。"""
+    pytest.importorskip("torch")
+    _clear_facs_env(monkeypatch)
+    monkeypatch.setenv("ZERO_PROSODY_MODEL_PATH", str(tmp_path / "nonexistent.pt"))
+    with pytest.raises(RuntimeError, match="ZERO_PROSODY_MODEL_PATH"):
+        _build_expression_decoder(False)

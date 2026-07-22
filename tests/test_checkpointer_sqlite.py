@@ -127,3 +127,27 @@ async def test_fact_and_scope_roundtrip_via_checkpointer(
         )
         assert isinstance(fact.content, str), "Fact.content 应为 str"
         assert isinstance(fact.sim, float), "Fact.sim 应为 float"
+
+
+async def test_conversation_session_aclose_idempotent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """ConversationSession.aclose()：memory 后端 no-op；sqlite 后端关连接、重复调幂等不抛（T6）。"""
+    from src.orchestration.runner import ConversationSession
+
+    # memory 后端：checkpointer 无 conn → aclose no-op（多次调不抛）
+    monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", "memory")
+    s_mem = ConversationSession(thread_id="t-aclose-mem")
+    assert getattr(s_mem.checkpointer, "conn", None) is None
+    await s_mem.aclose()
+    await s_mem.aclose()
+
+    # sqlite 后端：真有 aiosqlite 连接 → aclose 关之；已关再关不上抛（幂等）
+    pytest.importorskip("langgraph.checkpoint.sqlite.aio")
+    pytest.importorskip("aiosqlite")
+    monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", "sqlite")
+    monkeypatch.setenv("ZERO_CHECKPOINT_DB", str(tmp_path / "aclose.sqlite3"))
+    s_sql = ConversationSession(thread_id="t-aclose-sql")
+    assert getattr(s_sql.checkpointer, "conn", None) is not None
+    await s_sql.aclose()
+    await s_sql.aclose()

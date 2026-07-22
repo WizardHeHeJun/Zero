@@ -37,7 +37,7 @@ from src.agents.emotion_lexicon import (
 )
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
-from src.agents.models.composite import CompositeChannelDecoder
+from src.agents.models.composite import CompositeChannelDecoder, FacsModel, ProsodyModel
 from src.agents.persona import Persona, load_persona
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
@@ -127,33 +127,46 @@ def _relationship_hint(exposure: int) -> str:
 
 
 def _build_expression_decoder(facs_extended: bool) -> CompositeChannelDecoder | None:
-    """env 门控构造真表情解码器：`ZERO_FACS_MODEL_PATH` 未设/空 → None（占位路径，零回归）。
+    """env 门控构造真通道解码器：`ZERO_FACS_MODEL_PATH` / `ZERO_PROSODY_MODEL_PATH` 皆未设/空 → None
+    （占位路径，零回归）。两通道独立门控：可单独设 prosody（facs 仍占位·出 normalized），
+    反之亦然；只设 FACS 与改前逐字一致（零回归）。
 
-    设了权重路径才延迟 import torch 侧 `load_facs_decoder`（同 OpenAILanguageModel 先例：
-    默认路径不引重依赖）。`extended` 与运行时 `state.facs_extended` **同源**——调用方传入
-    同一 `ZERO_FACS_EXTENDED` 解析值（守 CompositeChannelDecoder 的键集对齐契约）；权重形状
-    与 extended 不配对时 `load_state_dict` fail-fast，不静默回退占位（config-only-via-env）。
-    加载失败**不学 perception.py 文本通道的 fail-soft**（那是辅助流，缺模型可降级 OCC 路径）：
-    FACS 配了权重路径即声明真模型为表情主路径，静默降级占位会掩盖配置错误，故一律 fail-fast；
-    文件缺失/不可读时翻译成指向本 env 的 RuntimeError（不裸抛 torch 堆栈）。
-    系数 k_arousal/k_coping/residual_alpha：⚖ 方向议会定、幅度工程可动——构造期一次读 env，
-    默认=构造函数默认（1.5/1.2/1.0）=零回归；residual_alpha 越界由 CompositeChannelDecoder
-    构造抛 ValueError（fail-fast）。
+    设了对应权重路径才延迟 import torch 侧 `load_facs_decoder` / `load_prosody_decoder`（默认路径
+    不引重依赖）。FACS 的 `extended` 与运行时 `state.facs_extended` 同源（守 CompositeChannelDecoder
+    键集对齐契约）；权重形状不配对时 `load_state_dict` fail-fast，不静默回退占位。
+    配了权重路径即声明真模型为该通道主路径，静默降级占位会掩盖配置错误，故一律 fail-fast（不学
+    perception.py 文本通道的 fail-soft）；文件缺失/不可读翻译成指向对应 env 的 RuntimeError（不裸抛
+    torch 堆栈）。系数 k_arousal/k_coping/residual_alpha 构造期一次读 env，默认=构造默认（1.5/1.2/
+    1.0）=零回归；residual_alpha 越界由 CompositeChannelDecoder 构造抛 ValueError（fail-fast）。
     """
-    model_path = os.getenv("ZERO_FACS_MODEL_PATH", "")
-    if not model_path:
+    facs_path = os.getenv("ZERO_FACS_MODEL_PATH", "")
+    prosody_path = os.getenv("ZERO_PROSODY_MODEL_PATH", "")
+    if not facs_path and not prosody_path:
         return None
-    from src.agents.models.facs_decoder import load_facs_decoder  # 延迟：设了权重才需 torch
+    facs_model: FacsModel | None = None
+    prosody_model: ProsodyModel | None = None
+    if facs_path:
+        from src.agents.models.facs_decoder import load_facs_decoder  # 延迟：设了权重才需 torch
 
-    try:
-        facs_model = load_facs_decoder(model_path, extended=facs_extended)
-    except OSError as e:  # 文件缺失/不可读（FileNotFoundError ⊂ OSError）；形状不配对的
-        # RuntimeError 原样穿透（本身已含 size mismatch 详情）。
-        raise RuntimeError(
-            f"ZERO_FACS_MODEL_PATH={model_path!r} 指向的权重文件不可读，请检查配置"
-        ) from e
+        try:
+            facs_model = load_facs_decoder(facs_path, extended=facs_extended)
+        except OSError as e:  # 文件缺失/不可读（FileNotFoundError ⊂ OSError）；形状不配对的
+            # RuntimeError 原样穿透（本身已含 size mismatch 详情）。
+            raise RuntimeError(
+                f"ZERO_FACS_MODEL_PATH={facs_path!r} 指向的权重文件不可读，请检查配置"
+            ) from e
+    if prosody_path:
+        from src.agents.models.prosody_decoder import load_prosody_decoder  # 延迟：同上
+
+        try:
+            prosody_model = load_prosody_decoder(prosody_path)
+        except OSError as e:  # 文件缺失/不可读；形状不配对 RuntimeError 原样穿透（size mismatch）。
+            raise RuntimeError(
+                f"ZERO_PROSODY_MODEL_PATH={prosody_path!r} 指向的权重文件不可读，请检查配置"
+            ) from e
     return CompositeChannelDecoder(
         facs_model=facs_model,
+        prosody_model=prosody_model,
         facs_extended=facs_extended,
         k_arousal=float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
         k_coping=float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
