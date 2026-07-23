@@ -5,6 +5,25 @@
 
 注意：训更大网络（--hidden/--num-layers 非默认值）需从头重训；
 原 Release 权重仅兼容默认形状（hidden=32, num_layers=2）。
+
+──────────────────────────────────────────────────────────────────
+canonical_physiology 重训说明（议会 2026-07-23）：
+  ExpressionDecoder 的蒸馏目标由 affect_to_vector() 生成（11 维向量）。
+  idx7 有双语义：
+    门关（默认·legacy）：pupil_n = clamp(arousal, 0, 1)
+    门开（canonical）  ：temperature_n = (36−3·clamp(|arousal|)−30)/10
+
+  门关（默认）= legacy 目标 → 旧权重（expression_decoder.pt）兼容，零回归；
+  门开（ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER=true）= canonical 目标 → 须重训：
+    python -m scripts.train_expression --epochs 300 \\
+        --out artifacts/expression_decoder_canonical.pt
+
+  重训时须将 synthetic_pairs 的 affect_to_vector 调用改为
+  affect_to_vector(v, a, canonical_physiology=True)（见 expression_decoder.py）。
+  旧权重（expression_decoder.pt）不得在 canonical 路径复用：
+  idx7 会被误解为 temperature，导致生理通道量纲错误。
+  canonical demo 权重按需产出，生产路径须确保权重与 canonical 布局对齐。
+──────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations

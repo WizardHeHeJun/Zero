@@ -62,6 +62,7 @@ class CompositeChannelDecoder:
         facs_model: FacsModel | None = None,
         coping_potential: float = 0.0,
         facs_extended: bool = False,
+        canonical_physiology: bool = False,
         k_arousal: float = 1.5,
         k_coping: float = 1.2,
         residual_alpha: float = 1.0,
@@ -71,6 +72,12 @@ class CompositeChannelDecoder:
         self.facs_model = facs_model
         self.coping_potential = coping_potential
         self.facs_extended = facs_extended
+        # canonical_physiology：physiology 占位口径门控（ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER）。
+        # False（默认）→ legacy {hr[70,110]/sc[0,1]/pupil_mm[3,5]}，零回归；
+        # True → canonical 议会 2026-07-23 公式 {hr[50,120]/sc μS[0,20]/temp_c[33,36]}。
+        # physiology_model=None 时（回退占位）生效；注入真模型时 flag 无意义。
+        # 与 state.canonical_physiology 同源（同一 env·构造期固定·非 per-turn）。
+        self.canonical_physiology = canonical_physiology
         self.k_arousal = k_arousal
         self.k_coping = k_coping
         # residual_alpha：C2 residual 叠加系数（议会 C2 设计门 2026-07-14）∈[0,1]。
@@ -109,6 +116,7 @@ class CompositeChannelDecoder:
             (valence, arousal),
             coping_potential=coping_potential,
             facs_extended=facs_extended,
+            canonical_physiology=self.canonical_physiology,
             k_arousal=self.k_arousal,
             k_coping=self.k_coping,
         )  # 解析占位提供全部 4 通道

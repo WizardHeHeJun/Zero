@@ -277,6 +277,63 @@ async def test_step_returns_normalized_prosody_scale(
         assert all(0.0 <= v <= 1.0 for v in expr["spontaneous"]["prosody"].values())
 
 
+def test_maybe_expression_decoder_wires_physiology(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MCP 工厂 _maybe_expression_decoder：设 ZERO_PHYSIOLOGY_MODEL_PATH → 注入真
+    PhysiologyDecoder，physiology 出 WESAD canonical {hr,sc(μS),temperature_c}（与 chat 工厂
+    同口径·独立于 FACS/prosody 门控）。torch 缺则跳过。
+    """
+    torch = pytest.importorskip("torch")
+    from src.agents.models.composite import CompositeChannelDecoder
+    from src.agents.models.physiology_decoder import PhysiologyDecoder
+    from src.mcp_server.server import _maybe_expression_decoder
+
+    monkeypatch.delenv("ZERO_FACS_MODEL_PATH", raising=False)
+    monkeypatch.delenv("ZERO_PROSODY_MODEL_PATH", raising=False)
+    wpath = tmp_path / "physiology_decoder.pt"
+    torch.save(PhysiologyDecoder().state_dict(), wpath)
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_MODEL_PATH", str(wpath))
+    decoder = _maybe_expression_decoder()
+    assert isinstance(decoder, CompositeChannelDecoder)
+    assert isinstance(decoder.physiology_model, PhysiologyDecoder)
+    assert decoder.facs_model is None  # 独立门控：未设 FACS → facs 仍占位
+    physio = decoder.predict_channels(0.5, 0.5)["physiology"]
+    assert set(physio) == {"heart_rate_bpm", "skin_conductance", "temperature_c"}
+    assert 50.0 <= physio["heart_rate_bpm"] <= 120.0
+    assert 0.0 <= physio["skin_conductance"] <= 20.0  # μS
+    assert 30.0 <= physio["temperature_c"] <= 40.0  # °C
+
+
+async def test_step_returns_wesad_physiology(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """e2e：设 ZERO_PHYSIOLOGY_MODEL_PATH → zero.step 返回 physiology 三值为 WESAD 真信号量纲
+    （含 temperature_c、无 pupil_mm；经工具边界原样透传）。torch 缺则跳过。
+    """
+    torch = pytest.importorskip("torch")
+    from src.agents.models.physiology_decoder import PhysiologyDecoder
+
+    monkeypatch.delenv("ZERO_FACS_MODEL_PATH", raising=False)
+    monkeypatch.delenv("ZERO_PROSODY_MODEL_PATH", raising=False)
+    wpath = tmp_path / "physiology_decoder.pt"
+    torch.save(PhysiologyDecoder().state_dict(), wpath)
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_MODEL_PATH", str(wpath))
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
+            "session_id"
+        ]
+        r = await client.call_tool(
+            "zero.step",
+            {"session_id": sid, "stim": {"valence": 0.4, "arousal": 0.5}},
+        )
+        assert r.isError is False
+        physio = json.loads(r.content[0].text)["spontaneous"]["physiology"]
+        assert set(physio) == {"heart_rate_bpm", "skin_conductance", "temperature_c"}
+        assert 30.0 <= physio["temperature_c"] <= 40.0  # °C（真 WESAD 信号·非 pupil_mm 占位）
+
+
 # ── HTTP（streamable-http）传输真端口往返（需 uvicorn；缺则跳过）──────────────────────
 
 

@@ -37,7 +37,12 @@ from src.agents.emotion_lexicon import (
 )
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
-from src.agents.models.composite import CompositeChannelDecoder, FacsModel, ProsodyModel
+from src.agents.models.composite import (
+    CompositeChannelDecoder,
+    FacsModel,
+    PhysiologyModel,
+    ProsodyModel,
+)
 from src.agents.persona import Persona, load_persona
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
@@ -126,14 +131,18 @@ def _relationship_hint(exposure: int) -> str:
     return "已经比较熟络"
 
 
-def _build_expression_decoder(facs_extended: bool) -> CompositeChannelDecoder | None:
-    """env 门控构造真通道解码器：`ZERO_FACS_MODEL_PATH` / `ZERO_PROSODY_MODEL_PATH` 皆未设/空 → None
-    （占位路径，零回归）。两通道独立门控：可单独设 prosody（facs 仍占位·出 normalized），
-    反之亦然；只设 FACS 与改前逐字一致（零回归）。
+def _build_expression_decoder(
+    facs_extended: bool, canonical_physiology: bool = False
+) -> CompositeChannelDecoder | None:
+    """env 门控构造真通道解码器：`ZERO_FACS_MODEL_PATH` / `ZERO_PROSODY_MODEL_PATH` /
+    `ZERO_PHYSIOLOGY_MODEL_PATH` 皆未设/空 → None（占位路径，零回归）。三通道独立门控：设任一路
+    即返回 CompositeChannelDecoder（非 None），未设的通道回退解析占位（如只设 physiology → facs/
+    prosody 走占位、physiology 出真 WESAD {hr,sc(μS),temperature_c}）；只设 FACS 与改前逐字一致。
 
-    设了对应权重路径才延迟 import torch 侧 `load_facs_decoder` / `load_prosody_decoder`（默认路径
-    不引重依赖）。FACS 的 `extended` 与运行时 `state.facs_extended` 同源（守 CompositeChannelDecoder
-    键集对齐契约）；权重形状不配对时 `load_state_dict` fail-fast，不静默回退占位。
+    设了对应权重路径才延迟 import torch 侧 `load_facs_decoder` / `load_prosody_decoder` /
+    `load_physiology_decoder`（默认路径不引重依赖）。FACS 的 `extended` 与运行时
+    `state.facs_extended` 同源（守 CompositeChannelDecoder 键集对齐契约）；权重形状不配对时
+    `load_state_dict` fail-fast，不静默回退占位。
     配了权重路径即声明真模型为该通道主路径，静默降级占位会掩盖配置错误，故一律 fail-fast（不学
     perception.py 文本通道的 fail-soft）；文件缺失/不可读翻译成指向对应 env 的 RuntimeError（不裸抛
     torch 堆栈）。系数 k_arousal/k_coping/residual_alpha 构造期一次读 env，默认=构造默认（1.5/1.2/
@@ -141,10 +150,12 @@ def _build_expression_decoder(facs_extended: bool) -> CompositeChannelDecoder | 
     """
     facs_path = os.getenv("ZERO_FACS_MODEL_PATH", "")
     prosody_path = os.getenv("ZERO_PROSODY_MODEL_PATH", "")
-    if not facs_path and not prosody_path:
+    physiology_path = os.getenv("ZERO_PHYSIOLOGY_MODEL_PATH", "")
+    if not facs_path and not prosody_path and not physiology_path:
         return None
     facs_model: FacsModel | None = None
     prosody_model: ProsodyModel | None = None
+    physiology_model: PhysiologyModel | None = None
     if facs_path:
         from src.agents.models.facs_decoder import load_facs_decoder  # 延迟：设了权重才需 torch
 
@@ -164,10 +175,21 @@ def _build_expression_decoder(facs_extended: bool) -> CompositeChannelDecoder | 
             raise RuntimeError(
                 f"ZERO_PROSODY_MODEL_PATH={prosody_path!r} 指向的权重文件不可读，请检查配置"
             ) from e
+    if physiology_path:
+        from src.agents.models.physiology_decoder import load_physiology_decoder  # 延迟：同上
+
+        try:
+            physiology_model = load_physiology_decoder(physiology_path)
+        except OSError as e:  # 文件缺失/不可读；形状不配对 RuntimeError 原样穿透（size mismatch）。
+            raise RuntimeError(
+                f"ZERO_PHYSIOLOGY_MODEL_PATH={physiology_path!r} 指向的权重文件不可读，请检查配置"
+            ) from e
     return CompositeChannelDecoder(
         facs_model=facs_model,
         prosody_model=prosody_model,
+        physiology_model=physiology_model,
         facs_extended=facs_extended,
+        canonical_physiology=canonical_physiology,
         k_arousal=float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
         k_coping=float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
         residual_alpha=float(os.getenv("ZERO_FACS_RESIDUAL_ALPHA", "1.0")),
@@ -820,6 +842,16 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # 占位路径（decoder=None）经 ExpressionAgent 消费；注入 decoder 若实现 predict_channels_coping
     # 也拿到 per-turn coping（议会遗留 2·方案 b 已落地）。
     facs_extended = os.getenv("ZERO_FACS_EXTENDED", "").lower() in ("1", "true", "yes", "on")
+    # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）。
+    # True → 占位出 canonical {hr[50,120]/sc μS[0,20]/temperature_c[33,36]}（议会签字公式）；
+    # False → legacy {hr[70,110]/sc[0,1]/pupil_mm[3,5]}（逐字零回归）。
+    # 与 facs_extended 同双读同一 env 模式（构造期固定·非 per-turn）。
+    canonical_physiology = os.getenv("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。默认 1.0=两头
     # 等值=零回归；推荐 0.3（随意头仅保留自发头 30% coping-driven 强度）。仅 facs_extended 时生效。
     voluntary_coping_leak = float(os.getenv("ZERO_VOLUNTARY_COPING_LEAK", "1.0"))
@@ -833,7 +865,7 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # 跑图里生效（per-turn coping 经可选 predict_channels_coping 已可达，议会遗留 2·方案 b）。
     # k_arousal/k_coping：⚖ 方向议会定、幅度工程可动——占位路径用 decode_channels 内置默认
     # （1.5/1.2，不为系数拉 state 字段）；composite 路径经 ZERO_FACS_K_AROUSAL/K_COPING 构造期读入。
-    expression_decoder = _build_expression_decoder(facs_extended)
+    expression_decoder = _build_expression_decoder(facs_extended, canonical_physiology)
     # B 类·记忆巩固旋钮（仿 cortisol_tau 模式：env 读一次传构造，默认全关=零回归）
     # ZERO_CONSOLIDATION_ENABLED：主门，默认 0=关；开启后 aclose 触发 Ebbinghaus+睡眠巩固。
     consolidation_enabled = os.getenv("ZERO_CONSOLIDATION_ENABLED", "").lower() in (
@@ -918,6 +950,10 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         fear_domain_enabled=fear_domain_enabled,
         # facs_extended：AU 扩展集合门控（默认关=零回归）。
         facs_extended=facs_extended,
+        # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）。
+        # 经 SessionConfig → to_state_flags 贯通 state，供 ExpressionAgent 占位路径（decoder=None）
+        # 读 state.canonical_physiology；与上面传给 _build_expression_decoder 的构造期 flag 同源。
+        canonical_physiology=canonical_physiology,
         # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。
         voluntary_coping_leak=voluntary_coping_leak,
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）。

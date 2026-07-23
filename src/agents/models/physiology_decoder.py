@@ -41,6 +41,8 @@ class PhysiologyDecoder(nn.Module):
 def load_physiology_decoder(path: str, hidden: int = 16, num_layers: int = 1) -> PhysiologyDecoder:
     """从权重文件加载已训练的生理解码器。"""
     model = PhysiologyDecoder(hidden=hidden, num_layers=num_layers)
-    model.load_state_dict(torch.load(path, map_location="cpu"))
+    # weights_only=True：只反序列化张量/state_dict，不执行任意 pickle（对齐 facs/prosody/expression
+    # 姐妹加载器；physiology 接线把本加载器接进 MCP server env 边界，须与其余入口同等安全）。
+    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
     model.eval()
     return model

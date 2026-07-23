@@ -115,6 +115,11 @@ class SessionConfig(BaseModel):
     # 占位路径（decoder=None）经 ExpressionAgent 消费；注入 decoder 若实现 predict_channels_coping
     # 也拿到 per-turn coping（议会遗留 2·方案 b 已落地），否则回退 predict_channels(v,a)。
     facs_extended: bool = False
+    # ── canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）──
+    # True → 占位出 canonical {hr[50,120]/sc μS[0,20]/temperature_c[33,36]}；
+    # False（默认）→ legacy {hr[70,110]/sc[0,1]/pupil_mm[3,5]}，逐字零回归。
+    # 经 ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER → chat_driver → SessionConfig → to_state_flags。
+    canonical_physiology: bool = False
     # ── voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]──
     # 自发头全量传 coping、随意头传 coping×leak（意志部分压制 coping-driven AU）。
     # 默认 1.0=两头等值=零回归；推荐 0.3。仅 facs_extended=True 时对 facs_au 生效。
@@ -254,6 +259,8 @@ async def run(
     fear_domain_enabled: bool = False,
     # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
     facs_extended: bool = False,
+    # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）
+    canonical_physiology: bool = False,
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
     voluntary_coping_leak: float = 1.0,
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
@@ -353,6 +360,8 @@ async def run(
                 "text_coping_source": False,
                 # facs_extended：AU 扩展集合门控（默认关=零回归）
                 "facs_extended": facs_extended,
+                # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）
+                "canonical_physiology": canonical_physiology,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
                 "voluntary_coping_leak": voluntary_coping_leak,
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
@@ -455,6 +464,8 @@ class ConversationSession:
         fear_domain_enabled: bool = False,
         # facs_extended：AU 扩展集合门控（设计门 PASS·路径 b；默认关=零回归）
         facs_extended: bool = False,
+        # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）
+        canonical_physiology: bool = False,
         # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
         voluntary_coping_leak: float = 1.0,
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
@@ -532,6 +543,8 @@ class ConversationSession:
                 fear_domain_enabled=fear_domain_enabled,
                 # facs_extended：AU 扩展集合门控（默认关=零回归）
                 facs_extended=facs_extended,
+                # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）
+                canonical_physiology=canonical_physiology,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
                 voluntary_coping_leak=voluntary_coping_leak,
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）

@@ -419,6 +419,7 @@ def decode_channels(
     *,
     coping_potential: float = 0.0,
     facs_extended: bool = False,
+    canonical_physiology: bool = False,
     k_arousal: float = 1.5,
     k_coping: float = 1.2,
 ) -> dict[str, Any]:
@@ -434,6 +435,13 @@ def decode_channels(
             来源：直接读 state.coping_potential_state，**不在表情层重估**（防构念重复）。
         facs_extended: False（默认）→ 旧 5-AU 逐字行为，零回归；
             True → 输出 13-AU 扩展集合（含 coping 驱动的区分性 AU + AU17/AU26 通用 AU）。
+        canonical_physiology: False（默认）→ legacy 占位 {hr[70,110]/sc[0,1]/pupil_mm[3,5]}，
+            零回归；True → canonical 占位，议会 2026-07-23 公式：
+            heart_rate_bpm=50+70·clamp(0.5·(1+arousal)) / skin_conductance=20·clamp(|arousal|) /
+            temperature_c=36−3·clamp(|arousal|)（无 pupil_mm）。
+            量纲与真 PhysiologyDecoder.predict_physiology 同口径（同域同方向）。
+            注意：sc 中立态占位给 0μS，真 decoder 中立态 sigmoid≈0.5→~10μS，
+            系统性偏低 ~10μS——禁止跨路径绝对比较（仅同路径内相对比较有意义）。
         k_arousal: ⚖ AU05/07 对 arousal 的增益（工程可动；默认 1.5=现值，零回归）。
             方向由议会定，不可改符号/单调；仅幅度可调。由 CompositeChannelDecoder 注入。
         k_coping: ⚖ 区分性 AU 对 coping 强度的增益（工程可动；默认 1.2=现值，零回归）。
@@ -456,11 +464,30 @@ def decode_channels(
     label = text_label(valence, arousal)
 
     # 3) 生理信号模拟：arousal 驱动交感输出
-    physiology = {
-        "heart_rate_bpm": 70.0 + 40.0 * clamp(arousal, 0.0, 1.0),
-        "skin_conductance": clamp(abs(arousal), 0.0, 1.0),  # 议会 B-2/A-P0-D：正负高唤醒均出 SCR
-        "pupil_mm": 3.0 + 2.0 * clamp(arousal, 0.0, 1.0),
-    }
+    # canonical_physiology=True（ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER=true）：议会 2026-07-23
+    # 公式，量纲与真 PhysiologyDecoder.predict_physiology 同口径（同域同方向）：
+    #   hr: 全域覆盖，Ekman/Levenson 1983 负高唤醒同样升 HR→ clamp(0.5*(1+arousal))；
+    #   sc: EDA 与 |arousal| 正相关（B-2 精神·忽略效价），量纲迁 μS [0,20]；
+    #   temperature_c: 高唤醒→交感血管收缩→外周降温（无 valence 项·Migliorini 2017
+    #       热成像无 valence 差异；愤怒↑/恐惧↓分野属 coping_potential 第三维·VA-2D 不可区分）；
+    #   pupil_mm: 删除（WESAD 无此信号·canonical 路径·议会生物席）。
+    #   sc 中立偏置说明：占位 arousal=0→0μS，真 decoder 中立态~10μS，占位系统性低于真 decoder
+    #   约 10μS——仅同路径内相对比较有意义，禁止跨路径绝对比较（占位/真 decoder 混用）。
+    # canonical_physiology=False（默认）：逐字 legacy，零回归。
+    if canonical_physiology:
+        physiology: dict[str, float] = {
+            "heart_rate_bpm": 50.0 + 70.0 * clamp(0.5 * (1.0 + arousal), 0.0, 1.0),
+            "skin_conductance": 20.0 * clamp(abs(arousal), 0.0, 1.0),
+            "temperature_c": 36.0 - 3.0 * clamp(abs(arousal), 0.0, 1.0),
+        }
+    else:
+        physiology = {
+            "heart_rate_bpm": 70.0 + 40.0 * clamp(arousal, 0.0, 1.0),
+            "skin_conductance": clamp(
+                abs(arousal), 0.0, 1.0
+            ),  # 议会 B-2/A-P0-D：正负高唤醒均出 SCR
+            "pupil_mm": 3.0 + 2.0 * clamp(arousal, 0.0, 1.0),
+        }
 
     # 4) 语音韵律：arousal→语速/能量，valence→音高基线
     prosody = {

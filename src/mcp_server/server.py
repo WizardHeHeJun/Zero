@@ -83,6 +83,12 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # fear 域激活；仅 ZERO_MCP_FEAR_DOMAIN_ENABLED env 治理，client override 被 gated_flags
         # 静默忽略（与 text_coping_enabled 同一治理模式）。
         "fear_domain_enabled": _env_flag("ZERO_MCP_FEAR_DOMAIN_ENABLED", False),
+        # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）。
+        # 与 _maybe_expression_decoder 同读 ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER，保证
+        # state.canonical_physiology（经 SessionConfig）与 decoder 构造期固定值同源。
+        # MCP 收窄前提（CS 席约束·design.md）：消费方须确认部署端已开此 env 才能依赖
+        # canonical 键集（{hr,sc(μS),temperature_c}）；默认关=legacy 占位（含 pupil_mm）。
+        "canonical_physiology": _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),
@@ -100,9 +106,10 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
 
 
 def _maybe_expression_decoder() -> ChannelDecoder | None:
-    """env 门控注入真通道解码器：`ZERO_FACS_MODEL_PATH` / `ZERO_PROSODY_MODEL_PATH` 皆未设 → None
-    （占位路径，无需 torch）。两通道**独立门控**：可单独设 prosody（facs 仍占位·prosody_scale
-    翻 normalized），反之亦然；只设 FACS 与改前逐字一致（零回归）。
+    """env 门控注入真通道解码器：`ZERO_FACS_MODEL_PATH` / `ZERO_PROSODY_MODEL_PATH` /
+    `ZERO_PHYSIOLOGY_MODEL_PATH` 皆未设 → None（占位路径，无需 torch）。三通道**独立门控**：
+    可单独设任一路（如只设 physiology → facs/prosody 仍占位、physiology 出真 WESAD
+    {hr,sc(μS),temperature_c}），互不影响；只设 FACS 与改前逐字一致（零回归）。
 
     仅设了对应权重路径才**延迟 import** models 层公开 `load_facs_decoder` / `load_prosody_decoder`
     （该链引 torch 侧）；默认（都未设）路径完全不 import → server 保持轻依赖（仅 langgraph+
@@ -113,13 +120,21 @@ def _maybe_expression_decoder() -> ChannelDecoder | None:
     """
     facs_path = os.getenv("ZERO_FACS_MODEL_PATH")
     prosody_path = os.getenv("ZERO_PROSODY_MODEL_PATH")
-    if not facs_path and not prosody_path:
+    physiology_path = os.getenv("ZERO_PHYSIOLOGY_MODEL_PATH")
+    if not facs_path and not prosody_path and not physiology_path:
         return None
     from src.agents.models.composite import CompositeChannelDecoder
 
     facs_extended = _env_flag("ZERO_FACS_EXTENDED", False)
+    # canonical_physiology：physiology 占位口径门控（议会 2026-07-23）。
+    # 与 facs_extended 同双读同一 env 模式（构造期固定·非 per-turn）。
+    # MCP 收窄前提：此 flag 须与 state.canonical_physiology 同源（同一 env）——
+    # MCP 路径下 state 由 SessionConfig.to_state_flags() 贯通，canonical_physiology
+    # 在 _build_session_config 中注入（见下方），与 decoder 构造期固定同源。
+    canonical_physiology = _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False)
     kwargs: dict[str, Any] = {
         "facs_extended": facs_extended,
+        "canonical_physiology": canonical_physiology,
         "k_arousal": float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
         "k_coping": float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
         "residual_alpha": float(os.getenv("ZERO_FACS_RESIDUAL_ALPHA", "1.0")),
@@ -145,6 +160,15 @@ def _maybe_expression_decoder() -> ChannelDecoder | None:
         except OSError as e:  # 同 FACS：文件不可读 fail-fast；形状不配对 RuntimeError 原样穿透。
             raise RuntimeError(
                 f"ZERO_PROSODY_MODEL_PATH={prosody_path!r} 指向的权重文件不可读，请检查配置"
+            ) from e
+    if physiology_path:
+        from src.agents.models.physiology_decoder import load_physiology_decoder
+
+        try:
+            kwargs["physiology_model"] = load_physiology_decoder(physiology_path)
+        except OSError as e:  # 同 FACS：文件不可读 fail-fast；形状不配对 RuntimeError 原样穿透。
+            raise RuntimeError(
+                f"ZERO_PHYSIOLOGY_MODEL_PATH={physiology_path!r} 指向的权重文件不可读，请检查配置"
             ) from e
     return CompositeChannelDecoder(**kwargs)
 

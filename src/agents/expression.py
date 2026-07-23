@@ -36,6 +36,7 @@ class ExpressionAgent:
         *,
         coping_potential: float = 0.0,
         facs_extended: bool = False,
+        canonical_physiology: bool = False,
     ) -> dict[str, Any]:
         if self.decoder is not None:
             # 议会遗留 2 设计门（方案 b）：若注入 decoder 有可选方法 predict_channels_coping，
@@ -45,6 +46,7 @@ class ExpressionAgent:
             # 探测得到的方法假定签名 (v, a, coping, facs_extended) -> dict（本项目
             # CompositeChannelDecoder.predict_channels_coping 即此签名）；getattr 返回 Any，
             # 静态检查放行，调用方须保证注入 decoder 的该方法签名一致。
+            # canonical_physiology 不传给注入 decoder（CompositeChannelDecoder 构造期已固定）。
             coping_aware = getattr(self.decoder, "predict_channels_coping", None)
             if coping_aware is not None:
                 result: dict[str, Any] = coping_aware(
@@ -52,19 +54,29 @@ class ExpressionAgent:
                 )
                 return result
             return self.decoder.predict_channels(affect[0], affect[1])
+        # decoder=None 占位路径：传 canonical_physiology 控制 physiology 口径
         return decode_channels(
-            affect, coping_potential=coping_potential, facs_extended=facs_extended
+            affect,
+            coping_potential=coping_potential,
+            facs_extended=facs_extended,
+            canonical_physiology=canonical_physiology,
         )
 
     def __call__(self, state: AffectState) -> dict:
         if state.affect_sample is None:
             return {}
-        # 占位路径：透传 coping_potential_state + facs_extended（防空悬，W1）
+        # 占位路径：透传 coping_potential_state + facs_extended + canonical_physiology（防空悬，W1）
         coping = state.coping_potential_state
         facs_ext = state.facs_extended
+        # canonical_physiology：physiology 占位口径门控（镜像 facs_extended·议会 2026-07-23）
+        # decoder=None 时传给 decode_channels；注入 decoder 时不传（构造期已固定）。
+        canonical_phys = state.canonical_physiology
         # 自发头（push·锥体外路·皮层下驱动）：全量传 coping，coping-driven AU 原始强度泄漏。
         spontaneous = self._decode(
-            state.affect_sample, coping_potential=coping, facs_extended=facs_ext
+            state.affect_sample,
+            coping_potential=coping,
+            facs_extended=facs_ext,
+            canonical_physiology=canonical_phys,
         )
         voluntary_source = (
             state.regulated_affect if state.regulated_affect is not None else state.affect_sample
@@ -74,7 +86,10 @@ class ExpressionAgent:
         # 默认 leak=1.0 → voluntary_coping==coping → 两头等值 = 逐字旧行为（零回归）。
         voluntary_coping = coping * state.voluntary_coping_leak
         voluntary = self._decode(
-            voluntary_source, coping_potential=voluntary_coping, facs_extended=facs_ext
+            voluntary_source,
+            coping_potential=voluntary_coping,
+            facs_extended=facs_ext,
+            canonical_physiology=canonical_phys,
         )
         expression: dict[str, Any] = {
             "valence_arousal": state.affect_sample,

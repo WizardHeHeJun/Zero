@@ -28,6 +28,10 @@ _FACS_ENVS = (
     "ZERO_FACS_EXTENDED",
     # 独立通道门控（zero-link T4）：清掉防真 .env 的 prosody 权重污染 FACS 用例（会翻 normalized）。
     "ZERO_PROSODY_MODEL_PATH",
+    # 独立通道门控（zero-link physiology 2026-07-23）：同理清 physiology 权重防污染。
+    "ZERO_PHYSIOLOGY_MODEL_PATH",
+    # 占位口径门控（zero-link 任务② 2026-07-23）：清防真 .env 开着污染零回归/接线用例。
+    "ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER",
 )
 
 
@@ -55,6 +59,17 @@ def _save_prosody_weights(tmp_path: Path) -> str:
 
     model = ProsodyDecoder()
     path = tmp_path / "prosody_decoder.pt"
+    torch.save(model.state_dict(), path)
+    return str(path)
+
+
+def _save_physiology_weights(tmp_path: Path) -> str:
+    """存一份默认架构（hidden=16/num_layers=1）的 PhysiologyDecoder 权重（随机初始化·测接线）。"""
+    torch = pytest.importorskip("torch")
+    from src.agents.models.physiology_decoder import PhysiologyDecoder
+
+    model = PhysiologyDecoder()
+    path = tmp_path / "physiology_decoder.pt"
     torch.save(model.state_dict(), path)
     return str(path)
 
@@ -209,3 +224,79 @@ def test_missing_prosody_weight_fails_fast_with_hint(
     monkeypatch.setenv("ZERO_PROSODY_MODEL_PATH", str(tmp_path / "nonexistent.pt"))
     with pytest.raises(RuntimeError, match="ZERO_PROSODY_MODEL_PATH"):
         _build_expression_decoder(False)
+
+
+def test_physiology_env_gate_wires_physiology_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """设 ZERO_PHYSIOLOGY_MODEL_PATH → 真 PhysiologyDecoder 注入，physiology 出 WESAD 真信号量纲
+    （sc μS[0,20]、temperature_c °C[30,40]、含 temperature_c 键·无 pupil_mm）。"""
+    _clear_facs_env(monkeypatch)
+    from src.agents.models.composite import CompositeChannelDecoder
+    from src.agents.models.physiology_decoder import PhysiologyDecoder
+
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_MODEL_PATH", _save_physiology_weights(tmp_path))
+    decoder = _build_expression_decoder(False)
+    assert isinstance(decoder, CompositeChannelDecoder)
+    assert isinstance(decoder.physiology_model, PhysiologyDecoder)
+    physio = decoder.predict_channels(0.5, 0.5)["physiology"]
+    # canonical=WESAD：真 decoder 出 {hr,sc(μS),temperature_c}，替换占位的 pupil_mm。
+    assert set(physio) == {"heart_rate_bpm", "skin_conductance", "temperature_c"}
+    assert 50.0 <= physio["heart_rate_bpm"] <= 120.0  # sigmoid 反归一域
+    assert 0.0 <= physio["skin_conductance"] <= 20.0  # μS
+    assert 30.0 <= physio["temperature_c"] <= 40.0  # °C
+
+
+def test_physiology_only_no_facs_no_prosody(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """通道独立门控：只设 physiology（facs/prosody 未设）→ decoder 非 None、physiology 接真模型。"""
+    _clear_facs_env(monkeypatch)
+    from src.agents.models.composite import CompositeChannelDecoder
+
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_MODEL_PATH", _save_physiology_weights(tmp_path))
+    decoder = _build_expression_decoder(False)
+    assert isinstance(decoder, CompositeChannelDecoder)
+    assert decoder.facs_model is None  # facs 未设 → facs_au 仍走解析占位（零回归）
+    assert decoder.prosody_model is None  # prosody 未设 → prosody 仍走解析占位、scale=ratio
+    assert decoder.physiology_model is not None
+    # ratio = decode_channels 占位约定（affect_math），非 physiology decoder 产出；
+    # prosody 未注入 → 不翻 normalized，佐证 physiology 门控不越界影响 prosody。
+    assert decoder.predict_channels(0.5, 0.5)["prosody_scale"] == "ratio"
+
+
+def test_missing_physiology_weight_fails_fast_with_hint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """physiology 路径打错/缺失 → RuntimeError 指向 ZERO_PHYSIOLOGY_MODEL_PATH。"""
+    pytest.importorskip("torch")
+    _clear_facs_env(monkeypatch)
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_MODEL_PATH", str(tmp_path / "nonexistent.pt"))
+    with pytest.raises(RuntimeError, match="ZERO_PHYSIOLOGY_MODEL_PATH"):
+        _build_expression_decoder(False)
+
+
+def test_canonical_physiology_env_propagates_to_session_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """集成回归（code-reviewer BLOCK-1）：`ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER=true` 须经
+    build_chat_driver 贯通到 ConversationSession/SessionConfig（否则 chat 占位路径 A[decoder=None]
+    读到的 state.canonical_physiology 恒 False、门开失效）。经真 build_chat_driver 捕获
+    SessionConfig kwargs（非直设 state）——正是"漏传给 ConversationSession"bug 的探测点。"""
+    _clear_facs_env(monkeypatch)
+    monkeypatch.setattr("src.orchestration.chat_driver.ConversationSession", _CaptureSession)
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", "true")
+    driver = build_chat_driver(thread="test-canonical-physiology-on")
+    session = driver.session
+    assert isinstance(session, _CaptureSession)
+    assert session.captured["canonical_physiology"] is True
+
+
+def test_canonical_physiology_default_off_zero_regression(monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认（未设 env）→ SessionConfig.canonical_physiology=False（逐字零回归）。"""
+    _clear_facs_env(monkeypatch)
+    monkeypatch.setattr("src.orchestration.chat_driver.ConversationSession", _CaptureSession)
+    driver = build_chat_driver(thread="test-canonical-physiology-off")
+    session = driver.session
+    assert isinstance(session, _CaptureSession)
+    assert session.captured["canonical_physiology"] is False
