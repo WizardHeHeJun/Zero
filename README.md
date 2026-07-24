@@ -16,9 +16,11 @@
 
 Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调制情绪」的大脑。它**不直接接管**感官与身体：
 
-- **感知输入**（视觉 / 语音 / 生理信号 / 面部…）与**执行操控**（形象驱动 / 动作 / 对外动作）封装在一个**配套项目**里、以 **MCP** 暴露为工具；该项目并行推进，后续与本内核**对齐接线**。
-- 因此本仓库当前以**文本进、情绪化文本 + 通道值出**跑通内核回路；`main.py` / CLI 只是**临时验证路径**，用来单跑内核、不是最终对外接口——真正的多模态输入与操控经 MCP 接点接入。
+- **感知输入**（视觉 / 语音 / 生理信号 / 面部…）与**执行操控**（形象驱动 / 动作 / 对外动作）封装在一个**配套项目**里、作为 **MCP client** 接入。本内核**已内建 MCP server**——把一次情感引擎会话暴露为 `open / step / close` 三工具（本地 stdio / 远程 streamable-http，带 Bearer 鉴权），配套项目作为 client **已端到端接通**：每轮透传会话身份、喂入 `(v,a)` 刺激与可选多模态先验，即可推进会话并取回情绪化输出。
+- 因此本仓库当前以**文本进、情绪化文本 + 通道值出**跑通内核回路；`main.py` / CLI 是**单跑内核的验证路径**——更丰富的多模态输入与操控经**已接通的 MCP 接点**驱动，且不动内核契约。
 - 内核所有对外能力都**协议化、可注入**（评价桥 / 语言 / 通道解码器 / 记忆后端按协议替换），正是为了让 MCP 侧的感知与操控**接进来而不动内核契约**。
+
+![MCP 接点边界：内核内建 MCP server（open/step/close 三工具）← MCP 协议 → 配套项目的感知输入 client + 执行操控 client](docs/v2/mcp-boundary.png)
 
 ---
 
@@ -45,6 +47,8 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 
 <img src="docs/v2/workspace-ignition.png" alt="工作空间点燃：并行流竞争 → 过阈广播 → 精度加权融合出 e*" width="680">
 
+> **可选的第三维「应对潜能」（coping potential）**：效价-唤醒二维分不开「愤怒」与「恐惧」——两者都是负效价、高唤醒。引擎另设一条**独立标量流** coping_potential，由输入的**情境控制感**（control appraisal，源自 Scherer / Lazarus 评价理论）驱动，在这一象限里把「有掌控、对抗」的**愤怒**与「失控、回避」的**恐惧**分开，并可下传到表情等表达通道兑现差异。它**与核心 (v,a) 表征正交、默认关闭**（`ZERO_COPING_POTENTIAL_ENABLED`），不开启即行为不变。
+
 ### 3. 三时间尺度：情绪会退、态度会沉淀
 
 人的情绪不是一锤子，而是**多个时间尺度叠加**：
@@ -70,7 +74,7 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 
 ### 5. 表达双通路：自发与随意 × 多通道
 
-最终表现分**自发**（真情流露）与**随意**（社交掩饰）两条通路，落到多个表达通道——面部动作单元（FACS AU）、文本标签、生理信号、语音韵律。
+最终表现分**自发**（真情流露）与**随意**（社交掩饰）两条通路，落到多个表达通道——面部动作单元（FACS AU）、文本标签、生理信号、语音韵律。表情通道的 AU 集可从 5 个**扩到 13 个**（含区分愤怒 / 恐惧的判别性 AU，配合上文 coping_potential），且已从**真人脸**训出真权重（emonet 面部数据集，CC-BY）；生理通道有一份对齐真实量纲（心率 / 皮电 μS / 体温 °C）的占位口径，可无缝换成 WESAD 训练的网络。
 
 ### 6. 记忆 / 持久：短时注意力 ⊗ 长时记忆
 
@@ -80,7 +84,7 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 - **短时注意力（工作记忆窗）** — 喂给 LLM 的上下文不是简单截最近 N 轮，而是**首因 + 近因的 U 形窗**：既记得"第一次见面说的话"、也记得最近几轮（借鉴系列位置效应，避免单调截断丢掉开场）。
 - **情景记忆 + 三维召回** — 把对话经历按**情绪显著性**择要写成情景 episode（平淡的不记，借鉴海马"情绪/新颖性门控"）；召回时按 **新近性 × 相关性 × 重要性** 三维加权排序（幂律时序衰减 · 语义相似 · 写入显著度），高分的旧记忆**升入注意力预算、与近期对话同台竞争**（对应皮层记忆重激活），而非旁路堆砌——于是它**记得你聊过什么**、且只在相关时想起来。
 - **约定记得住、记不清就直说** — 含时间 / 地点 / 承诺的内容，即使当时情绪平淡，也经**语义重要性通道**单独入库（不被情绪显著性门挡掉），日后能答"我们约的几点"；而真记不清时会**坦诚说"不记得"**，不编造、也不拿脾气搪塞（事实优先于情绪）。
-- **遗忘是特性** — 长期事实带**时序失效**（新事实使旧失效）、情景库有**容量上限**，靠自然沉降而非物理删除来遗忘；确定性图谱 + 语义召回侧信道并存，语义侧信道失败绝不拖垮主对话。
+- **遗忘是特性** — 长期事实带**时序失效**（新事实使旧失效）、情景库有**容量上限**，靠自然沉降而非物理删除来遗忘；确定性图谱 + 语义召回侧信道并存，语义侧信道失败绝不拖垮主对话。另有一套 **可选的巩固与遗忘机制**（`ZERO_CONSOLIDATION_ENABLED`，默认关）：会话结束时离线触发**睡眠巩固**（反复被强化的显著记忆由短期 SESSION 迁入长期 USER，仿海马→新皮层）+ **Ebbinghaus 分层幂律遗忘曲线**（短期快衰、长期慢衰）+ **ACT-R 频率激活**召回排序，全程确定性、绝不每条消息触发。
 
 > 记忆写什么/何时写/怎么召回/怎么排序，均以认知科学文献为依据定调，且**全程确定性、不让 LLM 替数字人"编造"或"挑选"记忆**。一键恢复出厂：`python -m tools.reset_db --yes`。
 
@@ -124,14 +128,14 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 
 ## 预留给未来的通道
 
-现阶段以**文本输入、情绪化文本输出**跑通整条回路，同时把若干扩展点的**接口先留好**，未来逐步接入而不动内核契约。其中**感知输入**与**执行操控**由**配套项目以 MCP 提供**（并行推进、后续对齐），本内核经协议接点消费：
+现阶段以**文本输入、情绪化文本输出**跑通整条回路，同时把若干扩展点的**接口先留好**，未来逐步接入而不动内核契约。其中**感知输入**与**执行操控**由**配套项目**承担——本内核**已内建 MCP server、配套项目作为 client 端到端接通**（见上文「定位与边界」），接点已就位、后续只是逐步接更多多模态源：
 
 | 方向 | 现在 | 预留的未来通道 |
 | --- | --- | --- |
-| **表达解码器** | 各通道用确定性占位函数；表情通道已从真人脸训出真权重 | 每个通道可**换成可训练网络**（韵律 RAVDESS / 生理 WESAD / 表情 AU 网络 / 文本→VAD EmoBank），经鸭子类型协议注入，编排层不依赖 torch |
-| **输入感知**（配套 MCP） | 文本 → `(v, a)` | 视觉图像 / 心电（ECG）/ 语气 / 面部表情 → 更丰富的多通道感知，经 MCP 接进评价桥 |
-| **输出形态 / 操控**（配套 MCP） | 情绪化文本 + 通道值 | Live2D 形象 / 情感 TTS / 对外动作等多模态外化与操控，经 MCP 由本内核的情绪状态驱动 |
-| **记忆与经历** | 对话+态度落盘、情景择要落库 + 新近×相关×重要三维召回 + 首因/近因注意力窗 | 完整睡眠巩固/遗忘曲线、稳定人格/自我模型、跨会话人物画像 |
+| **表达解码器** | 各通道确定性占位；**表情通道已从真人脸训出 13-AU 真权重**（emonet CC-BY），生理通道占位已对齐真实量纲（心率 / 皮电 μS / 体温 °C） | 每个通道可**换成可训练网络**（韵律 RAVDESS / 生理 WESAD / 表情 AU 网络 / 文本→VAD EmoBank），经鸭子类型协议注入，编排层不依赖 torch |
+| **输入感知**（经 MCP·**已接通**） | 文本 → `(v, a)`；MCP 接点已接通，可注入**外部多模态先验流** `external_priors`（各模态一条独立低精度 (v,a)）+ coping 第三维 | 视觉图像 / 心电（ECG）/ 语气 / 面部表情 → 更丰富的多通道感知源逐步接进评价桥与先验流 |
+| **输出形态 / 操控**（经 MCP·**已接通**） | 情绪化文本 + 通道值（经 `step` 返回的 expression 子 dict） | Live2D 形象 / 情感 TTS / 对外动作等多模态外化与操控，由本内核的情绪状态驱动 |
+| **记忆与经历** | 对话+态度落盘、情景择要落库 + 新近×相关×重要三维召回 + 首因/近因注意力窗；**可选（默认关）：睡眠巩固 + 分层幂律遗忘曲线 + ACT-R 频率召回** | 稳定人格 / 自我模型、跨会话人物画像 |
 | **运行后端** | 默认本地（内存 / SQLite） | env 一键切容器化 Postgres / Neo4j，接入真实图谱与运行态持久 |
 | **社会认知与生理节律** | 情绪只建模自身、秒→分→天三时间尺度 | **已有实验性 v1（默认关）**：感知对方情绪并共情（ToM——对方难过则关怀 / 开心则替代喜悦）、应激后分钟-小时皮质醇余震（HPA 慢回路）、多层预测编码融合 |
 
@@ -164,15 +168,17 @@ Zero/
 │   │   ├── persona.py       #   指定人格：人设卡(L1)+气质底色(L2)+预置关系(L3)，默认中性、行为不变
 │   │   ├── emotion_lexicon.py    #   细粒度情绪词 / 动机系统 / VAD 词典桥 / 时间包络
 │   │   ├── language_steering.py  #   VA steering 适配器（开放权重）
-│   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs/text + composite 复合）
+│   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs〔13-AU 扩展集〕/text/direction_head〔coping 方向头〕 + composite 复合）
 │   │   └── datasets/        #   DataLoader：synthetic / ravdess / wesad / emobank(+st 句向量版) / facs
 │   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流、后端失败隔离 + Fact.sim）
+│   │   └── consolidation.py · utils.py   # 记忆巩固与遗忘（Ebbinghaus 分层幂律 / 睡眠巩固 / ACT-R，离线批处理，确定性无 LLM）
 │   ├── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
 │   │   ├── checkpointer.py  #   memory / sqlite(异步 AsyncSqliteSaver) / postgres(待异步接线)
 │   │   ├── graph_store.py   #   门面 + 工厂
 │   │   ├── conversation_log.py  #   --chat 对话运行态：transcript + 跨重启 attitude 落本地 SQLite
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
-│   └── observability/       # 横切：统一日志 setup_logging + 对话人读日志 setup_conversation_log（每启动落 logs/、级别可配）
+│   ├── observability/       # 横切：统一日志 setup_logging + 对话人读日志 setup_conversation_log（每启动落 logs/、级别可配）
+│   └── mcp_server/          # zero-link：情感引擎会话包成 MCP open/step/close 三工具（边界适配层·三层之外，stdio/streamable-http + Bearer 鉴权）
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练 train_*.py + 运行入口（cli_modes 承接 main.py 三模式 / run_pipeline 端到端）+ 验证 verify_*.py（含 verify_text_input 文本输入）
 ├── tools/                   # 运维/文档工具（reset_db.py 清库 · plot_timescales.py 生成动力学曲线图）
@@ -289,6 +295,52 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 > **文本情感回归**（输入侧，默认走词典 / LLM 评价桥）：置 `ZERO_TEXT_AFFECT_BACKEND=st` 改用训练好的回归头，须同时给 `ZERO_TEXT_AFFECT_MODEL_PATH`（如 `artifacts/text_affect_regressor_st.pt`）。
 
+### 进阶能力：真通道权重 · 情感第三维 · MCP server · 记忆巩固（默认全关，按需开启）
+
+以下四组能力**默认关闭、不设即行为不变**，按需逐项开启即可把内核接得更"实"。
+
+**① 真多模态通道解码器**（把确定性占位换成训练好的网络；须装 `ml` extra + 对应权重）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_FACS_MODEL_PATH` | —（占位） | 表情通道真权重路径；设了即加载真 FacsDecoder。权重形状须与 `ZERO_FACS_EXTENDED` 一致，否则启动即报错 |
+| `ZERO_FACS_EXTENDED` | 关（5-AU） | 表情改用 13-AU 扩展集（含区分愤怒 AU23 / 恐惧 AU01·02·20 的判别性 AU，配合 coping_potential）；须配 13-AU 权重 |
+| `ZERO_FACS_K_AROUSAL` · `_K_COPING` · `_RESIDUAL_ALPHA` | 1.5 · 1.2 · 1.0 | AU 映射的唤醒 / coping 幅度系数与残差混合系数（方向固定、仅幅度可调） |
+| `ZERO_PROSODY_MODEL_PATH` | —（占位·倍率口径） | 韵律通道真权重（RAVDESS）；设了后韵律值由倍率翻归一 [0,1]，供情感 TTS 消费 |
+| `ZERO_PHYSIOLOGY_MODEL_PATH` | —（占位） | 生理通道真权重（WESAD）；出真实量纲 心率[50,120] / 皮电 μS[0,20] / 体温 °C[30,40] |
+| `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER` | 关 | 无真模型时把生理占位切成与真解码器同量纲的 canonical 口径（心率 / 皮电 μS / 体温 °C）；关=旧占位 |
+
+**② 情感第三维 coping_potential**（负效价高唤醒象限区分愤怒 / 恐惧）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_COPING_POTENTIAL_ENABLED` | 关 | 开启独立的情境应对潜能标量流（由 `control_appraisal` 驱动）；核心 (v,a) 表征不受影响 |
+| `ZERO_TEXT_COPING_ENABLED` · `ZERO_TEXT_COPING_PRECISION` | 关 · 0.08 | 从文本推 coping 方向先验（低精度）；须配方向头权重，仅在对抗性语境内对愤怒生效 |
+| `ZERO_TEXT_DOMAIN_ENABLED` | 关 | 对话每轮由确定性词典桥判定语境（对抗 / 中性），据此把 coping 限定在合适语境、防全域误开 |
+| `ZERO_FEAR_DOMAIN_ENABLED` | 关 | 恐惧方向的专属开关；关闭时任何路径都不产恐惧域激活 |
+| `ZERO_DIRECTION_HEAD_MODEL_PATH` | — | coping 方向头权重路径；须与 `ZERO_TEXT_COPING_ENABLED` 同设方生效 |
+
+**③ zero-link MCP server**（把情感引擎会话对外暴露为 `open / step / close` 三工具，供配套项目作 client 接入）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_MCP_TRANSPORT` | `stdio` | 传输：`stdio`（本地子进程）/ `http`（streamable-http，远程） |
+| `ZERO_MCP_HTTP_HOST` · `_PORT` · `_PATH` | `127.0.0.1` · `8000` · `/mcp` | HTTP 传输监听地址 / 端口 / 路径（client endpoint = host:port + path） |
+| `ZERO_MCP_HTTP_TOKEN` | —（本机免鉴权） | streamable-http 的 Bearer 共享密钥；本机(loopback) 未设=免鉴权，**对外(非 loopback) 未设 token 则启动即拒绝**（不开无鉴权裸端口） |
+| `ZERO_MCP_WORKSPACE_ENABLED` | 开 | 会话默认开显著度门控工作空间（否则外部先验流被整段跳过） |
+| `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关；只受这些 env 治理，client 传入的同名字段被忽略（防越权开启） |
+| `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数 |
+
+**④ 记忆巩固与遗忘**（会话结束离线触发；机制见上文「遗忘是特性」）
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_CONSOLIDATION_ENABLED` | 关 | 主门；开启后会话结束触发睡眠巩固 + 分层幂律遗忘（关=整体不动） |
+| `ZERO_CONSOLIDATION_D_SESSION` · `_D_USER` | 0.8 · 0.3 | 分层幂律遗忘指数：短期 SESSION 快衰 / 长期 USER 慢衰 |
+| `ZERO_CONSOLIDATION_SALIENCE_THRESHOLD` · `_COUNT_MIN` | 0.25 · 3 | 短期→长期升迁门：显著度阈 + 最低强化次数（防偶发事件伪装成长期记忆） |
+| `ZERO_CONSOLIDATION_TIMEOUT` | 30.0 | 会话结束巩固的超时秒（超时降级告警、不影响对话） |
+| `ZERO_ACTR_ENABLED` · `ZERO_ACTR_B_SCALE` | 关 · 3.0 | 用 ACT-R 频率激活替换召回排序的新近项（关=用幂律时序衰减） |
+
 ### 指定人格（`--chat`）
 
 给数字人指定一份人格（能力详见上文「指定人格」一节）：`ZERO_PERSONA_FILE` 指向一个**人格 JSON**（默认不设 = 中性无偏人格、即现有行为）。仓库自带一份「诚实陌生人」模板 `personas/persona.example.json`（与真正的 `personas/persona.json` 同处一目录），`cp personas/persona.example.json personas/persona.json` 改改即用（想要多重人格就在 `personas/` 放多份、切换时改 `ZERO_PERSONA_FILE` 指向即可）。字段全可选（L1 人设卡 + L2 气质底色 + L3 预置关系）——**只想要人设卡就只写 `card` 一个字段**，不必写全、也不用往 `.env` 塞长文本：
@@ -387,7 +439,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_ATTITUDE_AROUSAL_WEIGHT` | 0 | 高唤醒 stimulus 放大态度累积率（McGaugh 2004）；`0`=关 |
 | `ZERO_HABITUATION_SENSITIZATION_GAIN`<br>`ZERO_SENSITIZATION_THRESHOLD` | 0·0.5 | 习惯化+敏化双过程：强刺激（\|arousal\|>阈）叠加敏化增益；gain `0`=纯习惯化 |
 | `ZERO_STANDARD_COMPLIANCE` | 关（恒 0） | 确定性词典桥从用户话读社会规范违反/遵从 ∈[-1,1]，通电 OCC 分支 B（pride/shame/reproach 等）；词表初版、语义待细化；`1` 开启 |
-| `ZERO_PANKSEPP_DISTINGUISH_FEAR` | 关 | `(-v,+a)` 象限按 arousal 阈值分 fear/rage；**⚠ 缺乏神经生理依据**（纯 arousal 阈值不足以区分 RAGE/FEAR），**建议保持关闭** |
+| `ZERO_PANKSEPP_DISTINGUISH_FEAR` | 关 | `(-v,+a)` 象限按 arousal 阈值分 fear/rage；**⚠ 纯 arousal 阈值不足以区分 RAGE/FEAR、缺乏神经生理依据，建议保持关闭**——区分愤怒 / 恐惧的正式方案是上文「进阶能力②」的第三维 `coping_potential`（按情境控制感分野），此旧旋钮已被取代 |
 | `ZERO_MOOD_PRECISION` | 内置常量 | mood 流精度加权（介于主评价流与 `SURVIVAL_PRECISION=0.4` 之间）；调小=降低心境流投票权 |
 | `ZERO_TEXT_AFFECT_PRECISION` | 内置常量 | 文本语义流精度（固定低值，Friston 2009 初始固定精度）；调小=进一步压制文本流权重 |
 

@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph companion["🛰️ 配套项目（并行推进 · MCP client 侧）"]
+    perceive["📥 感知输入 client<br/>视觉 / 语音 / 生理 / 面部<br/>→ (v,a) + 多模态 external_priors + coping"]:::client
+    actuate["📤 执行操控 client<br/>Live2D 形象 / 情感 TTS / 对外动作<br/>← 情绪状态 + 通道值驱动"]:::client
+  end
+
+  mcp{{"🔌 MCP 协议 · zero-link<br/>zero.open_session / zero.step / zero.close_session<br/>stdio(本地) · streamable-http(远程·Bearer 鉴权)"}}:::proto
+
+  subgraph core["🧠 Zero 情感引擎内核（内建 MCP server）"]
+    session["ConversationSession<br/>建图/checkpointer 一次 · 逐轮 step · 跨重启 resume"]:::engine
+    engine["情感引擎回路<br/>评价桥 → 贝叶斯主动推断 → 三时间尺度 → 双路语言/表达<br/>确定性热路径 · 对外能力协议化可注入"]:::engine
+  end
+
+  perceive -->|"open / step：刺激(v,a,coping?) + external_priors"| mcp
+  mcp -->|"驱动会话推进"| session
+  session --> engine
+  engine -->|"expression 子 dict：情绪状态 + 通道值"| session
+  session -->|"step 返回"| mcp
+  mcp -->|"情绪化输出外化"| actuate
+  mcp -.->|"close 关会话 / 同 id resume 续会话"| session
+
+  note["⚙️ 边界适配层（三层之外）：不反向依赖内核内部 · 不进 affect 热路径<br/>议会解锁门(coping/text_coping/fear)只受 ZERO_MCP_* env 治理 · client override 静默忽略"]:::note
+
+  classDef client fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef proto fill:#FEF1CE,stroke:#D4B45B,color:#1F2329
+  classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
+  classDef note fill:#FFF9E6,stroke:#D4B45B,color:#8A6D1B
