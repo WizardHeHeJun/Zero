@@ -137,9 +137,14 @@ class AffectState(BaseModel):
     coping_potential_enabled: bool = False  # 总门控（默认关=零回归）
     # facs_extended 扩展 AU 门控（设计门 PASS·路径 b；默认关=零回归）
     # True → ExpressionAgent 占位路径把 coping_potential_state 透传给 decode_channels，
-    # 启用 11-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
+    # 启用 13-AU 扩展集合（FACS_KEYS_EXT）；False=旧 5-AU 逐字行为（零回归）。
     # 经 chat_driver 读 ZERO_FACS_EXTENDED → SessionConfig → to_state_flags 贯通。
     facs_extended: bool = False  # 默认关=零回归
+    # canonical_physiology：physiology 占位口径门控（议会 2026-07-23·默认关=零回归）
+    # True → 占位出 canonical {hr[50,120]/sc μS[0,20]/temperature_c[33,36]}；
+    # False → legacy {hr[70,110]/sc[0,1]/pupil_mm[3,5]}，逐字零回归。
+    # 经 ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER → chat_driver → SessionConfig → to_state_flags。
+    canonical_physiology: bool = False  # 默认关=零回归
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。
     # 自发头(push·锥体外路·皮层下驱动)全量传 coping；随意头(pull·锥体束意志调控)传
     # coping×voluntary_coping_leak（意志可部分压制 coping-driven AU，Rinn 1984）。

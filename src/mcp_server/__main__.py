@@ -19,7 +19,23 @@ def main() -> None:
     server = build_server()
     transport = os.getenv("ZERO_MCP_TRANSPORT", "stdio").lower()
     if transport in ("http", "streamable-http"):
-        server.run(transport="streamable-http")
+        import uvicorn
+
+        from src.mcp_server.auth import wrap_with_auth
+
+        # host/port 复用 build_server 已校验值（非法已 fail-fast）；wrap_with_auth 按
+        # ZERO_MCP_HTTP_TOKEN + host 决定强制/免鉴权/对外无 token 启动 fail-fast（见 auth.py）。
+        app = wrap_with_auth(
+            server.streamable_http_app(),
+            server.settings.host,
+            os.getenv("ZERO_MCP_HTTP_TOKEN"),
+        )
+        uvicorn.run(
+            app,
+            host=server.settings.host,
+            port=server.settings.port,
+            log_level=os.getenv("ZERO_LOG_LEVEL", "info").lower(),
+        )
     else:
         server.run(transport="stdio")
 

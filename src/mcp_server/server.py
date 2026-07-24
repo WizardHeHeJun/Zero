@@ -46,6 +46,10 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
     {"coping_potential_enabled", "text_coping_enabled", "fear_domain_enabled"}
 )
 
+# step 未知/过期 session_id 的机读错误前缀（zero-link T6）：MCP graceful_step 按此前缀判定 →
+# 用同 id resume 重开重试（区别于其它 ToolError）。消息仍含 "session_id" 子串保既有断言。
+_UNKNOWN_SESSION_MARKER = "unknown-session"
+
 
 def _env_flag(name: str, default: bool) -> bool:
     """读布尔 env；未设 → default。真值集与 chat_driver 一致（1/true/yes/on）。"""
@@ -79,6 +83,12 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # fear 域激活；仅 ZERO_MCP_FEAR_DOMAIN_ENABLED env 治理，client override 被 gated_flags
         # 静默忽略（与 text_coping_enabled 同一治理模式）。
         "fear_domain_enabled": _env_flag("ZERO_MCP_FEAR_DOMAIN_ENABLED", False),
+        # canonical_physiology：physiology 占位口径门控（议会 2026-07-23；默认关=零回归）。
+        # 与 _maybe_expression_decoder 同读 ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER，保证
+        # state.canonical_physiology（经 SessionConfig）与 decoder 构造期固定值同源。
+        # MCP 收窄前提（CS 席约束·design.md）：消费方须确认部署端已开此 env 才能依赖
+        # canonical 键集（{hr,sc(μS),temperature_c}）；默认关=legacy 占位（含 pupil_mm）。
+        "canonical_physiology": _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),
@@ -96,40 +106,71 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
 
 
 def _maybe_expression_decoder() -> ChannelDecoder | None:
-    """env 门控注入真表情解码器：`ZERO_FACS_MODEL_PATH` 未设 → None（占位路径，无需 torch）。
+    """env 门控注入真通道解码器：`ZERO_FACS_MODEL_PATH` / `ZERO_PROSODY_MODEL_PATH` /
+    `ZERO_PHYSIOLOGY_MODEL_PATH` 皆未设 → None（占位路径，无需 torch）。三通道**独立门控**：
+    可单独设任一路（如只设 physiology → facs/prosody 仍占位、physiology 出真 WESAD
+    {hr,sc(μS),temperature_c}），互不影响；只设 FACS 与改前逐字一致（零回归）。
 
-    仅设了权重路径才**延迟 import** models 层的 **公开** `load_facs_decoder` /
-    `CompositeChannelDecoder`（该链引 torch 侧）；默认（未设）路径完全不 import → server
-    保持轻依赖（仅 langgraph+pydantic+mcp）。**只依赖 models 公开类**（非 chat_driver 私有工厂），
-    边界层不耦合编排层内部；构造口径与 `chat_driver._build_expression_decoder`
-    （`chat_driver.py:124-156`）刻意保持一致（真 13-AU 权重可跑进 MCP 输出）。系数方向议会定、
-    幅度工程可动——env 缺省=构造默认（1.5/1.2/1.0）；形状不配对/文件不可读 fail-fast（不静默降级）。
+    仅设了对应权重路径才**延迟 import** models 层公开 `load_facs_decoder` / `load_prosody_decoder`
+    （该链引 torch 侧）；默认（都未设）路径完全不 import → server 保持轻依赖（仅 langgraph+
+    pydantic+mcp）。**只依赖 models 公开类**（非 chat_driver 私有工厂），边界层不耦合编排层内部；
+    构造口径与 `chat_driver._build_expression_decoder` 刻意保持一致（真 13-AU 权重 + 真韵律可跑进
+    MCP 输出）。系数方向议会定、幅度工程可动——env 缺省=构造默认（1.5/1.2/1.0）；文件不可读
+    fail-fast（不静默降级），形状不配对的 RuntimeError 原样穿透（含 size mismatch）。
     """
-    model_path = os.getenv("ZERO_FACS_MODEL_PATH")
-    if not model_path:
+    facs_path = os.getenv("ZERO_FACS_MODEL_PATH")
+    prosody_path = os.getenv("ZERO_PROSODY_MODEL_PATH")
+    physiology_path = os.getenv("ZERO_PHYSIOLOGY_MODEL_PATH")
+    if not facs_path and not prosody_path and not physiology_path:
         return None
     from src.agents.models.composite import CompositeChannelDecoder
-    from src.agents.models.facs_decoder import load_facs_decoder
 
     facs_extended = _env_flag("ZERO_FACS_EXTENDED", False)
-    try:
-        facs_model = load_facs_decoder(model_path, extended=facs_extended)
-    except (
-        OSError
-    ) as e:  # 文件缺失/不可读；形状不配对的 RuntimeError 原样穿透（含 size mismatch）。
-        # ⚠ 调用者（build_server ← __main__.main）须知：此 RuntimeError（及穿透的形状 RuntimeError）
-        # 意味**进程不可启动**的配置 fail-fast，非工具级错误——不应在 build_server 处被 ToolError 吞
-        # （启动期硬失败胜于启动后静默出错，同 chat_driver 的 FACS 权重 fail-fast 口径）。
-        raise RuntimeError(
-            f"ZERO_FACS_MODEL_PATH={model_path!r} 指向的权重文件不可读，请检查配置"
-        ) from e
-    return CompositeChannelDecoder(
-        facs_model=facs_model,
-        facs_extended=facs_extended,
-        k_arousal=float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
-        k_coping=float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
-        residual_alpha=float(os.getenv("ZERO_FACS_RESIDUAL_ALPHA", "1.0")),
-    )
+    # canonical_physiology：physiology 占位口径门控（议会 2026-07-23）。
+    # 与 facs_extended 同双读同一 env 模式（构造期固定·非 per-turn）。
+    # MCP 收窄前提：此 flag 须与 state.canonical_physiology 同源（同一 env）——
+    # MCP 路径下 state 由 SessionConfig.to_state_flags() 贯通，canonical_physiology
+    # 在 _build_session_config 中注入（见下方），与 decoder 构造期固定同源。
+    canonical_physiology = _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False)
+    kwargs: dict[str, Any] = {
+        "facs_extended": facs_extended,
+        "canonical_physiology": canonical_physiology,
+        "k_arousal": float(os.getenv("ZERO_FACS_K_AROUSAL", "1.5")),
+        "k_coping": float(os.getenv("ZERO_FACS_K_COPING", "1.2")),
+        "residual_alpha": float(os.getenv("ZERO_FACS_RESIDUAL_ALPHA", "1.0")),
+    }
+    if facs_path:
+        from src.agents.models.facs_decoder import load_facs_decoder
+
+        try:
+            kwargs["facs_model"] = load_facs_decoder(facs_path, extended=facs_extended)
+        except (
+            OSError
+        ) as e:  # 文件不可读 fail-fast；形状不配对 RuntimeError 原样穿透（size mismatch）。
+            # ⚠ build_server ← __main__.main：此 RuntimeError 意味进程不可启动的配置 fail-fast，
+            # 非工具级错误——不应在 build_server 处被 ToolError 吞（启动硬失败胜于启动后静默出错）。
+            raise RuntimeError(
+                f"ZERO_FACS_MODEL_PATH={facs_path!r} 指向的权重文件不可读，请检查配置"
+            ) from e
+    if prosody_path:
+        from src.agents.models.prosody_decoder import load_prosody_decoder
+
+        try:
+            kwargs["prosody_model"] = load_prosody_decoder(prosody_path)
+        except OSError as e:  # 同 FACS：文件不可读 fail-fast；形状不配对 RuntimeError 原样穿透。
+            raise RuntimeError(
+                f"ZERO_PROSODY_MODEL_PATH={prosody_path!r} 指向的权重文件不可读，请检查配置"
+            ) from e
+    if physiology_path:
+        from src.agents.models.physiology_decoder import load_physiology_decoder
+
+        try:
+            kwargs["physiology_model"] = load_physiology_decoder(physiology_path)
+        except OSError as e:  # 同 FACS：文件不可读 fail-fast；形状不配对 RuntimeError 原样穿透。
+            raise RuntimeError(
+                f"ZERO_PHYSIOLOGY_MODEL_PATH={physiology_path!r} 指向的权重文件不可读，请检查配置"
+            ) from e
+    return CompositeChannelDecoder(**kwargs)
 
 
 def build_server(registry: SessionRegistry | None = None) -> FastMCP:
@@ -159,38 +200,59 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
 
     @mcp.tool(
         name="zero.open_session",
-        description="建一个 Zero 情感引擎会话（建图/checkpointer 一次），返回 {session_id}。",
+        description=(
+            "建/重开一个 Zero 情感引擎会话（建图/checkpointer 一次），返回 {session_id}。"
+            "传 session_id 则按旧 id 重开（跨 server 重启续会话·须持久后端）；不传则新铸。"
+        ),
         structured_output=False,
     )
     async def open_session(
         persona: str | None = None,
         config: dict[str, Any] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, str]:
-        """建会话。`config` 覆写 SessionConfig 门控；`persona` **本轮为预留入参**：接受但暂不生效
-        （Zero persona 属 ChatDriver 层、经 load_persona 从 env/文件装配，非 by-name；会话边界
-        暂不接人格，避免静默误导 client——见 HANDOFF/回执"非目标"）。仅记入日志备后续接线。
+        """建会话；传 `session_id` 走 resume（zero-link T6）。
+
+        `config` 经唯一治理入口 `_build_session_config`（议会 env-only 门控 resume 亦保持）。
+        `session_id` 不传 → 新铸 uuid4；传了 → 用作 thread_id 重开：已在 registry 活跃则幂等返回
+        （不重建/不重开连接/不覆盖运行态），否则新建绑该 id。运行态是否真续取决于持久后端
+        （`ZERO_CHECKPOINT_BACKEND=sqlite` 才跨重启恢复；memory 后端重开=全新会话）。
+        SessionConfig 不进 checkpoint，resume 须再供同一 config。`persona` 预留入参（暂不生效）。
         """
         try:
             cfg = _build_session_config(config)
         except (ValueError, TypeError) as e:
             raise ToolError(f"config 不合法：{e}") from e
-        session_id = uuid.uuid4().hex
-        # thread_id=user_id=session_id：会话态经 checkpointer 按 thread_id 跨轮持久 + 记忆作用域
-        # 天然按 session 隔离（防多会话共享 default-user 记忆串味，同 chat_driver 口径）。
+        if session_id is not None:
+            if not isinstance(session_id, str) or not session_id.strip():
+                raise ToolError(f"session_id 须为非空字符串，实际为 {session_id!r}")
+            if await registry.get(session_id) is not None:
+                # 同进程内仍活跃：幂等返回（不重建·不重开 aiosqlite 连接·不覆盖在飞运行态）。
+                # 会话门控构造时固定、贯穿整会话，故此处不重应用 cfg：client 对活跃会话传的新
+                # config 静默不生效（SessionConfig 不可变；跨重启 resume 重建时才用新 cfg）。
+                logger.info("zero.open_session resume(active) sid=%s", session_id)
+                return {"session_id": session_id}
+            # resume：新建绑同 thread_id，持久后端 ainvoke 时自动从 checkpoint 恢复。
+            sid = session_id
+        else:
+            sid = uuid.uuid4().hex
+        # thread_id=user_id=sid：会话态经 checkpointer 按 thread_id 跨轮持久 + 记忆作用域天然按
+        # session 隔离（防多会话共享 default-user 记忆串味，同 chat_driver 口径）。
         session = ConversationSession(
-            thread_id=session_id,
-            user_id=session_id,
+            thread_id=sid,
+            user_id=sid,
             config=cfg,
             expression_decoder=decoder,
         )
-        await registry.open(session_id, session)
+        await registry.open(sid, session)
         logger.info(
-            "zero.open_session sid=%s persona=%s active=%d",
-            session_id,
+            "zero.open_session sid=%s persona=%s resume=%s active=%d",
+            sid,
             persona,
+            session_id is not None,
             await registry.count(),
         )
-        return {"session_id": session_id}
+        return {"session_id": sid}
 
     @mcp.tool(
         name="zero.step",
@@ -207,7 +269,10 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     ) -> dict[str, Any]:
         session, lock = await registry.acquire(session_id)
         if session is None or lock is None:
-            raise ToolError(f"未知 session_id={session_id!r}；请先调 zero.open_session")
+            raise ToolError(
+                f"{_UNKNOWN_SESSION_MARKER}: 未知 session_id={session_id!r}；"
+                "请先调 zero.open_session（可用同 id resume 续会话）"
+            )
         try:
             stimulus = stimulus_from_payload(stim)
             priors = external_priors_from_payload(external_priors)
@@ -230,13 +295,15 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         structured_output=False,
     )
     async def close_session(session_id: str) -> dict[str, bool]:
-        existed = await registry.close(session_id)
-        logger.info(
-            "zero.close_session sid=%s existed=%s active=%d",
-            session_id,
-            existed,
-            await registry.count(),
-        )
+        session, lock = await registry.acquire(session_id)
+        if session is None or lock is None:
+            return {"ok": True}  # 幂等：未知/已关 id 不报错（client 忽略返回值）
+        # lock=每会话 step 锁；registry.close() 持 registry 表级锁（两把不同 asyncio.Lock·无死锁）。
+        # 持锁再关串行化在飞 step，避免 aclose 关连接与 ainvoke 竞态（http 并发）。
+        async with lock:
+            await registry.close(session_id)  # 表内移除 → 后续 step 同 id 回 unknown-session
+            await session.aclose()  # 关运行态 aiosqlite 连接（sqlite）/InMemory no-op·幂等
+        logger.info("zero.close_session sid=%s active=%d", session_id, await registry.count())
         return {"ok": True}
 
     return mcp

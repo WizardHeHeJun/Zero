@@ -31,6 +31,7 @@ llm = [
 # 边界适配层（三层之外），默认**不入 core**（守零依赖基线）；起 src/mcp_server 时才需。
 mcp = [
     "mcp>=1.28",
+    "uvicorn>=0.30",  # streamable-http 传输运行时依赖（__main__ http 分支 uvicorn.run）
 ]
 # 语义记忆侧信道（深度集成）：Graphiti（LLM 抽实体/关系入图 + 语义/向量检索；自带 neo4j/openai）。
 # 与确定性 GraphStore 并存、默认关；置 ZERO_SEMANTIC_BACKEND=graphiti 时才需。

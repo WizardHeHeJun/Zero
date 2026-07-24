@@ -37,6 +37,7 @@ class ProsodyDecoder(nn.Module):
 def load_prosody_decoder(path: str, hidden: int = 16, num_layers: int = 1) -> ProsodyDecoder:
     """从权重文件加载已训练的韵律解码器。"""
     model = ProsodyDecoder(hidden=hidden, num_layers=num_layers)
-    model.load_state_dict(torch.load(path, map_location="cpu"))
+    # weights_only=True：只反序列化张量、不执行任意 pickle（对齐 facs_decoder 安全约定）。
+    model.load_state_dict(torch.load(path, map_location="cpu", weights_only=True))
     model.eval()
     return model

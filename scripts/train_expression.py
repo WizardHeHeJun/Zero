@@ -5,6 +5,24 @@
 
 注意：训更大网络（--hidden/--num-layers 非默认值）需从头重训；
 原 Release 权重仅兼容默认形状（hidden=32, num_layers=2）。
+
+──────────────────────────────────────────────────────────────────
+canonical_physiology 重训说明（议会 2026-07-23）：
+  ExpressionDecoder 的蒸馏目标由 affect_to_vector() 生成（11 维向量）。
+  idx7 有双语义：
+    门关（默认·legacy）：pupil_n = clamp(arousal, 0, 1)
+    门开（canonical）  ：temperature_n = (36−3·clamp(|arousal|)−30)/10
+
+  门关（默认）= legacy 目标 → 旧权重（expression_decoder.pt）兼容，零回归；
+  门开（canonical）= canonical 目标 → 用 --canonical-physiology 旗标重训（默认输出
+  artifacts/expression_decoder_canonical.pt）：
+    python -m scripts.train_expression --epochs 300 --canonical-physiology
+
+  该旗标经 train() 透传 synthetic_pairs → affect_to_vector(canonical_physiology=True)，
+  蒸馏目标即 canonical 布局（idx7=temperature_n）。旧权重（expression_decoder.pt）不得在
+  canonical 路径复用：idx7 会被误解为 temperature，导致生理通道量纲错误。canonical demo
+  权重按需产出（生产 MCP/chat 走 decode_channels 不依赖蒸馏 MLP）。
+──────────────────────────────────────────────────────────────────
 """
 
 from __future__ import annotations
@@ -31,9 +49,14 @@ def train(
     hidden: int = 32,
     num_layers: int = 2,
     out: str = "artifacts/expression_decoder.pt",
+    canonical_physiology: bool = False,
 ) -> float:
-    """全批量训练解码器并保存权重，返回最终 MSE 损失。"""
-    x, y = synthetic_pairs(n, seed=seed)
+    """全批量训练解码器并保存权重，返回最终 MSE 损失。
+
+    `canonical_physiology`（默认 False=legacy 目标·零回归）透传 `synthetic_pairs` →
+    `affect_to_vector`：True 时蒸馏 canonical 布局（idx7=temperature_n），须配 canonical 输出路径。
+    """
+    x, y = synthetic_pairs(n, seed=seed, canonical_physiology=canonical_physiology)
     model = ExpressionDecoder(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
@@ -63,10 +86,26 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=4096)
     parser.add_argument("--hidden", type=int, default=32)
     parser.add_argument("--num-layers", type=int, default=2)
-    parser.add_argument("--out", default="artifacts/expression_decoder.pt")
+    parser.add_argument("--out", default=None)
+    parser.add_argument(
+        "--canonical-physiology",
+        action="store_true",
+        help="蒸馏 canonical physiology 布局（idx7=temperature_n）；默认输出 _canonical.pt",
+    )
     args = parser.parse_args()
+    # 未显式给 --out 时按目标口径选默认路径，避免 canonical 权重覆写 legacy 权重（口径不兼容）。
+    out = args.out or (
+        "artifacts/expression_decoder_canonical.pt"
+        if args.canonical_physiology
+        else "artifacts/expression_decoder.pt"
+    )
     final = train(
-        epochs=args.epochs, n=args.n, hidden=args.hidden, num_layers=args.num_layers, out=args.out
+        epochs=args.epochs,
+        n=args.n,
+        hidden=args.hidden,
+        num_layers=args.num_layers,
+        out=out,
+        canonical_physiology=args.canonical_physiology,
     )
     print(f"done, final loss={final:.6f}")
 

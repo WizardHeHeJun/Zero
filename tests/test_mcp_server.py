@@ -114,6 +114,7 @@ async def test_step_unknown_session_is_error() -> None:
         )
         assert r.isError is True
         assert "session_id" in r.content[0].text
+        assert "unknown-session" in r.content[0].text  # 机读标记（T6·MCP graceful_step 据此降级）
 
 
 async def test_step_bad_external_prior_is_error() -> None:
@@ -222,6 +223,115 @@ async def test_real_facs_decoder_13au_path(monkeypatch: pytest.MonkeyPatch) -> N
         assert set(spontaneous["facs_au"]) == set(FACS_KEYS_EXT)  # 键名精确对齐（非仅数量）
         assert all(isinstance(v, float) for v in spontaneous["facs_au"].values())  # JSON-safe
         assert all(0.0 <= v <= 1.0 for v in spontaneous["facs_au"].values())  # 值域守界 [0,1]
+
+
+def test_maybe_expression_decoder_wires_prosody(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MCP 工厂 _maybe_expression_decoder：设 ZERO_PROSODY_MODEL_PATH → 注入真 ProsodyDecoder，
+    prosody_scale 翻 normalized（与 chat 工厂同口径·独立于 FACS 门控）。torch 缺则跳过。
+    """
+    torch = pytest.importorskip("torch")
+    from src.agents.models.composite import CompositeChannelDecoder
+    from src.agents.models.prosody_decoder import ProsodyDecoder
+    from src.mcp_server.server import _maybe_expression_decoder
+
+    monkeypatch.delenv("ZERO_FACS_MODEL_PATH", raising=False)
+    wpath = tmp_path / "prosody_decoder.pt"
+    torch.save(ProsodyDecoder().state_dict(), wpath)
+    monkeypatch.setenv("ZERO_PROSODY_MODEL_PATH", str(wpath))
+    decoder = _maybe_expression_decoder()
+    assert isinstance(decoder, CompositeChannelDecoder)
+    assert isinstance(decoder.prosody_model, ProsodyDecoder)
+    assert decoder.facs_model is None  # 独立门控：未设 FACS → facs 仍占位
+    channels = decoder.predict_channels(0.5, 0.5)
+    assert channels["prosody_scale"] == "normalized"
+    assert all(0.0 <= v <= 1.0 for v in channels["prosody"].values())
+
+
+async def test_step_returns_normalized_prosody_scale(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """e2e：设 ZERO_PROSODY_MODEL_PATH → zero.step 返回 expression.prosody_scale == normalized、
+    prosody 三值 ∈[0,1]（tag 经工具边界原样透传·T4）。torch 缺则跳过。
+    """
+    torch = pytest.importorskip("torch")
+    from src.agents.models.prosody_decoder import ProsodyDecoder
+
+    monkeypatch.delenv("ZERO_FACS_MODEL_PATH", raising=False)
+    wpath = tmp_path / "prosody_decoder.pt"
+    torch.save(ProsodyDecoder().state_dict(), wpath)
+    monkeypatch.setenv("ZERO_PROSODY_MODEL_PATH", str(wpath))
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
+            "session_id"
+        ]
+        r = await client.call_tool(
+            "zero.step",
+            {"session_id": sid, "stim": {"valence": 0.4, "arousal": 0.5}},
+        )
+        assert r.isError is False
+        expr = json.loads(r.content[0].text)
+        assert expr["prosody_scale"] == "normalized"  # 顶层 hoist 经工具边界原样透传
+        assert all(0.0 <= v <= 1.0 for v in expr["spontaneous"]["prosody"].values())
+
+
+def test_maybe_expression_decoder_wires_physiology(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """MCP 工厂 _maybe_expression_decoder：设 ZERO_PHYSIOLOGY_MODEL_PATH → 注入真
+    PhysiologyDecoder，physiology 出 WESAD canonical {hr,sc(μS),temperature_c}（与 chat 工厂
+    同口径·独立于 FACS/prosody 门控）。torch 缺则跳过。
+    """
+    torch = pytest.importorskip("torch")
+    from src.agents.models.composite import CompositeChannelDecoder
+    from src.agents.models.physiology_decoder import PhysiologyDecoder
+    from src.mcp_server.server import _maybe_expression_decoder
+
+    monkeypatch.delenv("ZERO_FACS_MODEL_PATH", raising=False)
+    monkeypatch.delenv("ZERO_PROSODY_MODEL_PATH", raising=False)
+    wpath = tmp_path / "physiology_decoder.pt"
+    torch.save(PhysiologyDecoder().state_dict(), wpath)
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_MODEL_PATH", str(wpath))
+    decoder = _maybe_expression_decoder()
+    assert isinstance(decoder, CompositeChannelDecoder)
+    assert isinstance(decoder.physiology_model, PhysiologyDecoder)
+    assert decoder.facs_model is None  # 独立门控：未设 FACS → facs 仍占位
+    physio = decoder.predict_channels(0.5, 0.5)["physiology"]
+    assert set(physio) == {"heart_rate_bpm", "skin_conductance", "temperature_c"}
+    assert 50.0 <= physio["heart_rate_bpm"] <= 120.0
+    assert 0.0 <= physio["skin_conductance"] <= 20.0  # μS
+    assert 30.0 <= physio["temperature_c"] <= 40.0  # °C
+
+
+async def test_step_returns_wesad_physiology(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """e2e：设 ZERO_PHYSIOLOGY_MODEL_PATH → zero.step 返回 physiology 三值为 WESAD 真信号量纲
+    （含 temperature_c、无 pupil_mm；经工具边界原样透传）。torch 缺则跳过。
+    """
+    torch = pytest.importorskip("torch")
+    from src.agents.models.physiology_decoder import PhysiologyDecoder
+
+    monkeypatch.delenv("ZERO_FACS_MODEL_PATH", raising=False)
+    monkeypatch.delenv("ZERO_PROSODY_MODEL_PATH", raising=False)
+    wpath = tmp_path / "physiology_decoder.pt"
+    torch.save(PhysiologyDecoder().state_dict(), wpath)
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_MODEL_PATH", str(wpath))
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
+            "session_id"
+        ]
+        r = await client.call_tool(
+            "zero.step",
+            {"session_id": sid, "stim": {"valence": 0.4, "arousal": 0.5}},
+        )
+        assert r.isError is False
+        physio = json.loads(r.content[0].text)["spontaneous"]["physiology"]
+        assert set(physio) == {"heart_rate_bpm", "skin_conductance", "temperature_c"}
+        assert 30.0 <= physio["temperature_c"] <= 40.0  # °C（真 WESAD 信号·非 pupil_mm 占位）
 
 
 # ── HTTP（streamable-http）传输真端口往返（需 uvicorn；缺则跳过）──────────────────────
@@ -353,3 +463,135 @@ def test_governance_non_gated_override_passes(monkeypatch: pytest.MonkeyPatch) -
     # 门控字段维持 False（未被 override 带进来）
     assert cfg.text_coping_enabled is False
     assert cfg.coping_potential_enabled is False
+
+
+# ── T6 会话跨重启持久：resume-by-id / 幂等 / 机读标记 / close aclose ──────────────────
+
+
+async def test_open_session_honors_client_session_id() -> None:
+    """传 session_id → open_session 用作会话 id（不新铸 uuid），step 立即可用（T6 resume 入口）。"""
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.open_session", {"session_id": "cli-sid-1"})
+        assert json.loads(r.content[0].text)["session_id"] == "cli-sid-1"
+        rr = await client.call_tool(
+            "zero.step", {"session_id": "cli-sid-1", "stim": {"valence": 0.3, "arousal": 0.4}}
+        )
+        assert rr.isError is False
+
+
+async def test_open_session_empty_session_id_is_error() -> None:
+    """传空/空白 session_id → 结构化 ToolError（非空字符串校验）。"""
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.open_session", {"session_id": "  "})
+        assert r.isError is True
+        assert "session_id" in r.content[0].text
+
+
+async def test_resume_is_idempotent_for_active_session() -> None:
+    """同进程内 open(session_id=X) 两次 → 返回同 id、活跃会话数不翻倍（幂等 re-attach）。"""
+    from src.mcp_server.registry import SessionRegistry
+
+    reg = SessionRegistry()
+    async with connect(build_server(reg)) as client:
+        await client.initialize()
+        a = json.loads(
+            (await client.call_tool("zero.open_session", {"session_id": "dup"})).content[0].text
+        )["session_id"]
+        b = json.loads(
+            (await client.call_tool("zero.open_session", {"session_id": "dup"})).content[0].text
+        )["session_id"]
+        assert a == b == "dup"
+        assert await reg.count() == 1  # 未重复登记（活跃期内断言·不依赖 transport 断开行为）
+
+
+async def test_resume_preserves_governance_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """resume 也经 _build_session_config：client 传 gated 门控 override 被静默忽略。"""
+    from src.mcp_server.registry import SessionRegistry
+
+    monkeypatch.delenv("ZERO_MCP_COPING_ENABLED", raising=False)
+    reg = SessionRegistry()
+    async with connect(build_server(reg)) as client:
+        await client.initialize()
+        await client.call_tool(
+            "zero.open_session",
+            {"session_id": "gov", "config": {"coping_potential_enabled": True}},
+        )
+    session = await reg.get("gov")
+    assert session is not None
+    assert session.config.coping_potential_enabled is False  # gated：override 被忽略
+
+
+async def test_close_session_aclose_no_error_both_backends(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """close_session 幂等关会话（memory/sqlite 后端）；close 后同 id step 回 unknown-session。"""
+    for backend in ("memory", "sqlite"):
+        if backend == "sqlite":
+            pytest.importorskip("aiosqlite")
+            monkeypatch.setenv("ZERO_CHECKPOINT_DB", str(tmp_path / f"{backend}.sqlite3"))
+        monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", backend)
+        async with connect(build_server()) as client:
+            await client.initialize()
+            sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
+                "session_id"
+            ]
+            c = await client.call_tool("zero.close_session", {"session_id": sid})
+            assert json.loads(c.content[0].text) == {"ok": True}
+            r = await client.call_tool(
+                "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
+            )
+            assert r.isError is True and "unknown-session" in r.content[0].text
+
+
+async def test_resume_persists_run_state_across_server_instances(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """sqlite 后端 + 同 session_id 跨 server 实例 resume（模拟重启·T6 最关键）。
+
+    server1 step 落盘 → 新 checkpointer 同 DB 读回 → server2 resume 续 step 不报错。
+    """
+    pytest.importorskip("langgraph.checkpoint.sqlite.aio")
+    pytest.importorskip("aiosqlite")
+    from src.memory.client import MemoryClient
+    from src.orchestration.graph import build_graph
+    from src.orchestration.runner import ALLOWED_CHECKPOINT_TYPES
+    from src.storage.checkpointer import build_checkpointer
+
+    monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", "sqlite")
+    monkeypatch.setenv("ZERO_CHECKPOINT_DB", str(tmp_path / "resume.sqlite3"))
+    sid = "resume-persist"
+    stim = {"valence": -0.5, "arousal": 0.6}
+
+    # server1：绑 sid 建会话、step 数轮 → 运行态按 thread_id=sid 落 sqlite
+    async with connect(build_server()) as c1:
+        await c1.initialize()
+        await c1.call_tool("zero.open_session", {"session_id": sid})
+        for _ in range(3):
+            rr = await c1.call_tool("zero.step", {"session_id": sid, "stim": stim})
+            assert rr.isError is False
+        await c1.call_tool("zero.close_session", {"session_id": sid})
+
+    # 落盘校验：新 checkpointer 同 DB 能按 thread_id 读回 sid 的 checkpoint（运行态真持久）
+    saver = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
+    state = await build_graph(saver, MemoryClient()).aget_state(
+        {"configurable": {"thread_id": sid}}
+    )
+    conn = getattr(saver, "conn", None)
+    if conn is not None:
+        await conn.close()  # 关检查连接（避免泄漏 warning）
+    assert state is not None and state.values, "zero.step 应把运行态按 client session_id 落 sqlite"
+    ve = state.values.get("value_estimate")
+    assert isinstance(ve, float) and ve != 0.0, (
+        f"3 步 loss 应让 value_estimate 累积漂移（证明续的是落盘运行态·非全新会话），实际 {ve}"
+    )
+
+    # server2（新 registry·同 DB·模拟重启）：resume 同 sid → 续 step 不报错
+    async with connect(build_server()) as c2:
+        await c2.initialize()
+        r2 = await c2.call_tool("zero.open_session", {"session_id": sid})
+        assert json.loads(r2.content[0].text)["session_id"] == sid
+        rr2 = await c2.call_tool("zero.step", {"session_id": sid, "stim": stim})
+        assert rr2.isError is False
+        await c2.call_tool("zero.close_session", {"session_id": sid})  # 关连接（aclose·免泄漏）

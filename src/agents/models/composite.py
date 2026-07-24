@@ -62,6 +62,7 @@ class CompositeChannelDecoder:
         facs_model: FacsModel | None = None,
         coping_potential: float = 0.0,
         facs_extended: bool = False,
+        canonical_physiology: bool = False,
         k_arousal: float = 1.5,
         k_coping: float = 1.2,
         residual_alpha: float = 1.0,
@@ -71,6 +72,12 @@ class CompositeChannelDecoder:
         self.facs_model = facs_model
         self.coping_potential = coping_potential
         self.facs_extended = facs_extended
+        # canonical_physiology：physiology 占位口径门控（ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER）。
+        # False（默认）→ legacy {hr[70,110]/sc[0,1]/pupil_mm[3,5]}，零回归；
+        # True → canonical 议会 2026-07-23 公式 {hr[50,120]/sc μS[0,20]/temp_c[33,36]}。
+        # physiology_model=None 时（回退占位）生效；注入真模型时 flag 无意义。
+        # 与 state.canonical_physiology 同源（同一 env·构造期固定·非 per-turn）。
+        self.canonical_physiology = canonical_physiology
         self.k_arousal = k_arousal
         self.k_coping = k_coping
         # residual_alpha：C2 residual 叠加系数（议会 C2 设计门 2026-07-14）∈[0,1]。
@@ -109,11 +116,18 @@ class CompositeChannelDecoder:
             (valence, arousal),
             coping_potential=coping_potential,
             facs_extended=facs_extended,
+            canonical_physiology=self.canonical_physiology,
             k_arousal=self.k_arousal,
             k_coping=self.k_coping,
         )  # 解析占位提供全部 4 通道
         if self.prosody_model is not None:
-            channels["prosody"] = self.prosody_model.predict_prosody(valence, arousal)
+            prosody = self.prosody_model.predict_prosody(valence, arousal)
+            # 防御性 [0,1] 校验（zero-link T4·2026-07-22）：normalized 契约要求三值 ∈[0,1]，
+            # 供 MCP mapper 线性映射不外插。sigmoid 的 ProsodyDecoder 本满足；对任意注入的
+            # ProsodyModel 实现越界即 fail-fast（同上 residual_alpha 越界 raise 口径 :81-84）。
+            if any(not 0.0 <= v <= 1.0 for v in prosody.values()):
+                raise ValueError(f"prosody_scale=normalized 要求三值 ∈[0,1]，实为 {prosody}")
+            channels["prosody"] = prosody
             # 专用 ProsodyDecoder 出归一 [0,1]（sigmoid）→ 覆盖 decode_channels 占位的 "ratio"
             # 量纲标记为 "normalized"（zero-link Q1 拍板 2026-07-14·canonical 目标口径）。
             channels["prosody_scale"] = "normalized"
