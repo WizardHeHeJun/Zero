@@ -7,6 +7,7 @@ emotion ClassLabel HF metadata + path struct 图 bytes）驱动，无需真数�
 from __future__ import annotations
 
 import csv
+import itertools
 import json
 from pathlib import Path
 
@@ -69,6 +70,20 @@ def test_emonet_va_map_valid() -> None:
     assert EMONET_VA["Anger"] == EMONET_VA["Fear"]
 
 
+def test_emonet_va_no_unendorsed_collision() -> None:
+    """几何守卫：除议会背书的同点外，任意两类 (v,a) 不得重合。
+
+    重合等于给 FacsDecoder 矛盾监督（同一输入两组 AU 目标，只能学到平均）。
+    2026-07-25 议会复审曾因逐类改坐标、未复核全局几何而新造 3 处零距离碰撞，
+    经二轮几何仲裁修复；本用例把该教训固化为回归守卫。
+    """
+    intentional = {"Anger", "Fear", "Distress"}  # 分野属 coping 维、不在 VA 上（议会背书）
+    for (n1, p1), (n2, p2) in itertools.combinations(EMONET_VA.items(), 2):
+        if n1 in intentional and n2 in intentional:
+            continue
+        assert p1 != p2, f"{n1} 与 {n2} 坐标重合 {p1}——未经议会背书的同点会制造矛盾监督"
+
+
 def test_short_prefix() -> None:
     assert _short_prefix("Amusement") == "Amuse"[:6] or _short_prefix("Amusement") == "Amusem"
     assert _short_prefix("Astonishment/Surprise") == "Astoni"  # 取首词截 6
@@ -95,8 +110,8 @@ def test_build_balanced_subset(tmp_path: Path) -> None:
     by_emo: dict[tuple[str, str], int] = {}
     for r in rows:
         by_emo[(r["valence"], r["arousal"])] = by_emo.get((r["valence"], r["arousal"]), 0) + 1
-    # Amusement (0.8,0.4) 与 Fear (-0.6,0.6) 各 3
-    assert by_emo[("0.8", "0.4")] == 3
+    # Amusement 经 2026-07-25 议会复审下调 arousal 至 0.2；Fear (-0.6,0.6) 不动。
+    assert by_emo[("0.8", "0.2")] == 3
     assert by_emo[("-0.6", "0.6")] == 3
 
 

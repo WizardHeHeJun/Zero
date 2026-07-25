@@ -1,7 +1,8 @@
 """在 FACS 标注 CSV 上训练 FacsDecoder（(v,a)→AU 强度），保存权重。
 
 用法（旧 5-AU）：python -m scripts.train_facs --csv data/facs/labels.csv --epochs 300
-用法（11-AU 扩展）：python -m scripts.train_facs --csv data/facs/labels_ext.csv --ext
+用法（13-AU 扩展）：python -m scripts.train_facs --csv data/facs/labels_ext.csv --ext \
+    --out artifacts/facs_decoder_ext_v2.pt
 
 数据获取/CSV 格式见 src/agents/datasets/facs_csv.py 模块文档。
 
@@ -9,9 +10,11 @@
 原 Release 权重仅兼容默认形状（hidden=16, num_layers=1）。
 
 --ext 模式说明：
-  输出文件名 facs_decoder_ext.pt（隔离命名，不覆盖旧 facs_decoder.pt）。
-  数据阻塞：需 AffectNet/DISFA 含 AU01/02/05/07/20/23 完整标注（外部 EULA，Q3 等待）。
-  真权重尚未可训；此 --ext 模式仅为脚手架占位，数据就绪后解除阻塞即可运行。
+  输出文件默认 facs_decoder_ext.pt；13-AU v2 建议显式传 --out artifacts/facs_decoder_ext_v2.pt，
+  与旧 5-AU facs_decoder.pt 隔离。当前已有 laion/emonet-face-binary（CC-BY-4.0）
+  + OpenFace AU 的可跑训练路径；AffectNet/DISFA 仍可作为后续更高保真逐帧 AU 数据源。
+  FacsDecoder 仍是 predict_facs(v, a)，不吃 coping_potential；愤怒/恐惧 coping 分野由
+  CompositeChannelDecoder residual / 解析占位承担，真权重主要学习通用 AU 真实度。
 """
 
 from __future__ import annotations
@@ -41,9 +44,9 @@ def train(
 ) -> float:
     """加载 FACS CSV、全批量训练 FacsDecoder 并保存权重，返回最终 MSE。
 
-    extended=True：加载 11-AU 扩展 CSV（load_facs_csv_ext），用 FacsDecoder(extended=True)，
-    输出文件名应指向 facs_decoder_ext.pt（隔离命名，CS 席约束 #7）。
-    数据阻塞：extended=True 时需外部 AU 标注（Q3 等待 EULA）。
+    extended=True：加载 13-AU 扩展 CSV（load_facs_csv_ext），用 FacsDecoder(extended=True)。
+    现有 EmoNet/OpenFace 路径已可训练；AffectNet/DISFA 仍是后续更高保真数据源。
+    13-AU v2 建议输出到 facs_decoder_ext_v2.pt，与旧 5-AU / 11-AU 权重隔离。
     """
     if extended:
         x, y = load_facs_csv_ext(csv_path)
@@ -82,7 +85,7 @@ def main() -> None:
         "--ext",
         action="store_true",
         default=False,
-        help="训练 11-AU 扩展模型（数据阻塞，Q3；输出 facs_decoder_ext.pt）",
+        help="训练 13-AU 扩展模型（emonet CC-BY + OpenFace 路径已可训；建议 --out ..._ext_v2.pt）",
     )
     parser.add_argument(
         "--out",

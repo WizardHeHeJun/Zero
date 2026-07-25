@@ -39,48 +39,60 @@ logger = logging.getLogger(__name__)
 # emonet 40 类 → (valence, arousal) ∈[-1,1]：近似 circumplex 坐标·可校准（见模块 docstring）。
 EMONET_VA: dict[str, tuple[float, float]] = {
     "Affection": (0.7, 0.1),
-    "Amusement": (0.8, 0.4),
+    "Amusement": (0.8, 0.2),  # 2026-07-25 议会复审：低到中唤醒正情绪，A 下调
     "Anger": (-0.6, 0.6),
     "Astonishment/Surprise": (0.15, 0.75),
-    "Awe": (0.4, 0.5),
-    "Bitterness": (-0.5, 0.1),
+    "Awe": (0.3, 0.5),  # 2026-07-25 议会复审：混合效价，A 轴维持待专项实验
+    "Bitterness": (-0.3, -0.15),  # 2026-07-25 议会复审：被动反刍/低唤醒，V 拉浅
     "Concentration": (0.05, 0.25),
     "Confusion": (-0.25, 0.25),
     "Contemplation": (0.05, -0.15),
     "Contempt": (-0.45, 0.15),
-    "Contentment": (0.7, -0.35),
-    "Disappointment": (-0.5, -0.15),
-    "Disgust": (-0.6, 0.35),
+    "Contentment": (0.75, -0.15),  # 2026-07-25 议会复审：避免落入倦怠深低唤醒区
+    "Disappointment": (-0.28, 0.40),  # 2026-07-25 议会复审(二轮几何)：A 方向改正，避 Contempt 碰撞
+    "Disgust": (-0.45, 0.5),  # 2026-07-25 议会复审：面孔感知高唤醒，效价浅于 anger
     "Distress": (-0.6, 0.6),
     "Doubt": (-0.25, 0.05),
     "Elation": (0.8, 0.7),
-    "Embarrassment": (-0.3, 0.45),
-    "Emotional Numbness": (-0.2, -0.4),  # 议会修正：arousal 上调，避与 Fatigue(-0.75) 混淆
+    "Embarrassment": (-0.65, 0.45),  # 2026-07-25 议会复审(二轮几何)：贴 R&M P≈-0.62，避三向碰撞
+    "Emotional Numbness": (-0.25, -0.55),  # 2026-07-25 议会复审：低 AU/情感迟钝，低于 Sadness 唤醒
     "Fatigue/Exhaustion": (-0.3, -0.75),
     "Fear": (-0.6, 0.6),  # 与 Anger/Distress 同 (v,a)：愤怒/恐惧分野属 coping 维、不在 VA 上
-    "Hope/Enthusiasm/Optimism": (0.6, 0.45),
+    "Hope/Enthusiasm/Optimism": (0.65, 0.5),  # 2026-07-25 议会复审：三词束名偏 enthusiasm 侧
     "Hopelessness": (-0.7, -0.3),  # 议会修正：arousal 下调，与 Sadness(-0.6,-0.4) 区分/低于其唤醒
     "Impatience and Irritability": (-0.4, 0.5),
-    "Infatuation": (0.6, 0.5),
+    "Infatuation": (
+        0.68,
+        0.78,
+    ),  # 2026-07-25 议会复审(二轮几何)：渴求-趋近型高唤醒，避 Triumph 碰撞
     "Interest": (0.5, 0.35),
-    "Intoxication/Altered States of Consciousness": (0.1, -0.1),
-    "Jealousy & Envy": (-0.5, 0.45),
+    "Intoxication/Altered States of Consciousness": (
+        0.35,
+        0.3,
+    ),  # 2026-07-25 议会复审：避与 Contemplation 近碰撞
+    "Jealousy & Envy": (
+        -0.54,
+        0.43,
+    ),  # 2026-07-25 议会复审(二轮几何)：避 Embarrassment/Disgust 碰撞
     "Longing": (-0.35, 0.15),  # 议会修正：v 拉负，保有渴念的轻度苦涩而非近中性（Warriner 2013）
     "Malevolence/Malice": (
         -0.75,
         0.4,
     ),  # 议会修正：v 拉负，恶意更深度负效价、与 Anger/Contempt 区分
     "Pain": (-0.7, 0.55),
-    "Pleasure/Ecstasy": (0.9, 0.6),
-    "Pride": (0.65, 0.45),
+    "Pleasure/Ecstasy": (0.9, 0.75),  # 2026-07-25 议会复审：Ecstasy 唤醒须高于 Elation
+    "Pride": (0.75, 0.45),  # 2026-07-25 议会复审：强正向自我意识情绪，V 上调
     "Relief": (0.5, -0.3),
     "Sadness": (-0.6, -0.4),
-    "Sexual Lust": (0.5, 0.55),  # 议会修正：arousal 下调，性欲非恒定最高唤醒（Warriner 2013 ≈0.67）
-    "Shame": (-0.55, 0.2),
-    "Sourness": (-0.4, -0.05),
-    "Teasing": (0.4, 0.4),
-    "Thankfulness/Gratitude": (0.7, 0.1),
-    "Triumph": (0.75, 0.65),
+    "Sexual Lust": (0.5, 0.65),  # 2026-07-25 议会复审：上次下调矫枉过正，仍低于恒定最高唤醒
+    "Shame": (-0.55, 0.3),  # 2026-07-25 议会复审：内部紧张与回避姿态折中
+    "Sourness": (-0.4, 0.3),  # 2026-07-25 议会复审：sour 高唤醒，区别于 bitter
+    "Teasing": (0.35, 0.45),  # 2026-07-25 议会复审：亲社会-反社会连续体，V 略降 A 略升
+    "Thankfulness/Gratitude": (0.65, 0.25),  # 2026-07-25 议会复审：避与 Affection 零距离碰撞
+    "Triumph": (
+        0.85,
+        0.55,
+    ),  # 2026-07-25 议会复审(二轮几何)：成就支配展示，避 Infatuation/Elation 碰撞
 }
 
 
