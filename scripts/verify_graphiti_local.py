@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 
 from src.memory.client import MemoryClient
 from src.orchestration.runner import run
@@ -27,6 +29,11 @@ from src.orchestration.state import Stimulus
 from src.storage.graph_store import build_graph_store, build_semantic_store
 
 logger = logging.getLogger(__name__)
+
+# 自查用独立库：不写用户的生产语义库（默认 data/semantic.sqlite3，含真实对话记忆）。
+# 每次跑前清空，保证结果可复现——否则上一轮的同文本 episode 会被 dedup 跳过。
+# 想改在真实库上验证，设 ZERO_VERIFY_SEMANTIC_DB 指向它。
+VERIFY_DB = os.getenv("ZERO_VERIFY_SEMANTIC_DB", "data/verify_semantic.sqlite3")
 
 
 def _load_dotenv() -> None:
@@ -44,6 +51,11 @@ def _load_dotenv() -> None:
 
 async def verify() -> None:
     _load_dotenv()
+    # 隔离到自查专用库并清空（在 build_semantic_store 之前设，工厂构造期才读得到）
+    if VERIFY_DB != ":memory:":
+        Path(VERIFY_DB).unlink(missing_ok=True)
+    os.environ["ZERO_SEMANTIC_DB"] = VERIFY_DB
+    print(f"自查库（每次清空、不动生产库）：{VERIFY_DB}\n")
     semantic = build_semantic_store()
     if semantic is None:
         print(
