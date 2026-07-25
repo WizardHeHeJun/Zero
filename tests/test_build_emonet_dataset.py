@@ -76,6 +76,10 @@ def test_emonet_va_no_unendorsed_collision() -> None:
     重合等于给 FacsDecoder 矛盾监督（同一输入两组 AU 目标，只能学到平均）。
     2026-07-25 议会复审曾因逐类改坐标、未复核全局几何而新造 3 处零距离碰撞，
     经二轮几何仲裁修复；本用例把该教训固化为回归守卫。
+
+    ⚠ **限度**：本用例只拦截**精确重合**，**不校验 0.10 工作阈值**——把某坐标改到与
+    邻居只差 0.02，本用例照样通过。「测试绿」≠「几何仍安全」；改坐标后仍须另跑全表
+    距离验算（见 notes/2026-07-25-emonet-va-geometry-round3-council.md）。
     """
     intentional = {"Anger", "Fear", "Distress"}  # 分野属 coping 维、不在 VA 上（议会背书）
     for (n1, p1), (n2, p2) in itertools.combinations(EMONET_VA.items(), 2):

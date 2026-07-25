@@ -13,12 +13,19 @@
 
 ⚠ **40 类→(v,a) 映射的忠实性（重要）**：EMONET_VA 是**近似 circumplex 坐标**（Russell 1980
 环状模型结构 + 情感常模惯例），用作训练标签——同本项目对 RAVDESS/WESAD 的 category→VA 既有
-做法（`ravdess.EMOTION_CODE_TO_VA`）。**已经 2026-07-14 科学家议会 fidelity 复审**（对照
-Warriner et al. 2013 VAD 常模 / Cowen&Keltner 2017），据裁决修正 5 处（Longing/Emotional
-Numbness/Hopelessness/Sexual Lust/Malevolence，各行注「议会修正」）；决策与引文见
-`notes/2026-07-14-facs-decoder-livewiring-council.md`。系数幅度仍属工程可动、可继续校准。
-愤怒/恐惧有意映到同一 (v,a)（Anger=Fear=Distress）——二者分野属 coping 维、不在 VA 上（议会
-背书；FacsDecoder predict_facs(v,a) 学通用 AU，coping 分野由占位/C2 承担）。
+做法（`ravdess.EMOTION_CODE_TO_VA`）。已经科学家议会**四轮** fidelity 复审、累计修正 26 处：
+
+  2026-07-14 首修 5 处（Longing/Emotional Numbness/Hopelessness/Sexual Lust/Malevolence）
+      → `notes/2026-07-14-facs-decoder-livewiring-council.md`
+  2026-07-25 一轮全表逐类复审 18 处 + 二轮几何仲裁 5 处
+      → `notes/2026-07-25-emonet-va-fidelity-audit-council.md`
+  2026-07-25 三轮几何专项 3 处（过近对，全表最小距离升至 0.1118）
+      → `notes/2026-07-25-emonet-va-geometry-round3-council.md`
+
+改坐标须走议会（工程不私拍语义）；改完**必须重跑全表距离验算**——`tests` 里的几何守卫只
+拦精确重合、不校验 0.10 工作阈值。愤怒/恐惧有意映到同一 (v,a)（Anger=Fear=Distress）——
+二者分野属 coping 维、不在 VA 上（议会背书；FacsDecoder predict_facs(v,a) 学通用 AU，
+coping 分野由占位/C2 承担）。
 """
 
 from __future__ import annotations
@@ -60,7 +67,10 @@ EMONET_VA: dict[str, tuple[float, float]] = {
     "Fear": (-0.6, 0.6),  # 与 Anger/Distress 同 (v,a)：愤怒/恐惧分野属 coping 维、不在 VA 上
     "Hope/Enthusiasm/Optimism": (0.65, 0.5),  # 2026-07-25 议会复审：三词束名偏 enthusiasm 侧
     "Hopelessness": (-0.7, -0.3),  # 议会修正：arousal 下调，与 Sadness(-0.6,-0.4) 区分/低于其唤醒
-    "Impatience and Irritability": (-0.4, 0.5),
+    "Impatience and Irritability": (
+        -0.33,
+        0.5,
+    ),  # 2026-07-25 议会复审(三轮几何)：效价拉开，避 Disgust 过近
     "Infatuation": (
         0.68,
         0.78,
@@ -74,7 +84,10 @@ EMONET_VA: dict[str, tuple[float, float]] = {
         -0.54,
         0.43,
     ),  # 2026-07-25 议会复审(二轮几何)：避 Embarrassment/Disgust 碰撞
-    "Longing": (-0.35, 0.15),  # 议会修正：v 拉负，保有渴念的轻度苦涩而非近中性（Warriner 2013）
+    "Longing": (
+        -0.35,
+        0.2,
+    ),  # 三轮几何：唤醒略高于 Contempt 的 keeping-calm（v 拉负同 Warriner 2013）
     "Malevolence/Malice": (
         -0.75,
         0.4,
@@ -87,7 +100,10 @@ EMONET_VA: dict[str, tuple[float, float]] = {
     "Sexual Lust": (0.5, 0.65),  # 2026-07-25 议会复审：上次下调矫枉过正，仍低于恒定最高唤醒
     "Shame": (-0.55, 0.3),  # 2026-07-25 议会复审：内部紧张与回避姿态折中
     "Sourness": (-0.4, 0.3),  # 2026-07-25 议会复审：sour 高唤醒，区别于 bitter
-    "Teasing": (0.35, 0.45),  # 2026-07-25 议会复审：亲社会-反社会连续体，V 略降 A 略升
+    "Teasing": (
+        0.42,
+        0.45,
+    ),  # 三轮几何：play-face 属正效价簇（AU12 主导），效价上调避 Awe 过近
     "Thankfulness/Gratitude": (0.65, 0.25),  # 2026-07-25 议会复审：避与 Affection 零距离碰撞
     "Triumph": (
         0.85,
