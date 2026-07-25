@@ -253,6 +253,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 - **后端选择**（顶部各组）：`.env.example` 里的赋值多数就是**内置默认**，写不写效果一样，想切落盘/真库才改；少数是**示例 / 推荐值**——必填的 `ZERO_OPENAI_MODEL`、语义侧信道 `ZERO_SEMANTIC_BACKEND=sqlite_vec`（`--chat` 的默认，其它入口内置默认为关）与 `ZERO_GRAPHITI_MODEL` / `_EMBED_MODEL`——以下面各表「默认」列为准。
 - **可选旋钮**（底部，分两类）：**数字人对话 / 记忆组**已直接给出推荐赋值——复制即数字人推荐配置，注释掉某行 = 回内置默认；**研究级组**（workspace 精度 / HPA / ToM / 层级融合等）保持**注释** = 默认关 = 行为不变，取消注释才覆盖。最小推荐仍是两个：`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号）；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
 
+> **同一个 KEY 只写一行**——重复声明时后者覆盖前者。切换后端请直接改那一行的值，不要再加一行。
+
 ### 运行后端
 
 运行态 Checkpointer 与 长期记忆图谱**各自独立选后端**，可任意组合；默认都在内存，落盘 / 真后端按需开。
@@ -287,11 +289,12 @@ python -m scripts.run_pipeline                                    # 端到端：
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `ZERO_SEMANTIC_BACKEND` | 关（`--chat` 默认 `sqlite_vec`） | `sqlite_vec`（轻量、推荐）/ `graphiti`（深度集成，需 `graphiti` extra） |
+| `ZERO_SEMANTIC_DB` | `data/semantic.sqlite3` | `sqlite_vec` 的落盘路径（`:memory:` 则不落盘） |
 | `ZERO_GRAPHITI_DB` | `neo4j` | Graphiti 图库，复用上面 `NEO4J_*` |
 | `ZERO_GRAPHITI_MODEL` | —（未设走 Graphiti 库默认） | Graphiti 抽取实体 / 关系入图谱用的对话/推理 LLM（`.env.example` 给的是示例值） |
 | `ZERO_GRAPHITI_EMBED_MODEL` | `text-embedding-3-small` | 向量嵌入模型（`sqlite_vec` / `graphiti` 都用它做相似召回，须是 key 有权限的 embedding 模型；`.env.example` 给的是示例值） |
 
-> **自查脚本**：`python -m scripts.verify_graphiti_local`——graphiti 后端闭环 smoke（写 episode → 语义召回 → `recalled_context` 非空即通），需 `graphiti` extra + LLM key + 图库服务（`ZERO_GRAPHITI_DB` 默认 `neo4j`）。
+> **自查脚本**：`python -m scripts.verify_graphiti_local`——语义记忆闭环 smoke（写 episode → 语义召回 → `recalled_context` 非空即通）。**两种后端都支持**：`sqlite_vec` 只需 LLM key（无需图库服务、推荐先跑这条）；`graphiti` 另需 `graphiti` extra + 图库服务（`ZERO_GRAPHITI_DB` 默认 `neo4j`）。
 
 > **文本情感回归**（输入侧，默认走词典 / LLM 评价桥）：置 `ZERO_TEXT_AFFECT_BACKEND=st` 改用训练好的回归头，须同时给 `ZERO_TEXT_AFFECT_MODEL_PATH`（如 `artifacts/text_affect_regressor_st.pt`）。
 
@@ -305,10 +308,16 @@ python -m scripts.run_pipeline                                    # 端到端：
 | --- | --- | --- |
 | `ZERO_FACS_MODEL_PATH` | —（占位） | 表情通道真权重路径；设了即加载真 FacsDecoder。权重形状须与 `ZERO_FACS_EXTENDED` 一致，否则启动即报错 |
 | `ZERO_FACS_EXTENDED` | 关（5-AU） | 表情改用 13-AU 扩展集（含区分愤怒 AU23 / 恐惧 AU01·02·20 的判别性 AU，配合 coping_potential）；须配 13-AU 权重 |
-| `ZERO_FACS_K_AROUSAL` · `_K_COPING` · `_RESIDUAL_ALPHA` | 1.5 · 1.2 · 1.0 | AU 映射的唤醒 / coping 幅度系数与残差混合系数（方向固定、仅幅度可调） |
+| `ZERO_FACS_K_AROUSAL` · `_K_COPING` | 1.5 · 1.2 | AU 映射的唤醒 / coping 幅度系数（方向固定、仅幅度可调） |
+| `ZERO_FACS_RESIDUAL_ALPHA` | 1.0 | 判别性 AU 里「占位规则 vs 真模型」的混合比：1.0=判别 AU 全用规则（保住愤怒 / 恐惧分野）、0=全用真模型（分野消失）。仅在设了真表情权重且开 13-AU 时生效 |
+| `ZERO_VOLUNTARY_COPING_LEAK` | 1.0（两通路等值） | 有意做出的表情对 coping 驱动 AU 的保留比例（意志调控会压制这些 AU，Rinn 1984）；荐 0.3，仅 `ZERO_FACS_EXTENDED` 开时生效 |
 | `ZERO_PROSODY_MODEL_PATH` | —（占位·倍率口径） | 韵律通道真权重（RAVDESS）；设了后韵律值由倍率翻归一 [0,1]，供情感 TTS 消费 |
 | `ZERO_PHYSIOLOGY_MODEL_PATH` | —（占位） | 生理通道真权重（WESAD）；出真实量纲 心率[50,120] / 皮电 μS[0,20] / 体温 °C[30,40] |
-| `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER` | 关 | 无真模型时把生理占位切成与真解码器同量纲的 canonical 口径（心率 / 皮电 μS / 体温 °C）；关=旧占位 |
+| `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER` | 关 | 无真模型时把生理占位切成与真解码器同量纲的 canonical 口径；只影响「没有真权重时」的占位公式，设了真权重则以真权重为准 |
+
+> **三通道各自独立**，可只开其一（如只接真韵律、表情仍走占位）。权重须由对应 `scripts/train_*` 以默认架构训练；形状不符或文件不可读会在**启动时直接报错**并指出是哪个变量，不会静默退化。
+>
+> **生理两套占位输出的字段并不相同**——关（默认）为 心率[70,110] / 皮电[0,1] 无量纲 / 瞳孔 mm[3,5]；开为 心率[50,120] / 皮电 μS[0,20] / 体温 °C[33,36]。对接 MCP 生理映射前请确认服务端开关状态，客户端不要假定两种输出字段一致。另注意 canonical 占位与真解码器虽同量纲但**中立态基线不同**（占位皮电从 0 μS 起、真模型中立约 10 μS），两条路径只宜各自内部相对比较，不要跨路径比绝对值或共用阈值。
 
 **② 情感第三维 coping_potential**（负效价高唤醒象限区分愤怒 / 恐惧）
 
@@ -316,20 +325,37 @@ python -m scripts.run_pipeline                                    # 端到端：
 | --- | --- | --- |
 | `ZERO_COPING_POTENTIAL_ENABLED` | 关 | 开启独立的情境应对潜能标量流（由 `control_appraisal` 驱动）；核心 (v,a) 表征不受影响 |
 | `ZERO_TEXT_COPING_ENABLED` · `ZERO_TEXT_COPING_PRECISION` | 关 · 0.08 | 从文本推 coping 方向先验（低精度）；须配方向头权重，仅在对抗性语境内对愤怒生效 |
-| `ZERO_TEXT_DOMAIN_ENABLED` | 关 | 对话每轮由确定性词典桥判定语境（对抗 / 中性），据此把 coping 限定在合适语境、防全域误开 |
-| `ZERO_FEAR_DOMAIN_ENABLED` | 关 | 恐惧方向的专属开关；关闭时任何路径都不产恐惧域激活 |
-| `ZERO_DIRECTION_HEAD_MODEL_PATH` | — | coping 方向头权重路径；须与 `ZERO_TEXT_COPING_ENABLED` 同设方生效 |
+| `ZERO_TEXT_DOMAIN_ENABLED` | 关 | 对话每轮由确定性词典桥判定语境（对抗 / 中性），据此把 coping 限定在合适语境、防全域误开。需与 `ZERO_TEXT_COPING_ENABLED` **同开**才对 `--chat` 生效；单开本项只做语境标注 |
+| `ZERO_FEAR_DOMAIN_ENABLED` | 关 | 恐惧方向的专属开关；关闭时任何路径都不产恐惧域激活——低应对潜能场景保守回落为愤怒，对抗性语境下的愤怒判定不受此开关影响 |
+| `ZERO_DIRECTION_HEAD_MODEL_PATH` | — | coping 方向头权重路径；须与 `ZERO_TEXT_COPING_ENABLED` 同设方生效。⚠ 该权重的训练语料含 CC BY-NC 成分，**仅供研究用途**，不用于商业分发 |
+| `ZERO_ANGER_ABSTAIN_LOGIT_THRESHOLD` | 0.0（不弃权） | 方向头置信不足时弃权、不产 coping 先验的阈值；调高更保守，需按自己的数据重新标定 |
+
+> **两条入口的开法不同**：MCP 接入用 `ZERO_MCP_TEXT_COPING_ENABLED`，并由 client 在请求里带上语境与应对潜能字段；`--chat` 对话则需 `ZERO_TEXT_COPING_ENABLED` 与 `ZERO_TEXT_DOMAIN_ENABLED` 同开。
 
 **③ zero-link MCP server**（把情感引擎会话对外暴露为 `open / step / close` 三工具，供配套项目作 client 接入）
+
+起服务：`pip install -e ".[mcp]"` 后 `python -m src.mcp_server`。不起 server 时以下变量均无关。
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `ZERO_MCP_TRANSPORT` | `stdio` | 传输：`stdio`（本地子进程）/ `http`（streamable-http，远程） |
 | `ZERO_MCP_HTTP_HOST` · `_PORT` · `_PATH` | `127.0.0.1` · `8000` · `/mcp` | HTTP 传输监听地址 / 端口 / 路径（client endpoint = host:port + path） |
-| `ZERO_MCP_HTTP_TOKEN` | —（本机免鉴权） | streamable-http 的 Bearer 共享密钥；本机(loopback) 未设=免鉴权，**对外(非 loopback) 未设 token 则启动即拒绝**（不开无鉴权裸端口） |
+| `ZERO_MCP_HTTP_TOKEN` | —（本机免鉴权） | streamable-http 的 Bearer 共享密钥；本机(loopback) 未设=免鉴权，**对外(非 loopback) 未设 token 则启动即拒绝**（不开无鉴权裸端口）。缺失或错误的 token 返回 401；client 侧需配置同一个 token 值（两端变量名不同） |
 | `ZERO_MCP_WORKSPACE_ENABLED` | 开 | 会话默认开显著度门控工作空间（否则外部先验流被整段跳过） |
 | `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关；只受这些 env 治理，client 传入的同名字段被忽略（防越权开启） |
 | `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数 |
+
+> **会话续接与安全**：默认内存后端下 server 重启即丢会话。要跨重启续会话，设 `ZERO_CHECKPOINT_BACKEND=sqlite`（+`ZERO_CHECKPOINT_DB`），client 用**同一个 `session_id`** 重新 `open_session` 即接上；session_id 失效时 `step` 返回带 `unknown-session:` 前缀的错误，client 可据此重开重试。⚠ session_id 等同于该会话运行态与记忆的**访问凭据**，多用户部署必须配鉴权。
+>
+> ①组的通道权重旋钮与运行态后端设置对 MCP server 同样生效。
+
+**外部先验的参考精度**：以下 `EXTERNAL_*` 是给 client 侧的**建议值**（各模态先验该盖多少置信度），Zero 端只做上界校验、不直接应用。
+
+| 模态 | 效价 / 唤醒 | 为什么 |
+| --- | --- | --- |
+| 视觉面部 | 0.20 / 0.12 | 面部对效价的判别力强于唤醒，故效价精度略高 |
+| 语音韵律 | 0.10 / 0.25 | 基频 / 能量对唤醒可靠、对效价正负难分；整体低于文本语义流以保先验层级 |
+| 生理 | 0.001 / 0.18 | 皮电 / 心率变异 / 瞳孔对效价方向不敏感（效价精度恒被压到下限），只对唤醒有可靠贡献 |
 
 **④ 记忆巩固与遗忘**（会话结束离线触发；机制见上文「遗忘是特性」）
 
@@ -339,7 +365,9 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_CONSOLIDATION_D_SESSION` · `_D_USER` | 0.8 · 0.3 | 分层幂律遗忘指数：短期 SESSION 快衰 / 长期 USER 慢衰 |
 | `ZERO_CONSOLIDATION_SALIENCE_THRESHOLD` · `_COUNT_MIN` | 0.25 · 3 | 短期→长期升迁门：显著度阈 + 最低强化次数（防偶发事件伪装成长期记忆） |
 | `ZERO_CONSOLIDATION_TIMEOUT` | 30.0 | 会话结束巩固的超时秒（超时降级告警、不影响对话） |
-| `ZERO_ACTR_ENABLED` · `ZERO_ACTR_B_SCALE` | 关 · 3.0 | 用 ACT-R 频率激活替换召回排序的新近项（关=用幂律时序衰减） |
+| `ZERO_ACTR_ENABLED` · `ZERO_ACTR_B_SCALE` | 关 · 3.0 | 用 ACT-R 频率激活替换召回排序的新近项（关=用幂律时序衰减）；`_B_SCALE` 越小、频率的影响越强 |
+
+> **工程近似声明**：巩固触发是生物睡眠周期的工程近似（真实的系统级巩固跨天至周，Davis & Zhong 2017），分层幂律是快 / 慢双阶段的工程代理，并非完整的多时间尺度巩固模型。
 
 ### 指定人格（`--chat`）
 
