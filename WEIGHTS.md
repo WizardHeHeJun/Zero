@@ -61,9 +61,16 @@ EmoBank 有官方 8062/1000/1000 切分。下面用同样 300 轮，只改「读
 种子间标准差极小（0.00003 / 0.00009），说明这两个通道对初始化几乎不敏感——与需要多种子才能下结论的
 表情通道不同，这里单次结果就是可信的。
 
-> ⚠ **发布前还差一步**：这两份权重的 sidecar 记录 `git.dirty = true`，即训练时工作区有未提交改动，
-> 光凭里面的 commit 号复现不出它们。种子已固定，**先提交代码再按同样命令重跑一次**即可得到
-> provenance 干净的同一份权重。这是本文件自己定的发布前置条件，不能对自己破例。
+> ✅ **provenance 干净，满足发布前置条件**：代码提交后按同样命令重跑了一次，两份权重的 sha256
+> 与提交前**逐字节一致**——固定种子确实能复现同一份权重。sidecar 现在记
+> `git.commit = 60a18b9`、`git.dirty = false`，即这两份权重可以从该 commit 精确重建。
+>
+> 复现命令（在 `affective-expression` 环境内，仓库处于 `60a18b9`）：
+>
+> ```powershell
+> python -m scripts.train_text_affect    --csv data/emobank.csv --epochs 300 --seed 2
+> python -m scripts.train_text_affect_st --csv data/emobank.csv --epochs 300 --seed 4
+> ```
 
 校验值（`sha256sum <文件>` 可自行核对）：
 
