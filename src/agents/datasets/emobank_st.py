@@ -21,13 +21,19 @@ def load_emobank_embeddings(
     encoder: str = DEFAULT_ENCODER,
     limit: int | None = None,
     include_d: bool = False,
+    split: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """读取 EmoBank CSV 并把文本编码成句向量，返回 (X=句向量, Y) float32 张量。
 
     X ∈ R^dim（编码器维）。默认 include_d=False 时 Y ∈ [-1,1]^2（零回归）；
     include_d=True 时 Y ∈ [-1,1]^3（含 D 维，见 read_emobank_rows 的 Note）。
     无数据行时（经 read_emobank_rows）抛 ValueError。
+
+    `split` 语义与泄漏警告见 `read_emobank_rows`（默认 None＝全量）。⚠ 句向量通道此前
+    **一直没有这个参数**，两个调用方（`train_text_affect_st` / `train_text_affect_d`）
+    因此都在读全量训练——包括官方 dev/test。已发布的 `text_affect_regressor_st.pt`
+    即产自那条路径，其 loss 是训练集拟合度、不可当泛化指标读。
     """
-    texts, ys = read_emobank_rows(path, limit=limit, include_d=include_d)
+    texts, ys = read_emobank_rows(path, limit=limit, include_d=include_d, split=split)
     x = encode_texts(texts, encoder=encoder)
     return x, torch.tensor(ys, dtype=torch.float32)

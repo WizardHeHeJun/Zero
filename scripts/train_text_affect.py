@@ -16,6 +16,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from scripts._train_common import write_provenance
 from src.agents.datasets.emobank import load_emobank
 from src.agents.models.text_affect_regressor import TextAffectRegressor
 
@@ -41,6 +42,8 @@ def train(
     否则读全量会把 dev/test 训进去，报出的分数是记忆不是泛化（见 emobank 模块文档）。
     早停保留 dev 最优权重；`patience` 轮无改善即停。`seed` 固定初始化，保证可复现。
     `official_split=False` 走旧路径（全量训练、返回训练 loss），仅供无 split 列的数据用。
+    落盘时另写 `<out>.json` provenance sidecar（轮数/lr/种子/切分实际用没用/dev 指标/commit），
+    `.pt` 仍是裸 state_dict、格式不变。
     """
     torch.manual_seed(seed)
     x_dev, y_dev = None, None
@@ -61,13 +64,16 @@ def train(
 
     model.train()
     final_loss = 0.0
+    epochs_ran = 0
     best_dev, best_state, stale = float("inf"), None, 0
+    best_epoch, train_loss_at_best = -1, float("nan")
     for epoch in range(epochs):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         optimizer.step()
         final_loss = float(loss.item())
+        epochs_ran = epoch + 1
         if x_dev is not None:
             model.eval()
             with torch.no_grad():
@@ -75,6 +81,7 @@ def train(
             model.train()
             if dev < best_dev - 1e-6:
                 best_dev, stale = dev, 0
+                best_epoch, train_loss_at_best = epoch, final_loss
                 best_state = {k: v.clone() for k, v in model.state_dict().items()}
             else:
                 stale += 1
@@ -88,15 +95,49 @@ def train(
         elif epoch % 50 == 0:
             logger.info("epoch %d loss %.6f (n=%d)", epoch, final_loss, x.shape[0])
 
+    last_train_loss = final_loss  # 早停会把 final_loss 改写成 dev 指标，先留住训练 loss 本身
     if best_state is not None:
         model.load_state_dict(best_state)  # 恢复 dev 最优，而非最后一轮
         final_loss = best_dev
         logger.info("恢复 dev 最优权重（dev MSE %.6f）", best_dev)
 
+    val = None
+    if x_dev is not None:
+        val = {
+            "split": "emobank-official-dev",
+            "mse": best_dev,
+            "n_samples": int(x_dev.shape[0]),
+            "patience": patience,
+            "best_epoch": best_epoch,
+            "train_loss_at_best": train_loss_at_best,
+            "note": "保存的是 dev 最优轮权重（非末轮）；train() 返回值即此 mse。",
+        }
+
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_path)
     logger.info("saved text affect regressor -> %s (final loss %.6f)", out_path, final_loss)
+    write_provenance(
+        out_path,
+        script="scripts/train_text_affect.py",
+        model=model,
+        model_config={"hidden": hidden, "num_layers": num_layers},
+        # requested ≠ used 即说明官方切分不可用、已降级读全量（见上方 warning 分支）——
+        # 这正是「报出来的分数到底是泛化还是记忆」的判据，必须落账。
+        data_config={
+            "limit": limit,
+            "official_split_requested": official_split,
+            "official_split_used": x_dev is not None,
+        },
+        data_source=csv_path,
+        n_samples=int(x.shape[0]),
+        seed=seed,
+        lr=lr,
+        epochs_requested=epochs,
+        epochs_ran=epochs_ran,
+        final_train_loss=last_train_loss,
+        val=val,
+    )
     return final_loss
 
 

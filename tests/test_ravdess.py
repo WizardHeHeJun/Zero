@@ -109,3 +109,13 @@ def test_train_prosody_smoke(ravdess_dir: Path, tmp_path: Path) -> None:
     assert out.exists()
     assert math.isfinite(final)
     assert final < 0.2  # 仅 4 样本，应能快速拟合
+
+    # provenance sidecar 与权重同产（旁挂 json，不改 .pt 格式）
+    import json
+
+    from scripts._train_common import provenance_path
+
+    rec = json.loads(provenance_path(out).read_text(encoding="utf-8"))
+    assert rec["script"] == "scripts/train_prosody.py"
+    assert rec["training"]["epochs_ran"] == 100
+    assert rec["data"]["kind"] == "directory"  # RAVDESS 根是目录，不哈希

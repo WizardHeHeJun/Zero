@@ -26,6 +26,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from scripts._train_common import write_provenance
 from src.agents.datasets.emobank_st import load_emobank_embeddings
 from src.agents.models.text_affect_regressor_st import DEFAULT_ENCODER, STTextAffectRegressor
 
@@ -45,6 +46,8 @@ def train(
     hidden: int = 64,
     num_layers: int = 1,
     out: str = "artifacts/text_affect_regressor_d.pt",
+    official_split: bool = True,
+    patience: int = 50,
     seed: int = 0,
 ) -> float:
     """加载 EmoBank→句向量（含 D）、训练 STTextAffectRegressor 并保存权重，返回最终 MSE。
@@ -59,24 +62,54 @@ def train(
         hidden: MLP 隐层宽度。
         num_layers: MLP 隐层数。
         out: 权重输出路径。
+        official_split: True（默认）只用官方 train 训练、用 dev 早停并**返回 dev MSE**；
+            False 走旧路径读全量（会把 dev/test 训进去，报出的分数是记忆不是泛化）。
+            本脚本此前没有这个开关、一直读全量——D 维本就单源 EmoBank、无跨数据集可交叉
+            验证，再把 dev/test 训进去等于完全没有独立评估面。
+        patience: dev 连续多少轮无改善即早停。
         seed: 固定初始化，保证可复现。
 
     Returns:
-        最终 MSE 损失值。
+        最终 MSE 损失值（`official_split=True` 时为 dev MSE）。
+
+    落盘时另写 `<out>.json` provenance sidecar（轮数/lr/种子/target/编码器/数据/commit），
+    `.pt` 仍是裸 state_dict、格式不变。
     """
     if target not in _TARGET_TO_DIM:
         raise ValueError(f"--target 须为 va/d/vad，得到 {target!r}")
     output_dim = _TARGET_TO_DIM[target]
 
+    def _slice(full: torch.Tensor) -> torch.Tensor:
+        """按 target 切列：va→前两列 / d→第三列 / vad→全三列。"""
+        if target == "va":
+            return full[:, :2]
+        if target == "d":
+            return full[:, 2:3]
+        return full
+
     logger.info("encoding texts with %s (one-time, may take ~1min on CPU)...", encoder)
-    x, y_full = load_emobank_embeddings(csv_path, encoder=encoder, limit=limit, include_d=True)
-    # 按 target 切列
-    if target == "va":
-        y = y_full[:, :2]
-    elif target == "d":
-        y = y_full[:, 2:3]
-    else:  # vad
-        y = y_full
+    x_dev: torch.Tensor | None = None
+    y_dev: torch.Tensor | None = None
+    if official_split:
+        try:
+            x, y_full = load_emobank_embeddings(
+                csv_path, encoder=encoder, limit=limit, include_d=True, split="train"
+            )
+            x_dev, y_dev_full = load_emobank_embeddings(
+                csv_path, encoder=encoder, limit=limit, include_d=True, split="dev"
+            )
+            y_dev = _slice(y_dev_full)
+        except ValueError as exc:
+            # 小夹具/无官方切分的 CSV：降级读全量（旧行为），但明确告警——此时报出的
+            # loss 是训练集 loss，不可当泛化指标用。
+            logger.warning("官方切分不可用（%s），降级为全量训练；返回的是训练 loss", exc)
+            x, y_full = load_emobank_embeddings(
+                csv_path, encoder=encoder, limit=limit, include_d=True
+            )
+            x_dev, y_dev = None, None
+    else:
+        x, y_full = load_emobank_embeddings(csv_path, encoder=encoder, limit=limit, include_d=True)
+    y = _slice(y_full)
 
     torch.manual_seed(seed)
     model = STTextAffectRegressor(
@@ -91,20 +124,91 @@ def train(
 
     model.train()
     final_loss = 0.0
+    epochs_ran = 0
+    best_dev, best_state, stale = float("inf"), None, 0
+    best_epoch, train_loss_at_best = -1, float("nan")
     for epoch in range(epochs):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         optimizer.step()
         final_loss = float(loss.item())
-        if epoch % 50 == 0:
+        epochs_ran = epoch + 1
+        if x_dev is not None and y_dev is not None:
+            model.eval()
+            with torch.no_grad():
+                dev = float(loss_fn(model(x_dev), y_dev).item())
+            model.train()
+            if dev < best_dev - 1e-6:
+                best_dev, stale = dev, 0
+                best_epoch, train_loss_at_best = epoch, final_loss
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            else:
+                stale += 1
+            if epoch % 50 == 0:
+                logger.info(
+                    "epoch %d train %.6f dev %.6f (n=%d, target=%s)",
+                    epoch,
+                    final_loss,
+                    dev,
+                    x.shape[0],
+                    target,
+                )
+            if stale >= patience:
+                logger.info("dev 连续 %d 轮无改善，早停于 epoch %d", patience, epoch)
+                break
+        elif epoch % 50 == 0:
             logger.info(
                 "epoch %d loss %.6f (n=%d, target=%s)", epoch, final_loss, x.shape[0], target
             )
 
+    last_train_loss = final_loss  # 早停会把 final_loss 改写成 dev 指标，先留住训练 loss 本身
+    if best_state is not None:
+        model.load_state_dict(best_state)  # 恢复 dev 最优，而非最后一轮
+        final_loss = best_dev
+        logger.info("恢复 dev 最优权重（dev MSE %.6f）", best_dev)
+
+    val = None
+    if y_dev is not None:
+        val = {
+            "split": "emobank-official-dev",
+            "mse": best_dev,
+            "n_samples": int(y_dev.shape[0]),
+            "patience": patience,
+            "best_epoch": best_epoch,
+            "train_loss_at_best": train_loss_at_best,
+            "note": "保存的是 dev 最优轮权重（非末轮）；train() 返回值即此 mse。",
+        }
+
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_path)
+    write_provenance(
+        out_path,
+        script="scripts/train_text_affect_d.py",
+        model=model,
+        model_config={
+            "hidden": hidden,
+            "num_layers": num_layers,
+            "encoder": encoder,
+            "dim": int(x.shape[1]),
+            "output_dim": output_dim,
+        },
+        data_config={
+            "limit": limit,
+            "target": target,
+            "official_split_requested": official_split,
+            "official_split_used": y_dev is not None,
+        },
+        data_source=csv_path,
+        n_samples=int(x.shape[0]),
+        seed=seed,
+        lr=lr,
+        epochs_requested=epochs,
+        epochs_ran=epochs_ran,
+        final_train_loss=last_train_loss,
+        val=val,
+    )
     logger.info(
         "saved text affect D regressor -> %s (target=%s, final loss %.6f)",
         out_path,
@@ -132,6 +236,12 @@ def main() -> None:
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/text_affect_regressor_d.pt")
+    parser.add_argument(
+        "--full-data",
+        action="store_true",
+        help="旧路径：读全量（含官方 dev/test）训练。⚠ 会污染评测，仅供无 split 列的数据",
+    )
+    parser.add_argument("--patience", type=int, default=50, help="dev 无改善多少轮后早停")
     parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     final = train(
@@ -143,6 +253,8 @@ def main() -> None:
         hidden=args.hidden,
         num_layers=args.num_layers,
         out=args.out,
+        official_split=not args.full_data,
+        patience=args.patience,
         seed=args.seed,
     )
     print(f"done, target={args.target}, final loss={final:.6f}")

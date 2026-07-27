@@ -34,6 +34,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from scripts._train_common import write_provenance
 from src.agents.datasets.synthetic import synthetic_pairs
 from src.agents.models.expression_decoder import ExpressionDecoder
 
@@ -55,7 +56,8 @@ def train(
 
     `canonical_physiology`（默认 False=legacy 目标·零回归）透传 `synthetic_pairs` →
     `affect_to_vector`：True 时蒸馏 canonical 布局（idx7=temperature_n），须配 canonical 输出路径。
-    `seed` 同时用于合成数据生成（`synthetic_pairs`）与模型初始化，保证可复现。
+    `seed` 同时用于合成数据生成（`synthetic_pairs`）与模型初始化，保证可复现；落盘时另写
+    `<out>.json` provenance sidecar（轮数/lr/种子/蒸馏口径/commit），`.pt` 格式不变。
     """
     x, y = synthetic_pairs(n, seed=seed, canonical_physiology=canonical_physiology)
     torch.manual_seed(seed)
@@ -65,12 +67,14 @@ def train(
 
     model.train()
     final_loss = 0.0
+    epochs_ran = 0
     for epoch in range(epochs):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         optimizer.step()
         final_loss = float(loss.item())
+        epochs_ran = epoch + 1
         if epoch % 50 == 0:
             logger.info("epoch %d loss %.6f", epoch, final_loss)
 
@@ -78,6 +82,22 @@ def train(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_path)
     logger.info("saved decoder -> %s (final loss %.6f)", out_path, final_loss)
+    write_provenance(
+        out_path,
+        script="scripts/train_expression.py",
+        model=model,
+        model_config={"hidden": hidden, "num_layers": num_layers},
+        # canonical_physiology 决定 idx7 是 pupil_n 还是 temperature_n——两种口径的权重
+        # 不可互换（见本模块 docstring），必须随权重一起落账。
+        data_config={"n": n, "canonical_physiology": canonical_physiology},
+        data_source=None,
+        n_samples=int(x.shape[0]),
+        seed=seed,
+        lr=lr,
+        epochs_requested=epochs,
+        epochs_ran=epochs_ran,
+        final_train_loss=final_loss,
+    )
     return final_loss
 
 

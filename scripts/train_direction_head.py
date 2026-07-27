@@ -28,6 +28,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from scripts._train_common import write_provenance
 from src.agents.models.text_affect_regressor_st import DEFAULT_ENCODER, encode_texts
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,13 @@ def train_and_gate(
     epochs: int,
     lr: float,
     crowdenvent_path: str | None = None,
+    seed: int = 0,
 ) -> dict:
+    """训练方向头 + 跑分侧方向门，返回门指标。
+
+    `seed` 固定初始化（在构造 model **之前** `torch.manual_seed`）；落盘时另写
+    `<out_path>.json` provenance sidecar，`.pt` 仍是裸 state_dict、格式不变。
+    """
     encoder = DEFAULT_ENCODER
     tr_t, tr_y = _read_goemotions_signed(f"{data_dir}/train.tsv")
     te_t, te_y = _read_goemotions_signed(f"{data_dir}/test.tsv")
@@ -132,17 +139,22 @@ def train_and_gate(
     y = torch.tensor([hi if v == 1 else lo for v in tr_y], dtype=torch.float32)
     pos_weight = torch.tensor([n_fear / max(n_anger, 1)], dtype=torch.float32)  # 平衡多数 anger
 
+    torch.manual_seed(seed)
     model = DirectionHead(x.shape[1])
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     model.train()
+    final_loss = 0.0
+    epochs_ran = 0
     for epoch in range(epochs):
         opt.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         opt.step()
+        final_loss = float(loss.item())
+        epochs_ran = epoch + 1
         if epoch % 100 == 0:
-            logger.info("epoch %d BCE loss %.5f", epoch, float(loss.item()))
+            logger.info("epoch %d BCE loss %.5f", epoch, final_loss)
     model.eval()
 
     # 分侧方向门：anger 侧 logit>0 正确、fear 侧 logit<0 正确
@@ -158,6 +170,33 @@ def train_and_gate(
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_path)
+    write_provenance(
+        out_path,
+        script="scripts/train_direction_head.py",
+        model=model,
+        model_config={"hidden": 64, "dim": int(x.shape[1]), "encoder": encoder},
+        # hard 决定软/硬标签（0.9/0.1 vs 1.0/0.0）；crowdenvent 决定训练集是否混入叙事域。
+        # 两者都改变监督信号本身，必须随权重落账。
+        data_config={"hard": hard, "crowdenvent_path": crowdenvent_path},
+        data_source=data_dir,
+        n_samples=int(x.shape[0]),
+        seed=seed,
+        lr=lr,
+        epochs_requested=epochs,
+        epochs_ran=epochs_ran,
+        final_train_loss=final_loss,
+        # 本脚本自带留出 test + 分侧方向门：这里记的是真·泛化面指标，非训练集拟合度。
+        val={
+            "split": "goemotions-test-holdout",
+            "metric": "分侧方向正确率 + Wilson 95% 下界（每侧需 n≥50 且下界≥0.70）",
+            "anger_rate": a_ok / len(anger_pred),
+            "anger_n": len(anger_pred),
+            "anger_wilson_lb": a_lb,
+            "fear_rate": f_ok / len(fear_pred),
+            "fear_n": len(fear_pred),
+            "fear_wilson_lb": f_lb,
+        },
+    )
 
     return {
         "n_anger_tr": n_anger,
@@ -184,6 +223,7 @@ def main() -> None:
         default=None,
         help="可选：crowd-enVent_generation.tsv 路径，混入叙事域 anger/fear 治 anger 跨源掉分",
     )
+    p.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = p.parse_args()
 
     m = train_and_gate(
@@ -193,6 +233,7 @@ def main() -> None:
         epochs=args.epochs,
         lr=args.lr,
         crowdenvent_path=args.crowdenvent,
+        seed=args.seed,
     )
     logger.info("─" * 62)
     logger.info("分侧方向门（GoEmotions test 留出；每侧需 n≥50 且 Wilson 下界≥0.70）:")

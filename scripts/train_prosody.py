@@ -16,6 +16,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from scripts._train_common import write_provenance
 from src.agents.datasets.ravdess import load_ravdess
 from src.agents.models.prosody_decoder import ProsodyDecoder
 
@@ -35,7 +36,8 @@ def train(
 ) -> float:
     """加载 RAVDESS、全批量训练 ProsodyDecoder 并保存权重，返回最终 MSE。
 
-    `seed` 固定初始化，保证可复现。
+    `seed` 固定初始化，保证可复现；落盘时另写 `<out>.json` provenance sidecar
+    （轮数/lr/种子/数据/commit），`.pt` 仍是裸 state_dict、格式不变。
     """
     x, y = load_ravdess(root, limit=limit)
     torch.manual_seed(seed)
@@ -45,12 +47,14 @@ def train(
 
     model.train()
     final_loss = 0.0
+    epochs_ran = 0
     for epoch in range(epochs):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         optimizer.step()
         final_loss = float(loss.item())
+        epochs_ran = epoch + 1
         if epoch % 50 == 0:
             logger.info("epoch %d loss %.6f (n=%d)", epoch, final_loss, x.shape[0])
 
@@ -58,6 +62,20 @@ def train(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_path)
     logger.info("saved prosody decoder -> %s (final loss %.6f)", out_path, final_loss)
+    write_provenance(
+        out_path,
+        script="scripts/train_prosody.py",
+        model=model,
+        model_config={"hidden": hidden, "num_layers": num_layers},
+        data_config={"limit": limit},
+        data_source=root,
+        n_samples=int(x.shape[0]),
+        seed=seed,
+        lr=lr,
+        epochs_requested=epochs,
+        epochs_ran=epochs_ran,
+        final_train_loss=final_loss,
+    )
     return final_loss
 
 

@@ -26,6 +26,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from scripts._train_common import write_provenance
 from src.agents.datasets.facs_csv import load_facs_csv, load_facs_csv_ext
 from src.agents.models.facs_decoder import FacsDecoder
 
@@ -48,7 +49,8 @@ def train(
     extended=True：加载 13-AU 扩展 CSV（load_facs_csv_ext），用 FacsDecoder(extended=True)。
     现有 EmoNet/OpenFace 路径已可训练；AffectNet/DISFA 仍是后续更高保真数据源。
     13-AU v2 建议输出到 facs_decoder_ext_v2.pt，与旧 5-AU / 11-AU 权重隔离。
-    `seed` 固定初始化，保证可复现。
+    `seed` 固定初始化，保证可复现；落盘时另写 `<out>.json` provenance sidecar
+    （轮数/lr/种子/数据/commit），`.pt` 仍是裸 state_dict、格式不变。
     """
     if extended:
         x, y = load_facs_csv_ext(csv_path)
@@ -61,12 +63,14 @@ def train(
 
     model.train()
     final_loss = 0.0
+    epochs_ran = 0
     for epoch in range(epochs):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         optimizer.step()
         final_loss = float(loss.item())
+        epochs_ran = epoch + 1
         if epoch % 50 == 0:
             logger.info("epoch %d loss %.6f (n=%d)", epoch, final_loss, x.shape[0])
 
@@ -74,6 +78,20 @@ def train(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_path)
     logger.info("saved facs decoder -> %s (final loss %.6f)", out_path, final_loss)
+    write_provenance(
+        out_path,
+        script="scripts/train_facs.py",
+        model=model,
+        model_config={"hidden": hidden, "num_layers": num_layers, "extended": extended},
+        data_config={},
+        data_source=csv_path,
+        n_samples=int(x.shape[0]),
+        seed=seed,
+        lr=lr,
+        epochs_requested=epochs,
+        epochs_ran=epochs_ran,
+        final_train_loss=final_loss,
+    )
     return final_loss
 
 
