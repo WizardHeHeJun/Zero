@@ -31,23 +31,67 @@ def train(
     hidden: int = 64,
     num_layers: int = 1,
     out: str = "artifacts/text_affect_regressor.pt",
+    official_split: bool = True,
+    patience: int = 50,
+    seed: int = 0,
 ) -> float:
-    """加载 EmoBank、全批量训练 TextAffectRegressor 并保存权重，返回最终 MSE。"""
-    x, y = load_emobank(csv_path, limit=limit)
+    """加载 EmoBank、全批量训练 TextAffectRegressor 并保存权重，返回最终 MSE。
+
+    `official_split=True`（默认）：只用官方 train 训练，用 dev 做早停并**返回 dev MSE**——
+    否则读全量会把 dev/test 训进去，报出的分数是记忆不是泛化（见 emobank 模块文档）。
+    早停保留 dev 最优权重；`patience` 轮无改善即停。`seed` 固定初始化，保证可复现。
+    `official_split=False` 走旧路径（全量训练、返回训练 loss），仅供无 split 列的数据用。
+    """
+    torch.manual_seed(seed)
+    x_dev, y_dev = None, None
+    if official_split:
+        try:
+            x, y = load_emobank(csv_path, limit=limit, split="train")
+            x_dev, y_dev = load_emobank(csv_path, limit=limit, split="dev")
+        except ValueError as exc:
+            # 小夹具/无官方切分的 CSV：降级读全量（旧行为），但明确告警——此时报出的
+            # loss 是训练集 loss，不可当泛化指标用。
+            logger.warning("官方切分不可用（%s），降级为全量训练；返回的是训练 loss", exc)
+            x, y = load_emobank(csv_path, limit=limit)
+    else:
+        x, y = load_emobank(csv_path, limit=limit)
     model = TextAffectRegressor(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
     model.train()
     final_loss = 0.0
+    best_dev, best_state, stale = float("inf"), None, 0
     for epoch in range(epochs):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         optimizer.step()
         final_loss = float(loss.item())
-        if epoch % 50 == 0:
+        if x_dev is not None:
+            model.eval()
+            with torch.no_grad():
+                dev = float(loss_fn(model(x_dev), y_dev).item())
+            model.train()
+            if dev < best_dev - 1e-6:
+                best_dev, stale = dev, 0
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            else:
+                stale += 1
+            if epoch % 50 == 0:
+                logger.info(
+                    "epoch %d train %.6f dev %.6f (n=%d)", epoch, final_loss, dev, x.shape[0]
+                )
+            if stale >= patience:
+                logger.info("dev 连续 %d 轮无改善，早停于 epoch %d", patience, epoch)
+                break
+        elif epoch % 50 == 0:
             logger.info("epoch %d loss %.6f (n=%d)", epoch, final_loss, x.shape[0])
+
+    if best_state is not None:
+        model.load_state_dict(best_state)  # 恢复 dev 最优，而非最后一轮
+        final_loss = best_dev
+        logger.info("恢复 dev 最优权重（dev MSE %.6f）", best_dev)
 
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +109,13 @@ def main() -> None:
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/text_affect_regressor.pt")
+    parser.add_argument(
+        "--full-data",
+        action="store_true",
+        help="旧路径：读全量（含官方 dev/test）训练。⚠ 会污染评测，仅供无 split 列的数据",
+    )
+    parser.add_argument("--patience", type=int, default=50, help="dev 无改善多少轮后早停")
+    parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     final = train(
         args.csv,
@@ -73,6 +124,9 @@ def main() -> None:
         hidden=args.hidden,
         num_layers=args.num_layers,
         out=args.out,
+        official_split=not args.full_data,
+        patience=args.patience,
+        seed=args.seed,
     )
     print(f"done, final loss={final:.6f}")
 
