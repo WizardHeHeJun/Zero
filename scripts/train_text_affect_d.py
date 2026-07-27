@@ -45,6 +45,7 @@ def train(
     hidden: int = 64,
     num_layers: int = 1,
     out: str = "artifacts/text_affect_regressor_d.pt",
+    seed: int = 0,
 ) -> float:
     """加载 EmoBank→句向量（含 D）、训练 STTextAffectRegressor 并保存权重，返回最终 MSE。
 
@@ -58,6 +59,7 @@ def train(
         hidden: MLP 隐层宽度。
         num_layers: MLP 隐层数。
         out: 权重输出路径。
+        seed: 固定初始化，保证可复现。
 
     Returns:
         最终 MSE 损失值。
@@ -76,6 +78,7 @@ def train(
     else:  # vad
         y = y_full
 
+    torch.manual_seed(seed)
     model = STTextAffectRegressor(
         dim=x.shape[1],
         hidden=hidden,
@@ -129,6 +132,7 @@ def main() -> None:
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/text_affect_regressor_d.pt")
+    parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     final = train(
         args.csv,
@@ -139,6 +143,7 @@ def main() -> None:
         hidden=args.hidden,
         num_layers=args.num_layers,
         out=args.out,
+        seed=args.seed,
     )
     print(f"done, target={args.target}, final loss={final:.6f}")
 

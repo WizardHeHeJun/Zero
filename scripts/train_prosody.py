@@ -31,9 +31,14 @@ def train(
     hidden: int = 16,
     num_layers: int = 1,
     out: str = "artifacts/prosody_decoder.pt",
+    seed: int = 0,
 ) -> float:
-    """加载 RAVDESS、全批量训练 ProsodyDecoder 并保存权重，返回最终 MSE。"""
+    """加载 RAVDESS、全批量训练 ProsodyDecoder 并保存权重，返回最终 MSE。
+
+    `seed` 固定初始化，保证可复现。
+    """
     x, y = load_ravdess(root, limit=limit)
+    torch.manual_seed(seed)
     model = ProsodyDecoder(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
@@ -65,6 +70,7 @@ def main() -> None:
     parser.add_argument("--hidden", type=int, default=16)
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/prosody_decoder.pt")
+    parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     final = train(
         args.root,
@@ -73,6 +79,7 @@ def main() -> None:
         hidden=args.hidden,
         num_layers=args.num_layers,
         out=args.out,
+        seed=args.seed,
     )
     print(f"done, final loss={final:.6f}")
 

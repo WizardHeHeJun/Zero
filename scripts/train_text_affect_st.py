@@ -39,13 +39,18 @@ def train(
     num_layers: int = 1,
     finetune_encoder: bool = False,
     out: str = "artifacts/text_affect_regressor_st.pt",
+    seed: int = 0,
 ) -> float:
-    """加载 EmoBank→句向量、全批量训练 STTextAffectRegressor 并保存权重，返回最终 MSE。"""
+    """加载 EmoBank→句向量、全批量训练 STTextAffectRegressor 并保存权重，返回最终 MSE。
+
+    `seed` 固定初始化，保证可复现。
+    """
     if finetune_encoder:
         # 端到端微调（W4 修复）：喂原始文本，前向经 encoder_module（带梯度），编码器参数参与
         # backward（需 GPU；forward(预计算张量) 路径编码器不在计算图内、拿不到梯度）。
         texts, ys = read_emobank_rows(csv_path, limit=limit)
         y = torch.tensor(ys, dtype=torch.float32)
+        torch.manual_seed(seed)
         model = STTextAffectRegressor(
             dim=ST_FEATURE_DIM,
             hidden=hidden,
@@ -60,6 +65,7 @@ def train(
     else:
         logger.info("encoding texts with %s (one-time, may take ~1min on CPU)...", encoder)
         x, y = load_emobank_embeddings(csv_path, encoder=encoder, limit=limit)
+        torch.manual_seed(seed)
         model = STTextAffectRegressor(
             dim=x.shape[1],
             hidden=hidden,
@@ -109,6 +115,7 @@ def main() -> None:
         help="端到端微调句向量编码器（需 GPU，MiniLM ~22M CPU 极慢）",
     )
     parser.add_argument("--out", default="artifacts/text_affect_regressor_st.pt")
+    parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     final = train(
         args.csv,
@@ -119,6 +126,7 @@ def main() -> None:
         num_layers=args.num_layers,
         finetune_encoder=args.finetune_encoder,
         out=args.out,
+        seed=args.seed,
     )
     print(f"done, final loss={final:.6f}")
 

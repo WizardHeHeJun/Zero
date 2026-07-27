@@ -41,17 +41,20 @@ def train(
     num_layers: int = 1,
     out: str = "artifacts/facs_decoder.pt",
     extended: bool = False,
+    seed: int = 0,
 ) -> float:
     """加载 FACS CSV、全批量训练 FacsDecoder 并保存权重，返回最终 MSE。
 
     extended=True：加载 13-AU 扩展 CSV（load_facs_csv_ext），用 FacsDecoder(extended=True)。
     现有 EmoNet/OpenFace 路径已可训练；AffectNet/DISFA 仍是后续更高保真数据源。
     13-AU v2 建议输出到 facs_decoder_ext_v2.pt，与旧 5-AU / 11-AU 权重隔离。
+    `seed` 固定初始化，保证可复现。
     """
     if extended:
         x, y = load_facs_csv_ext(csv_path)
     else:
         x, y = load_facs_csv(csv_path)
+    torch.manual_seed(seed)
     model = FacsDecoder(hidden=hidden, num_layers=num_layers, extended=extended)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
@@ -95,6 +98,7 @@ def main() -> None:
             "（默认：--ext→artifacts/facs_decoder_ext.pt；否则→artifacts/facs_decoder.pt）"
         ),
     )
+    parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     default_out = "artifacts/facs_decoder_ext.pt" if args.ext else "artifacts/facs_decoder.pt"
     out_path = args.out if args.out is not None else default_out
@@ -105,6 +109,7 @@ def main() -> None:
         num_layers=args.num_layers,
         out=out_path,
         extended=args.ext,
+        seed=args.seed,
     )
     print(f"done, final loss={final:.6f}")
 

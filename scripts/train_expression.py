@@ -55,8 +55,10 @@ def train(
 
     `canonical_physiology`（默认 False=legacy 目标·零回归）透传 `synthetic_pairs` →
     `affect_to_vector`：True 时蒸馏 canonical 布局（idx7=temperature_n），须配 canonical 输出路径。
+    `seed` 同时用于合成数据生成（`synthetic_pairs`）与模型初始化，保证可复现。
     """
     x, y = synthetic_pairs(n, seed=seed, canonical_physiology=canonical_physiology)
+    torch.manual_seed(seed)
     model = ExpressionDecoder(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
@@ -92,6 +94,7 @@ def main() -> None:
         action="store_true",
         help="蒸馏 canonical physiology 布局（idx7=temperature_n）；默认输出 _canonical.pt",
     )
+    parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     # 未显式给 --out 时按目标口径选默认路径，避免 canonical 权重覆写 legacy 权重（口径不兼容）。
     out = args.out or (
@@ -106,6 +109,7 @@ def main() -> None:
         num_layers=args.num_layers,
         out=out,
         canonical_physiology=args.canonical_physiology,
+        seed=args.seed,
     )
     print(f"done, final loss={final:.6f}")
 
