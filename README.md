@@ -236,6 +236,9 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 > **不想自己训练？直接用现成权重**：真实数据训练好的权重已随 Release 提供，拿来即用——从 [`weights-v0.1`](https://github.com/WizardHeHeJun/Zero/releases/tag/weights-v0.1)（稳定版 [`v0.1.0`](https://github.com/WizardHeHeJun/Zero/releases/tag/v0.1.0) 附件是同一份）下载 5 个 `.pt` 放入仓库根目录 `artifacts/`（已 gitignore），各 `load_*` / `scripts/*`（如 `run_pipeline`）自动加载；缺某通道回退内置默认 / 占位、不影响其它。
 > - 五通道：`text_affect_regressor.pt` / `text_affect_regressor_st.pt`（文本→(v,a)，词袋 / 句向量，EmoBank）· `prosody_decoder.pt`（(v,a)→韵律，RAVDESS）· `physiology_decoder.pt`（(v,a)→生理，WESAD）· `expression_decoder.pt`（(v,a)→表情 FACS，demo）。
+> - **文本通道建议用句向量版**：置 `ZERO_TEXT_AFFECT_BACKEND=st` 启用 `text_affect_regressor_st.pt`。在 EmoBank 官方留出 test 上，句向量版技能分（`1 − MSE/MSE_const`）**0.361**、词袋版仅 **0.028**——后者接近「永远预测均值」，实用价值很低。
+> - ⚠ `weights-v0.1` 的两个文本权重训练时读了 EmoBank 全量（含官方 dev/test），Release 页上标注的 loss 是**训练集拟合度、不是泛化指标**。该读取缺陷已修复（现在默认只用官方 train + dev 早停），干净口径的重训结果见 [WEIGHTS.md](WEIGHTS.md)。
+> - 校验值（sha256）、网络结构与训练配方见 **[WEIGHTS.md](WEIGHTS.md)**；自己重训时，权重旁会自动生成 `<权重>.pt.json` 记录该次训练的完整配方（轮数 / 学习率 / 种子 / 数据哈希 / commit）。
 
 > **日志与排障**：每次启动落一份 `logs/zero-<时间戳>-<pid>.log`；排障时 `ZERO_LOG_LEVEL=DEBUG python main.py ...` 可看每轮引擎 `e*`、记忆读写、LLM 请求/响应等详情，默认 `INFO` 保持安静、不打扰对话。对话另落一份**人读日志** `logs/conversation-<时间戳>-<pid>.log`（每轮 user/Zero 原文 + 评价/情绪/态度 trace，默认开、`ZERO_CONVERSATION_LOG=0` 关且不落任何对话内容）。
 
