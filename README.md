@@ -346,7 +346,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_MCP_HTTP_TOKEN` | —（本机免鉴权） | streamable-http 的 Bearer 共享密钥；本机(loopback) 未设=免鉴权，**对外(非 loopback) 未设 token 则启动即拒绝**（不开无鉴权裸端口）。缺失或错误的 token 返回 401；client 侧需配置同一个 token 值（两端变量名不同） |
 | `ZERO_MCP_WORKSPACE_ENABLED` | 开 | 会话默认开显著度门控工作空间（否则外部先验流被整段跳过） |
 | `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关；只受这些 env 治理，client 传入的同名字段被忽略（防越权开启） |
-| `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数 |
+| `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数。<br>⚠ 这些精度是**独立校准完成前的保守占位**，不是「同等地位却意外弱势」——它们**有意**低于 `ZERO_TEXT_AFFECT_PRECISION=0.3` 以保持层级；且**不随 `ZERO_PRECISION_COMMENSURABLE` 齐次化**（该开关只作用于引擎内部的四条流）。即开启齐次化后外部流相对更弱，这是已知且被接受的现状。<br>⚠ 另注：`valence` 越出 `[-1,1]` 会在边界被拒（返回错误而非静默截断），`arousal` 越界则仍按幅度截断到 1.0——这个不对称是有意的：前者是恒等透传、越界即契约违反，后者是「幅度→强度」的语义映射、截断是映射的一部分。 |
 
 > **会话续接与安全**：默认内存后端下 server 重启即丢会话。要跨重启续会话，设 `ZERO_CHECKPOINT_BACKEND=sqlite`（+`ZERO_CHECKPOINT_DB`），client 用**同一个 `session_id`** 重新 `open_session` 即接上；session_id 失效时 `step` 返回带 `unknown-session:` 前缀的错误，client 可据此重开重试。⚠ session_id 等同于该会话运行态与记忆的**访问凭据**，多用户部署必须配鉴权。
 >

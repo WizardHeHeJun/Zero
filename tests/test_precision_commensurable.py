@@ -32,6 +32,7 @@ from src.agents.affect_math import (
     SURVIVAL_PRECISION,
     TEXT_AFFECT_PRECISION,
     VALUE_PRECISION_CEILING,
+    effective_stream_count,
     fast_survival_prior,
     fuse_terms,
     mood_precision,
@@ -642,9 +643,11 @@ def test_gate_off_bitwise_identical_to_legacy_over_10k_random_cases() -> None:
         gc = rnd.uniform(-1.0, 1.0)
         assert precision(delta, value, commensurable=False) == _legacy_precision(delta, value)
         assert precision_da(delta, commensurable=False) == _legacy_precision_da(delta)
+        # survival 吃随机输入、须在全域恒为常数（这条留在循环里有判别力）
         assert fast_survival_prior([gc, 0.0, 0.0, inten], commensurable=False)[1] == (0.4, 0.4)
-        assert mood_precision(commensurable=False) == 0.8
-        assert text_affect_precision(commensurable=False) == 0.3
+    # mood/text 不吃任何输入，循环内重复 1e4 次没有额外判别力，移到循环外
+    assert mood_precision(commensurable=False) == 0.8
+    assert text_affect_precision(commensurable=False) == 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -695,3 +698,85 @@ def test_domain_enumeration_regression_lock() -> None:
     # 🔴 锁的判别力：区间必须真的收紧过——若某流的上下界相等且不是设计上的常量，说明扫描没生效
     assert span("survival")[0] < span("survival")[1], "survival 应随 |I| 变化，区间不该退化"
     assert span("appraisal")[0] < span("appraisal")[1], "appraisal 应随 |I| 变化，区间不该退化"
+
+
+# ---------------------------------------------------------------------------
+# 9. `effective_stream_count`（Kish N_eff）—— 观测量本身的直接覆盖
+#
+# 它是本轮唯一一处生产代码；上面的域穷举用的是测试内的 `_n_eff` 复算，
+# 并没有碰真函数。这里直接测函数 + 断言它确实出现在 trace 里。
+# ---------------------------------------------------------------------------
+
+
+def _terms(*precisions: float) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    return [((0.0, 0.0), (p, p)) for p in precisions]
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 5, 8])
+def test_n_eff_equals_stream_count_when_all_precisions_equal(n: int) -> None:
+    """N 条等精度流 → `N_eff = N`（Kish 定义的边界情形）。"""
+    v, a = effective_stream_count(_terms(*([2.5] * n)))
+    assert v == pytest.approx(float(n))
+    assert a == pytest.approx(float(n))
+
+
+def test_n_eff_approaches_one_under_single_stream_dominance() -> None:
+    """一条流碾压其余 → `N_eff → 1`（这正是齐次化前的实测形态，均值 1.175）。"""
+    v, _ = effective_stream_count(_terms(1000.0, 0.01, 0.01, 0.01))
+    assert 1.0 <= v < 1.001
+
+
+def test_n_eff_is_bounded_by_stream_count() -> None:
+    """`N_eff` 恒 ∈ [1, N]（Cauchy-Schwarz）：任意精度组合都不得越界。"""
+    rnd = random.Random(20260729)
+    for _ in range(2000):
+        n = rnd.randint(1, 6)
+        ps = [rnd.uniform(1e-4, 500.0) for _ in range(n)]
+        v, a = effective_stream_count(_terms(*ps))
+        assert 1.0 - 1e-9 <= v <= n + 1e-9, f"N_eff={v} 越界 [1,{n}]，精度={ps}"
+        assert v == pytest.approx(a), "两维精度相同时 N_eff 应逐维相等"
+
+
+def test_n_eff_applies_min_precision_floor() -> None:
+    """低于 `MIN_PRECISION` 的输入按 `MIN_PRECISION` 计（与 `fuse_terms` 同款钳制）。"""
+    below = effective_stream_count(_terms(1.0, 0.0))
+    floored = effective_stream_count(_terms(1.0, MIN_PRECISION))
+    assert below == floored
+
+
+def test_n_eff_handles_empty_terms_without_dividing_by_zero() -> None:
+    """空流表返回 (0,0) 而非崩——它是观测量，不该成为新的崩溃源。"""
+    assert effective_stream_count([]) == (0.0, 0.0)
+
+
+def test_n_eff_lands_in_trace_only_when_gate_is_on() -> None:
+    """接线：`n_eff` 只在 workspace **且** 齐次化门开时进 trace。
+
+    ⚠ 门关时**不得**出现——`workspace_enabled` 是早于本项就已上线的独立旗标，
+    本项承诺的「默认关=零回归」只覆盖 `precision_commensurable`；若不加这层判断，
+    已开 workspace 但没开本门的用户 trace 会静默多一个键（本项范围外溢）。
+    """
+    ws = {"workspace_enabled": True, "mood_enabled": True, "mood": (0.1, -0.2)}
+    off = _run_value_then_core(**ws)
+    on = _run_value_then_core(precision_commensurable=True, **ws)
+    assert "n_eff" not in off["trace"][0], "门关时 trace 不得多出 n_eff 键"
+    assert "n_eff" in on["trace"][0]
+    v, a = on["trace"][0]["n_eff"]
+    assert 1.0 <= v <= 8.0 and 1.0 <= a <= 8.0, f"n_eff 数值不合理：{(v, a)}"
+    # 非 workspace 分支任何时候都不产该键（terms 根本不存在）
+    assert "n_eff" not in _run_value_then_core(precision_commensurable=True)["trace"][0]
+
+
+def test_n_eff_is_observation_only_never_a_top_level_out_field() -> None:
+    """不变式：`n_eff` 不是独立的顶层 out 字段，也不进任何 AffectState 顶层字段。
+
+    ⚠ 它**确实随 trace 进 state 并被 Checkpointer 持久化**（`entry` 就是 `out["trace"][0]`
+    的同一个对象）——「不入 state」的说法是错的。成立的不变式只有：不是顶层字段、
+    全仓无下游读取、故不参与计算与门控。本用例锁前者，后者靠 code review 与 grep 维持。
+    """
+    out = _run_value_then_core(
+        precision_commensurable=True, workspace_enabled=True, mood_enabled=True, mood=(0.1, -0.2)
+    )
+    assert "n_eff" not in out
+    assert "n_eff" not in AffectState.model_fields
+    assert set(out).issubset(set(AffectState.model_fields)), "节点只能返回合法 state 字段"

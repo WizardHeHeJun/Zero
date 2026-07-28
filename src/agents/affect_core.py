@@ -195,10 +195,20 @@ class AffectCoreAgent:
             entry["ignited_streams"] = ignited
             out["ignited_streams"] = ignited
             out["affect_precision"] = 0.5 * (1.0 / post_sigma[0] ** 2 + 1.0 / post_sigma[1] ** 2)
-            # Kish 有效流数（议会 2026-07-28 第四轮 D5）：**纯观测量**，只进 trace、
-            # 不进 out（不入 state、不做门、不参与计算）。读数 →1 = 后验实际由单流决定。
-            # ⚠ 不得据此下硬断言：单流主导在合法校准下也会发生（见函数 docstring）。
-            entry["n_eff"] = effective_stream_count(terms)
+            # Kish 有效流数（议会 2026-07-28 第四轮 D5）：**纯观测量**。读数 →1 = 后验实际
+            # 由单流决定。⚠ 不得据此下硬断言——单流主导在合法校准下也会发生（见函数 docstring）。
+            #
+            # ⚠ 措辞要准：`entry` **就是** `out["trace"][0]` 的同一个对象（列表存引用），
+            # 故 n_eff **确实随 trace 进 state 并被 Checkpointer 持久化**。它不是"游离于
+            # state 之外"。成立的不变式只有两条：① 不是独立的顶层 out 字段；
+            # ② 全仓无任何下游读 `trace[...]["n_eff"]`，故不参与计算、不做门。
+            # 体量上是一对 float，属 state.py:4「trace 仅存标量中间量」的允许范围。
+            #
+            # 只在 comm 门开时写：`workspace_enabled` 是早于本项就已上线的**独立**旗标，
+            # 本项承诺的「默认关=零回归」只覆盖 precision_commensurable。若不加这层判断，
+            # 已开 workspace 但没开本门的用户 trace 会静默多一个键——那是本项范围外溢。
+            if comm:
+                entry["n_eff"] = effective_stream_count(terms)
         logger.debug(
             "affect_core e*=%s post_mu=%s post_sigma=%s ignited=%s",
             e_star,
