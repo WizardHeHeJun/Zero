@@ -23,8 +23,10 @@ from src.agents.affect_math import (
     gaussian_fuse,
     hierarchical_fuse,
     ignite,
+    mood_precision,
     precision_da,
     sample_affect,
+    text_affect_precision,
 )
 from src.orchestration.state import AffectState
 
@@ -53,14 +55,19 @@ class AffectCoreAgent:
                 arousal_gain / max(MIN_SIGMA, state.prior_sigma[0]) ** 2,
                 arousal_gain / max(MIN_SIGMA, state.prior_sigma[1]) ** 2,
             )
-            surv_mu, surv_prec = fast_survival_prior(state.features)
+            # precision_commensurable（议会 2026-07-28 第四轮）：门开时 survival 流的精度
+            # 由裸常数 0.4 改为 1/σ²（conf→σ→Π 链路，同构 occ_prior 但截距/斜率远低）。
+            comm = state.precision_commensurable
+            surv_mu, surv_prec = fast_survival_prior(state.features, commensurable=comm)
 
             # A-P1-A（议会裁决·神经席 M5+数学席 M6）：precision_split 门控。
             # True → value 流证据精度用 precision_da(rpe)（仅 DA 路径 |δ|，消 β·V 混同）；
             # False → 逐字旧行为 pi*arousal_gain（零回归）。
+            # 注：else 分支的 pi 来自 state.precision（value.py），门开时**已在那里齐次化**，
+            # 故此处不重复处理——两条支路的量纲始终一致。
             rpe_for_da = state.rpe if state.rpe is not None else 0.0
             if state.precision_split:
-                pi_da = precision_da(rpe_for_da) * arousal_gain
+                pi_da = precision_da(rpe_for_da, commensurable=comm) * arousal_gain
             else:
                 pi_da = pi * arousal_gain
 
@@ -84,16 +91,17 @@ class AffectCoreAgent:
                 ),  # 慢评价流（OCC）；精度=arousal_gain/σ²，即 NE 路径 pi_ne
                 ("value", evidence, value_prec),  # 价值流（RPE）
             ]
+            # mood/text 两条流的精度是 env 可调旋钮（ZERO_MOOD_PRECISION / ZERO_TEXT_AFFECT_
+            # PRECISION），默认停在旧标度 0.8/0.3。门开时改用齐次值 1/σ²；旋钮被显式改过
+            # 时不在此静默覆盖——SessionConfig 校验会在配置期 fail-fast（混标度正是本项要消灭的）。
+            mood_prec = mood_precision(commensurable=True) if comm else state.mood_precision
+            text_prec = (
+                text_affect_precision(commensurable=True) if comm else state.text_affect_precision
+            )
             if state.mood_enabled and state.mood is not None:
-                streams.append(("mood", state.mood, (state.mood_precision, state.mood_precision)))
+                streams.append(("mood", state.mood, (mood_prec, mood_prec)))
             if state.text_affect is not None:
-                streams.append(
-                    (
-                        "text",
-                        state.text_affect,
-                        (state.text_affect_precision, state.text_affect_precision),
-                    )
-                )
+                streams.append(("text", state.text_affect, (text_prec, text_prec)))
             # 外部多模态先验流注入（T4·议会 2026-07-15 M1；design.md 受约束方案 c）。
             # 仅读 state，只 extend 局部 streams，不写任何 state 字段（节点契约）。
             # 不进 occ_prior/survival 入口（守 text 流先例：独立低精度竞争流，非底噪）。
@@ -138,11 +146,18 @@ class AffectCoreAgent:
                 1.0 / max(MIN_SIGMA, state.prior_sigma[0]) ** 2,
                 1.0 / max(MIN_SIGMA, state.prior_sigma[1]) ** 2,
             )
+            # precision_commensurable：同 workspace 分支的 mood 处理。evidence 的 pi 来自
+            # value.py，门开时已在那里齐次化，此处不重复处理。
+            mood_prec_nb = (
+                mood_precision(commensurable=True)
+                if state.precision_commensurable
+                else state.mood_precision
+            )
             post_mu, post_sigma = fuse_terms(
                 [
                     (state.prior_mu, prior_prec),
                     (evidence, (pi, pi)),
-                    (prev_mood, (state.mood_precision, state.mood_precision)),
+                    (prev_mood, (mood_prec_nb, mood_prec_nb)),
                 ]
             )
         else:

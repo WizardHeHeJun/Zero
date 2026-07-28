@@ -37,6 +37,32 @@ SURVIVAL_PRECISION = 0.4  # 快生存流（上丘-枕-杏仁核捷径）：低�
 TEXT_AFFECT_PRECISION = 0.3  # 文本语义流精度（固定低值，显式低于 occ_prior 动态精度）
 # 初版固定：类比 SURVIVAL_PRECISION 的工程近似（Friston 2005 允许初始固定精度）；
 # 未来可从回归器残差动态估计（议会悬而未决 #1）。
+
+# ── 精度量纲齐次化（议会 2026-07-28 第四轮；PRP/精度量纲齐次化/）─────────────
+# 问题：上面几个常量与 occ_prior 的 arousal_gain/σ² **不是同一物理量**。把它们当 1/σ²
+# 反解得 σ_survival=1.58 / σ_mood=1.12 / σ_text=1.83——全部宽于 [-1,1] 值域的一半，
+# 说得通的唯一方式是「这些流几乎什么都不知道」，那 Π 就该趋近 MIN_PRECISION。
+# 它们从来不是按方差倒数设计的，只验证过**序**（ordinal, Stevens 1946），
+# 而加权平均需要**比值尺度**（ratio-scale）。
+# 本节把各流改写成同一把尺子（都是 1/σ²，σ 表达在 [-1,1] 值域上），
+# **仅统一量纲、不等于校准正确**——实证校准（从回归器残差估计 σ）是独立后续项目。
+# 全部经 state.precision_commensurable 门控，默认关 = 逐字旧行为。
+SURVIVAL_CONF_BASE = 0.1  # 快生存流置信度截距（远低于 occ_prior 的 0.3）
+SURVIVAL_CONF_GAIN = 0.1  # 置信度随 |intensity| 的斜率（远低于 occ_prior 的 0.5）
+SURVIVAL_CONF_CAP = 0.5  # 置信度上限：保证 σ_survival ≥ 0.25，天然弱于 appraisal
+# σ_mood = 1.0：mood_step 的双稳吸引子实测落在 clamp 边界 ±1（非内部不动点——
+# f(m)=inertia·m+self_gain·tanh(self_k·m)−m 在 (0,1] 上恒 >0，一路推到边界），
+# 不稳定不动点在 0 → **盆半宽 = 1.0**。心境作为「当前瞬时情感」的先验，
+# 其不确定性就是它能漂多远，故 σ_mood 取盆半宽。（现常数 0.8 反解 σ=1.118，量级吻合。）
+SIGMA_MOOD = 1.0
+# σ_text = 0.5：代码原注释自陈「显式低于 occ_prior 动态精度」，occ_prior 的 σ∈[0.10,0.35]，
+# 故 σ_text 须 >0.35；又应强于 mood（针对当前输入而非跨轮基调），故 <1.0。
+# 取 0.5（≈ occ 最宽 0.35 与 mood 1.0 的中段）。**保守占位，待实证校准**。
+SIGMA_TEXT = 0.5
+# value 流：precision_da 的 sigmoid(α|δ|)∈[0.5,1) 是概率不是逆方差，把它当 Π 反解得
+# σ∈[1.00,1.41]（宽于整个值域）。重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]，
+# 上限取与 survival 同量级（同属快速粗略通路），使二者可比。
+VALUE_PRECISION_CEILING = 6.25
 SALIENCE_THRESHOLD = 0.18  # ignition 阈值：salience 低于此的流不点燃（停留局部）
 AROUSAL_GAIN = 1.0  # NE/唤醒对评价·价值流精度的增益系数（唤醒越高投票权越大）
 # ignite 软门控陡度（议会 2026-07-02 Item 2）：None=硬 step 零回归（默认）；
@@ -152,21 +178,56 @@ def td_update(
 
 
 def precision(
-    delta: float, value_estimate: float, *, alpha: float = 1.0, beta: float = 0.5
+    delta: float,
+    value_estimate: float,
+    *,
+    alpha: float = 1.0,
+    beta: float = 0.5,
+    commensurable: bool = False,
 ) -> float:
-    """精度 π = σ(α·|δ| + β·V)：RPE 强度与价值确定性共同决定证据权重。"""
+    """精度 π = σ(α·|δ| + β·V)：RPE 强度与价值确定性共同决定证据权重。
+
+    `commensurable=True`（量纲齐次化，默认关）：与 `precision_da` 同一处理——sigmoid 输出
+    是概率不是逆方差，重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]。
+    ⚠ 本函数是**默认路径**（`affect_core.py` 的 `gaussian_fuse` 分支）的证据精度来源
+    （`value.py:22` → `state.precision`），故此门是三条融合分支里唯一每轮无条件生效的一处。
+    """
+    if commensurable:
+        return MIN_PRECISION + (VALUE_PRECISION_CEILING - MIN_PRECISION) * sigmoid(
+            alpha * abs(delta) + beta * value_estimate
+        )
     return max(MIN_PRECISION, sigmoid(alpha * abs(delta) + beta * value_estimate))
 
 
-def precision_da(delta: float, *, alpha: float = 1.0) -> float:
+def precision_da(delta: float, *, alpha: float = 1.0, commensurable: bool = False) -> float:
     """DA 路径精度 π_DA = σ(α·|δ|)：消去 β·V，仅由 RPE 幅度决定证据权重。
 
     议会裁决 A-P1-A（神经席 M5 + 数学席 M6）：`precision(δ, V)` 原式 σ(α|δ|+β·V) 把
     DA 精度与价值混同，β·V 无神经依据。此函数只保留 DA 通路真正编码的信号——预测误差
     幅度 |δ|；value_estimate 项移除。精度下界与 `precision` 保持一致（MIN_PRECISION 钳制）。
     纯函数、无 I/O、无 env（守热路径红线）。
+
+    `commensurable=True`（第四轮议会量纲齐次化，默认关）：`sigmoid()` 输出是 **概率**
+    不是 **逆方差**，直接当 Π 送进 `fuse_terms` 会反解出 σ∈[1.00,1.41]——宽于整个
+    [-1,1] 值域，语义上等于「这条流什么都不知道」，与它实际占的权重矛盾。
+    重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]，保持单调性与「RPE 越大权重越高」
+    的原语义不变，只换尺度。
     """
+    if commensurable:
+        return MIN_PRECISION + (VALUE_PRECISION_CEILING - MIN_PRECISION) * sigmoid(
+            alpha * abs(delta)
+        )
     return max(MIN_PRECISION, sigmoid(alpha * abs(delta)))
+
+
+def mood_precision(*, commensurable: bool = False) -> float:
+    """心境流精度。门开时 = 1/σ_mood²（σ_mood = mood_step 吸引盆半宽，见 SIGMA_MOOD）。"""
+    return 1.0 / SIGMA_MOOD**2 if commensurable else MOOD_PRECISION
+
+
+def text_affect_precision(*, commensurable: bool = False) -> float:
+    """文本语义流精度。门开时 = 1/σ_text²（σ_text 见 SIGMA_TEXT，保守占位待实证校准）。"""
+    return 1.0 / SIGMA_TEXT**2 if commensurable else TEXT_AFFECT_PRECISION
 
 
 def evidence_from_value(reward: float, delta: float) -> tuple[float, float]:
@@ -653,6 +714,8 @@ def _decode_facs_extended(
 
 def fast_survival_prior(
     features: list[float],
+    *,
+    commensurable: bool = False,
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """快生存流（快速皮层下/防御回路，仿 LeDoux 生存回路思路）：从原始特征出粗 (μ, Π)。
 
@@ -662,11 +725,22 @@ def fast_survival_prior(
     注（议会 B-1/M2）：具体解剖通路（上丘→丘脑枕→杏仁核"捷径"）在人类证据仍有争议
     （Pessoa & Adolphs 2010, NRN 11:773；LeDoux & Brown 2017），此处仅作快速显著性评估的
     工程近似，不承诺特定解剖底物。
+
+    `commensurable=True`（第四轮议会量纲齐次化，默认关）：把常数 0.4 换成与 `occ_prior`
+    同构的 `conf → σ → 1/σ²` 链路，但截距/斜率/上限都远低于慢评价流
+    （0.1/0.1/0.5 vs 0.3/0.5/1.0），使「粗快=不确定」这一设计意图**在同一把尺子上**
+    成立——Π_survival∈[4.94, 6.25]，恒弱于 Π_appraisal∈[8.16, 200]。
     """
     goal = features[0] if features else 0.0
     intensity = features[3] if len(features) > 3 else 1.0
     valence = clamp(0.6 * goal, -1.0, 1.0)  # 粗：只取目标符号
     arousal = clamp(0.5 + 0.5 * abs(intensity), 0.0, 1.0)  # 威胁/显著 → 高唤醒
+    if commensurable:
+        conf = clamp(
+            SURVIVAL_CONF_BASE + SURVIVAL_CONF_GAIN * abs(intensity), 0.0, SURVIVAL_CONF_CAP
+        )
+        prec = 1.0 / max(MIN_SIGMA, 0.5 * (1.0 - conf)) ** 2
+        return (valence, arousal), (prec, prec)
     return (valence, arousal), (SURVIVAL_PRECISION, SURVIVAL_PRECISION)
 
 

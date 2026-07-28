@@ -24,10 +24,14 @@ class Stimulus(BaseModel):
 
     name: str
     text: str | None = None  # 文本型 stimulus 原始文本；文本路径用，OCC 路径忽略
-    goal_congruence: float = 0.0  # 与目标的一致性（事件维度）
-    standard_compliance: float = 0.0  # 与标准的契合（行为维度）
-    attitude_appeal: float = 0.0  # 对象的喜好（吸引力维度）
-    intensity: float = 1.0  # 事件显著度/强度
+    # 四个评价维度的 [-1,1] 约束（议会 2026-07-28 第四轮 A4）：此前只有上面 docstring
+    # 声明域，运行期不校验。后果实测：|intensity|≥1.2 时 occ_prior 的 conf 撞 1.0 →
+    # σ 撞 MIN_SIGMA=0.05 → Π 撞死 800，比域内合法上限 200 高 4 倍，appraisal 流在
+    # fuse_terms 里直接吃掉全部权重。与 expand_external_priors 的 M7 μ 域校验同类漏洞、同种修法。
+    goal_congruence: float = Field(default=0.0, ge=-1.0, le=1.0)  # 与目标的一致性（事件维度）
+    standard_compliance: float = Field(default=0.0, ge=-1.0, le=1.0)  # 与标准的契合（行为维度）
+    attitude_appeal: float = Field(default=0.0, ge=-1.0, le=1.0)  # 对象的喜好（吸引力维度）
+    intensity: float = Field(default=1.0, ge=-1.0, le=1.0)  # 事件显著度/强度
     # 情境控制感评价维度（议会 2026-07-13 T2；Smith & Ellsworth 1985 control 维）。
     # 独立于 goal_congruence——目标可实现但感觉无法掌控（如意外之喜）。
     # +1=高控制/趋近（愤怒端），-1=低控制/回避（恐惧端）。
@@ -286,6 +290,16 @@ class AffectState(BaseModel):
     # len(external_priors) > max → expand_external_priors raise ValueError（数学席 Σπ 虚增保险）。
     # 经 SessionConfig → to_state_flags 贯通；N≤5 保守（fuse_terms MIN_SIGMA 已给隐式上界）。
     max_external_streams: int = Field(default=5, ge=0)
+
+    # ── 精度量纲齐次化总门控（议会 2026-07-28 第四轮；ZERO_PRECISION_COMMENSURABLE env）──
+    # False（默认）→ survival/mood/text/value 四条流沿用原裸常数与裸 sigmoid，**三条融合分支
+    #   （gaussian_fuse 默认路径 / mood_enabled / workspace）全部逐字旧行为**；
+    # True → 四条流的 Π 一律改写成 1/σ²、σ 表达在 [-1,1] 值域上（见 affect_math.py 齐次化节）。
+    # ⚠ 与其它门控的关键区别：本门影响**每轮无条件执行**的 gaussian_fuse 默认路径
+    #   （affect_core.py:149），不是只影响默认关的 workspace 分支。
+    # ⚠ 只统一量纲，**不等于校准正确**——实证校准（从回归器残差估计 σ）是独立后续项目。
+    # 经 SessionConfig.precision_commensurable → to_state_flags() → ainvoke 贯通。
+    precision_commensurable: bool = False  # 默认关=零回归
 
     # text_coping 独立标量流（议会 2026-07-16 B3；来源：PerceptionAgent 词典/回归产出）。
     # ── text_coping_enabled：B3 总门控（默认 False=零回归）──

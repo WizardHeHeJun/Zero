@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from src.agents.affect_math import clamp, occ_prior
 from src.agents.appraisal import RECALL_BIAS_WEIGHT, AppraisalAgent
@@ -232,11 +233,29 @@ def test_no_stimulus_returns_empty_dict() -> None:
 
 
 def test_prior_valence_bounds_with_extreme_attitude_appeal() -> None:
-    """attitude_appeal 极值时 prior_mu 仍在 [-1, 1]（钳制正常工作）。"""
+    """attitude_appeal 取域内极值（±1）时 prior_mu 仍在 [-1, 1]（钳制正常工作）。"""
     agent = AppraisalAgent()
-    for aa in [-1.0, 1.0, -2.0, 2.0]:
+    for aa in [-1.0, 1.0]:
         stim = Stimulus(name="ext", goal_congruence=0.9, intensity=1.0, attitude_appeal=aa)
         out = agent(AffectState(stimulus=stim))
         v, a = out["prior_mu"]
         assert -1.0 <= v <= 1.0, f"valence 越界：{v=} with attitude_appeal={aa}"
         assert -1.0 <= a <= 1.0, f"arousal 越界：{a=} with attitude_appeal={aa}"
+
+
+def test_out_of_domain_appraisal_fields_rejected_at_construction() -> None:
+    """四个评价维度越域时在 Stimulus 构造期 fail-fast（议会 2026-07-28 第四轮 A4）。
+
+    本用例原先用 attitude_appeal=±2.0 验「靠下游 clamp 兜住」。域约束落地后语义改变：
+    越域值不再进入内核靠钳制补救，而是在边界被拒——防 |intensity|≥1.2 时 occ_prior 的
+    σ 撞 MIN_SIGMA、Π 撞死 800（域内合法上限 200 的 4 倍）这类静默的精度爆表。
+    上一个用例保留域内极值的钳制断言，两者合起来覆盖原有防护 + 新增 fail-fast。
+    """
+    for field in ("goal_congruence", "standard_compliance", "attitude_appeal", "intensity"):
+        for bad in (-2.0, 2.0, 1.2, -1.0001):
+            with pytest.raises(ValidationError):
+                # 用 model_validate 而非 **kwargs：动态键名下 mypy 无法收窄参数类型
+                Stimulus.model_validate({"name": "ext", field: bad})
+        # 边界值本身合法（闭区间），不得误伤
+        for ok in (-1.0, 1.0, 0.0):
+            Stimulus.model_validate({"name": "ext", field: ok})

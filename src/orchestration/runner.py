@@ -132,6 +132,13 @@ class SessionConfig(BaseModel):
     external_prior_precision_cap: float = Field(default=0.8, gt=0.0)
     max_external_streams: int = Field(default=5, ge=0)
 
+    # ── precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）──
+    # False → survival/mood/text/value 四流沿用裸常数/裸 sigmoid，三条融合分支逐字旧行为；
+    # True → 四流 Π 改写成 1/σ²、σ 表达在 [-1,1] 值域上（affect_math.py 齐次化节）。
+    # ⚠ 唯一影响**默认路径**（gaussian_fuse，每轮无条件执行）的门控——其它旋钮都只碰默认关的分支。
+    # 经 ZERO_PRECISION_COMMENSURABLE → chat_driver → SessionConfig → to_state_flags。
+    precision_commensurable: bool = False
+
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
     # 此处只存会话级固定系数（contagion/care/vicarious alpha + threshold）。
@@ -153,6 +160,34 @@ class SessionConfig(BaseModel):
             raise ValueError(
                 f"共情系数 L1 和 {l1:.3f} >0.6（contagion+care+vicarious）；"
                 f"数学席证会破 mood 双稳/attitude 收敛，请调低"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_precision_scale_consistency(self) -> SessionConfig:
+        """齐次化门开时禁止 mood/text 精度旋钮停在旧标度（议会 2026-07-28 第四轮）。
+
+        `precision_commensurable=True` 会把 mood/text 两条流的 Π 换成 1/σ²（1.0 / 4.0），
+        而 `ZERO_MOOD_PRECISION` / `ZERO_TEXT_AFFECT_PRECISION` 的默认 0.8 / 0.3 是**旧标度**
+        的裸常数。两者混用 = 同一次 `fuse_terms` 里一半流按逆方差、一半按裸常数加权——
+        正是本项要消灭的量纲不可比。故门开时旋钮必须留在默认值，显式改过就 fail-fast，
+        不静默覆盖（覆盖会让用户的显式配置无声失效，同 [[zero-link-physiology]] BLOCK-1）。
+        """
+        if not self.precision_commensurable:
+            return self
+        stale = [
+            name
+            for name, got, legacy in (
+                ("ZERO_MOOD_PRECISION", self.mood_precision, 0.8),
+                ("ZERO_TEXT_AFFECT_PRECISION", self.text_affect_precision, 0.3),
+            )
+            if got != legacy
+        ]
+        if stale:
+            raise ValueError(
+                f"precision_commensurable=True 与旧标度精度旋钮 {'/'.join(stale)} 同时设置："
+                f"齐次化会把 mood/text 精度换成 1/σ²，与裸常数标度不可混用。"
+                f"请改回默认（mood=0.8 / text=0.3）或关闭 ZERO_PRECISION_COMMENSURABLE"
             )
         return self
 
@@ -266,6 +301,8 @@ async def run(
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
     external_prior_precision_cap: float = 0.8,
     max_external_streams: int = 5,
+    # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+    precision_commensurable: bool = False,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -367,6 +404,8 @@ async def run(
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 "external_prior_precision_cap": external_prior_precision_cap,
                 "max_external_streams": max_external_streams,
+                # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+                "precision_commensurable": precision_commensurable,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -471,6 +510,8 @@ class ConversationSession:
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
         external_prior_precision_cap: float = 0.8,
         max_external_streams: int = 5,
+        # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+        precision_commensurable: bool = False,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -550,6 +591,8 @@ class ConversationSession:
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 external_prior_precision_cap=external_prior_precision_cap,
                 max_external_streams=max_external_streams,
+                # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+                precision_commensurable=precision_commensurable,
             )
 
     @property

@@ -19,7 +19,10 @@ class ValueAgent:
             return {}
         key = state.stimulus.name
         delta, new_value, table = td_update(state.value_table, key, state.reward)
-        pi = precision(delta, new_value)
+        # precision_commensurable（议会 2026-07-28 第四轮；默认关=逐字旧行为）：门开时把
+        # sigmoid 概率重标定成逆方差量纲。此处产出的 pi 是**默认融合路径**
+        # （affect_core.py 的 gaussian_fuse 分支）的证据精度，每轮无条件生效。
+        pi = precision(delta, new_value, commensurable=state.precision_commensurable)
         entry = {
             "node": "value",
             "rpe": delta,

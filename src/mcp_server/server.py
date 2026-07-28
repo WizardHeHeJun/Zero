@@ -43,7 +43,15 @@ logger = logging.getLogger(__name__)
 # 议会解锁门：这两个字段**只受 ZERO_MCP_* env 治理**，client config overrides 中的同名键
 # 被 _build_session_config 静默忽略（A5·A6·2026-07-21）——防「生产关·MCP 开」旁路。
 _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
-    {"coping_potential_enabled", "text_coping_enabled", "fear_domain_enabled"}
+    {
+        "coping_potential_enabled",
+        "text_coping_enabled",
+        "fear_domain_enabled",
+        # precision_commensurable（议会 2026-07-28 第四轮）：改的是**默认融合路径**的证据加权，
+        # 比上面三个门更深——client 经 config 打开它等于在 MCP 面单方面换掉内核的精度标度。
+        # 同治理模式：只受 ZERO_MCP_PRECISION_COMMENSURABLE env 管，overrides 静默忽略。
+        "precision_commensurable",
+    }
 )
 
 # step 未知/过期 session_id 的机读错误前缀（zero-link T6）：MCP graceful_step 按此前缀判定 →
@@ -89,6 +97,10 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # MCP 收窄前提（CS 席约束·design.md）：消费方须确认部署端已开此 env 才能依赖
         # canonical 键集（{hr,sc(μS),temperature_c}）；默认关=legacy 占位（含 pupil_mm）。
         "canonical_physiology": _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False),
+        # 默认 False：与生产/chat 零回归一致（议会 2026-07-28 第四轮）——齐次化改的是每轮
+        # 无条件执行的默认融合路径，MCP 面不得旁路生效；仅 ZERO_MCP_PRECISION_COMMENSURABLE
+        # env 治理，client override 被 gated_flags 静默忽略。
+        "precision_commensurable": _env_flag("ZERO_MCP_PRECISION_COMMENSURABLE", False),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),
