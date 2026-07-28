@@ -596,3 +596,25 @@ def test_domain_sweep_gate_on_never_violates_hard_contract() -> None:
             ref = _weighted_ref(terms, d)
             if abs(ref) <= 1.0:
                 assert math.isclose(post[d], ref, abs_tol=1e-9)
+
+
+def test_survival_fallback_scope_narrows_but_does_not_vanish_when_gate_opens() -> None:
+    """`ignition_survival_fallback` 在门开后**作用域收窄、不是失效**。
+
+    摘门后它不再影响数值通路（融合集恒为全流），但仍经 `report_ignited()` 决定
+    全弱刺激时报告的是 survival 还是 top-1 —— 即从「管数值+管报告」收窄为「只管报告」。
+    这条写成用例，是因为 `tasks.md` 的独立待办里曾把它列为「设了却不生效也不报错」，
+    实测**不成立**；若哪天真的失效了，本用例会红。
+    """
+    weak = _streams(
+        ("survival", 0.01, 0.01, 0.01, 0.01),
+        ("appraisal", 0.02, 0.02, 0.02, 0.02),
+    )
+    assert all(stream_salience(mu, p) < SALIENCE_THRESHOLD for _, mu, p in weak)
+    # 报告通路：两种取值给出不同结果 → 仍有作用
+    assert report_ignited(weak, survival_fallback=True, soft_beta=None) == ["survival"]
+    assert report_ignited(weak, survival_fallback=False, soft_beta=None) == ["appraisal"]
+    # 数值通路：门开后恒为全流，不受该 flag 影响 → 作用域确已收窄
+    for fb in (True, False):
+        _, names = ignite(weak, survival_fallback=fb, soft_beta=None, gate_fusion=False)
+        assert names == ["survival", "appraisal"]
