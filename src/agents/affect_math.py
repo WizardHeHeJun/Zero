@@ -296,7 +296,16 @@ def fuse_terms(
 
     每项 = (mu, precision)（逐维精度）；后验精度 = 各项精度之和。
     仅含「先验 + 证据」两项时与 gaussian_fuse 数值一致（见 test）。
+
+    空输入 → `ValueError`（design D12）。此前是 `den=0` 一路走到 `num/den` 抛
+    **无信息的 `ZeroDivisionError`**；本函数是全仓融合的公共入口，值得一句指名道姓的报错。
+    **非空输入逐位不变**——纯错误信息改善，非行为变更。
     """
+    if not terms:
+        raise ValueError(
+            "fuse_terms 收到空的 terms：至少需要一项 (μ, Π) 才能定义后验。"
+            "调用方应保证流列表非空（如 ignite 的 fusion_terms 前置条件）"
+        )
     post_mu: list[float] = []
     post_sigma: list[float] = []
     for d in range(2):
@@ -745,6 +754,7 @@ def fast_survival_prior(
     features: list[float],
     *,
     commensurable: bool = False,
+    arousal_floor_fix: bool = False,
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """快生存流（快速皮层下/防御回路，仿 LeDoux 生存回路思路）：从原始特征出粗 (μ, Π)。
 
@@ -759,11 +769,22 @@ def fast_survival_prior(
     同构的 `conf → σ → 1/σ²` 链路，但截距/斜率/上限都远低于慢评价流
     （0.1/0.1/0.5 vs 0.3/0.5/1.0），使「粗快=不确定」这一设计意图**在同一把尺子上**
     成立——Π_survival∈[4.94, 6.25]，恒弱于 Π_appraisal∈[8.16, 200]。
+
+    `arousal_floor_fix=True`（议会 D5「失真必改」，默认关=逐字旧行为）：去掉 arousal 的
+    **0.5 地板**。`I=0` 时仍给 0.5 = 把「没有证据」编码成「确定的中等唤醒」——对无信号撒谎。
+    亚皮层通路响应幅度随刺激分级（McFadyen 2019），无威胁时应趋于基线。
+    与 valence 项 `clamp(0.6*goal, -1, 1)`（本就无常数底数）内部一致。
+    ⚠ 须与 `gate_fusion` **共用同一 default-off 门控**，杜绝「只修地板不改架构」这种未评审的中间态。
+    ⚠ 这是**装配阶段**的 μ 污染：`(streams → post)` 形状的锚点按构造抓不到它（会从已污染的
+    流列表重新推导参照），故另有流级锚点 C 专门承接。
     """
     goal = features[0] if features else 0.0
     intensity = features[3] if len(features) > 3 else 1.0
     valence = clamp(0.6 * goal, -1.0, 1.0)  # 粗：只取目标符号
-    arousal = clamp(0.5 + 0.5 * abs(intensity), 0.0, 1.0)  # 威胁/显著 → 高唤醒
+    if arousal_floor_fix:
+        arousal = clamp(0.5 * abs(intensity), 0.0, 1.0)  # 无信号 → 趋基线，不撒谎
+    else:
+        arousal = clamp(0.5 + 0.5 * abs(intensity), 0.0, 1.0)  # 威胁/显著 → 高唤醒（旧·带地板）
     if commensurable:
         conf = clamp(
             SURVIVAL_CONF_BASE + SURVIVAL_CONF_GAIN * abs(intensity), 0.0, SURVIVAL_CONF_CAP
@@ -783,12 +804,54 @@ def stream_salience(mu: tuple[float, float], precision: tuple[float, float]) -> 
     return deviation * mean_precision
 
 
+def _score_streams(
+    streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
+) -> list[tuple[str, tuple[float, float], tuple[float, float], float]]:
+    """给每条流打 salience 分，返回 (name, μ, Π, salience)。"""
+    return [(name, mu, prec, stream_salience(mu, prec)) for name, mu, prec in streams]
+
+
+def _select_fired(
+    scored: list[tuple[str, tuple[float, float], tuple[float, float], float]],
+    *,
+    threshold: float,
+    survival_fallback: bool,
+    soft_beta: float | None,
+) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
+    """今天 `ignite()` 的筛选逻辑，原样抽出供数值通路与报告通路**共用**。
+
+    抽成 helper 而非各写一遍，是为了保证 `gate_fusion=True` 时 `ignite()` 与
+    `report_ignited()` 的输出**逐值相等**（零回归的必要条件，design D13）——
+    两处独立实现同一套兜底分支迟早会分叉。
+    """
+    if soft_beta is not None:
+        # 软门控分支：所有流参与，精度按 logistic gate 调制
+        out: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
+        for name, mu, prec, sal in scored:
+            gate = sigmoid(soft_beta * (sal - threshold))
+            out.append((name, mu, (prec[0] * gate, prec[1] * gate)))
+        return out
+
+    # 硬 step 分支（soft_beta=None）
+    fired = [(name, mu, prec) for name, mu, prec, s in scored if s >= threshold]
+    if fired:
+        return fired
+    if survival_fallback:
+        surv = next(((n, m, p) for n, m, p, _ in scored if n == "survival"), None)
+        if surv is not None:
+            return [surv]
+    top = max(scored, key=lambda item: item[3])
+    return [(top[0], top[1], top[2])]
+
+
 def ignite(
     streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
     *,
     threshold: float = SALIENCE_THRESHOLD,
     survival_fallback: bool = False,
     soft_beta: float | None = IGNITION_BETA,
+    gate_fusion: bool = True,
+    exclude_physio_fusion: bool = True,
 ) -> tuple[list[tuple[tuple[float, float], tuple[float, float]]], list[str]]:
     """GNW ignition：salience ≥ threshold 的流点燃进入全局广播，亚阈流停留局部。
 
@@ -810,41 +873,70 @@ def ignite(
     β<1 无意义（gate 趋 0.5 成均匀融合），推荐区间 [20,50]（神经/数学席交集）。
     复用本模块既有 `sigmoid`。
 
-    streams = [(name, μ, Π), ...]；返回 (点燃流的 [(μ, Π)] 供 fuse_terms, 点燃流名列表)。
+    ── `gate_fusion`（议会第三轮 D1，默认 True=门关，逐字旧行为）──
+    `True`：硬门同时决定「谁进 fuse_terms」与「谁可报告」——即今天的行为。
+    `False`：**硬门从数值通路上摘下来，只留报告通路**。`fusion_terms` 收全部流的原生 (μ, Π)，
+    不乘任何 gate/D 因子；「哪些流点燃」改由 `report_ignited()` 单独回答。
+    神经席裁定：GNW ignition = 「什么内容变得**可报告**」，不是「谁计算数值」；
+    **阈下不点燃 ≠ 阈下零影响**。
+
+    ⚠ **本函数的两个返回值恒对齐**（同一次筛选产出、一一对应）——调用方可安全
+    `zip(..., strict=True)`。这是 BLOCK 1 的实质保证；不需要第三个返回值，见 design D13。
+
+    streams = [(name, μ, Π), ...]；返回 (供 fuse_terms 的 [(μ, Π)], **与之对齐的**流名列表)。
     纯函数、无副作用。
     """
-    scored = [(name, mu, prec, stream_salience(mu, prec)) for name, mu, prec in streams]
+    scored = _score_streams(streams)
+    if gate_fusion:
+        # 门关（默认）：逐字旧行为——硬门/软门的产物同时充当融合项与报告项。
+        selected = _select_fired(
+            scored, threshold=threshold, survival_fallback=survival_fallback, soft_beta=soft_beta
+        )
+        return [(mu, prec) for _, mu, prec in selected], [name for name, _, _ in selected]
 
-    if soft_beta is not None:
-        # 软门控分支：所有流参与融合，精度按 logistic gate 调制
-        terms = []
-        names = []
-        for name, mu, prec, sal in scored:
-            gate = sigmoid(soft_beta * (sal - threshold))
-            pi_eff: tuple[float, float] = (prec[0] * gate, prec[1] * gate)
-            terms.append((mu, pi_eff))
-            names.append(name)
-        return terms, names
+    # 门开：全流原生 (μ, Π) 进融合，不乘任何 gate/D 因子。
+    fusion = [(name, mu, prec) for name, mu, prec, _ in scored]
+    if exclude_physio_fusion:
+        # D7 跨仓承诺（默认排除）：配套项目 Zero_MCP 用 WESAD 真被试验证其 EDA arousal
+        # 与唤醒**系统性反号**，明确请求「宁可继续门掉——『暂时不参与融合』优于『以反号参与』」。
+        # 由我方单边可控，其度量重设计完成后再解除。
+        fusion = [t for t in fusion if not t[0].lower().startswith(_PHYSIO_PREFIXES)]
+    if streams and not fusion:
+        # D12：违反前置条件（传入的流**全是**被排除流）。生产路径不可达——`affect_core` 恒装配
+        # survival/appraisal/value 三条核心流。此处给指名道姓的报错，替掉调用方 fuse_terms
+        # 里那个无信息的 ZeroDivisionError。**不做「回退全流」**——那会让被排除的 physio
+        # 无声重新参与融合，直接违背对 Zero_MCP 的承诺。
+        raise ValueError(
+            "ignite(gate_fusion=False) 的 fusion_terms 为空：传入的 "
+            f"{len(streams)} 条流全部命中 physio 排除前缀 {_PHYSIO_PREFIXES}。"
+            "至少需要一条非 physio 流；若确要让 physio 参与融合，显式传 exclude_physio_fusion=False"
+        )
+    return [(mu, prec) for _, mu, prec in fusion], [name for name, _, _ in fusion]
 
-    # 硬 step 分支（soft_beta=None）：逐字旧行为，零回归
-    fired = [(name, mu, prec) for name, mu, prec, s in scored if s >= threshold]
-    if not fired:
-        if survival_fallback:
-            surv = next(
-                ((name, mu, prec) for name, mu, prec, _ in scored if name == "survival"),
-                None,
-            )
-            if surv is not None:
-                fired = [surv]
-            else:
-                top = max(scored, key=lambda item: item[3])
-                fired = [(top[0], top[1], top[2])]
-        else:
-            top = max(scored, key=lambda item: item[3])
-            fired = [(top[0], top[1], top[2])]
-    terms = [(mu, prec) for _, mu, prec in fired]
-    names = [name for name, _, _ in fired]
-    return terms, names
+
+def report_ignited(
+    streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
+    *,
+    threshold: float = SALIENCE_THRESHOLD,
+    survival_fallback: bool = False,
+    soft_beta: float | None = IGNITION_BETA,
+) -> list[str]:
+    """**报告通路**：哪些流「变得可报告/可内省」（GNW ignition 的正确语义归属，神经席 D4）。
+
+    与 `ignite()` 的数值通路彻底分离——本函数的输出**不影响任何数值**，只作可解释性标签
+    （`AffectState.ignited_streams`）。判据与今天逐字相同（含软门全流、硬门兜底两条分支），
+    故 `gate_fusion=True` 时它与 `ignite()` 返回的流名列表**逐值相等** → 零回归。
+
+    ⚠ 该列表**不是纯标注**：经 `supervisor.py` 落进 **USER 作用域 episode**，
+    再由 `memory_recall` → `chat_driver` 注入 LLM system 上下文。改它的语义要当外部可见行为对待。
+    """
+    selected = _select_fired(
+        _score_streams(streams),
+        threshold=threshold,
+        survival_fallback=survival_fallback,
+        soft_beta=soft_beta,
+    )
+    return [name for name, _, _ in selected]
 
 
 def attitude_step(

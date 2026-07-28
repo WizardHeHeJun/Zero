@@ -934,7 +934,7 @@ class TestExternalPriorErrorAttribution:
         with pytest.raises(ValueError) as ei:
             hierarchical_fuse(
                 [("appraisal", (0.1, 0.1), (1.0, 1.0)), ("survival", (0.2, 0.2), (0.4, 0.4))],
-                low_names=("survival",),
+                low_names=frozenset({"survival"}),
                 layers=2,
                 coupling=1.5,
             )

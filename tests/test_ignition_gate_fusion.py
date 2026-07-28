@@ -1,0 +1,526 @@
+"""硬门摘出数值通路（议会第三轮 D1，五轮评审）：零回归 + BLOCK + 锚点 A/B/C。
+
+**核心改动**：`ignite()` 的硬门原先同时决定「谁进 `fuse_terms`」与「谁可报告」。
+神经席裁定 GNW ignition = 「什么内容变得**可报告**」，不是「谁计算数值」；且
+**阈下不点燃 ≠ 阈下零影响**。`gate_fusion=False` 时数值后验走**全流原生 (μ, Π)**，
+「哪些流点燃」改由 `report_ignited()` 单独回答。
+
+⚠ **本门方向与仓内其它旋钮相反**：`gate_fusion` 默认 **True = 门关 = 逐字旧行为**。
+漏接线会使它永久 True——**新架构永远开不出来**（不是永远开着）。用例按此方向写。
+
+分区：
+1. 零回归（门关）：`ignite` 与 `report_ignited` 逐值相等 + 三条既有分支不变。
+2. BLOCK 1：两个返回值恒对齐 → `zip(strict=True)` 永不失配。
+3. BLOCK 2：`gate_fusion=False` × HPC 在 **SessionConfig 构造期** fail-fast。
+4. D12：空 `fusion_terms` 前置条件 + `fuse_terms` 空输入。
+5. D7：physio 排除（跨仓承诺）。
+6. 锚点 A/B/C + **各自的变异测试**（先证正确实现恒绿，再证接回历史 bug 会红）。
+"""
+
+from __future__ import annotations
+
+import itertools
+import math
+
+import pytest
+
+from src.agents.affect_core import AffectCoreAgent
+from src.agents.affect_math import (
+    MIN_PRECISION,
+    SALIENCE_THRESHOLD,
+    fast_survival_prior,
+    fuse_terms,
+    ignite,
+    report_ignited,
+    stream_salience,
+)
+from src.orchestration.runner import SessionConfig
+from src.orchestration.state import AffectState, Stimulus
+
+# ---------------------------------------------------------------------------
+# 工具
+# ---------------------------------------------------------------------------
+
+Stream = tuple[str, tuple[float, float], tuple[float, float]]
+
+
+def _streams(*specs: tuple[str, float, float, float, float]) -> list[Stream]:
+    return [(n, (mv, ma), (pv, pa)) for n, mv, ma, pv, pa in specs]
+
+
+_CORE: list[Stream] = _streams(
+    ("survival", 0.30, 0.60, 0.40, 0.40),
+    ("appraisal", 0.15, 0.09, 11.11, 11.11),
+    ("value", 0.00, 0.30, 0.001, 0.62),
+)
+
+
+def _weighted_ref(terms: list[tuple[tuple[float, float], tuple[float, float]]], d: int) -> float:
+    """锚点 B 的参考量：`Σ p_i μ_i / Σ p_i`，**`p_i = max(MIN_PRECISION, Π_i)`**。
+
+    🛑 **必须用有效精度而非原生 Π**：`fuse_terms` 内部就是 `p = max(MIN_PRECISION, prec[d])`。
+    用原生 Π 当参考量，在验收要求的采样域（Π 对数均匀跨 [1e-9, cap]）下**10 万组里
+    84427 组正确实现会假红**，最坏偏差 2.885e-04（比 1e-9 容差高 5 个数量级）。
+    第四轮就栽在这里。
+    """
+    ps = [max(MIN_PRECISION, prec[d]) for _, prec in terms]
+    return sum(p * mu[d] for (mu, _), p in zip(terms, ps, strict=True)) / sum(ps)
+
+
+# ---------------------------------------------------------------------------
+# 1. 零回归（门关 = 默认）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("soft_beta", [None, 20.0])
+@pytest.mark.parametrize("survival_fallback", [False, True])
+def test_gate_off_ignite_and_report_agree_exactly(
+    soft_beta: float | None, survival_fallback: bool
+) -> None:
+    """门关：`ignite()` 的流名与 `report_ignited()` **逐值相等**。
+
+    这是零回归的必要条件——`affect_core` 用前者做 zip、用后者填 `ignited_streams`，
+    二者不等就意味着 `out["ignited_streams"]` 变了。覆盖软门/硬门 × 兜底开关四种组合。
+    """
+    _, fusion_names = ignite(
+        _CORE, survival_fallback=survival_fallback, soft_beta=soft_beta, gate_fusion=True
+    )
+    ignited = report_ignited(_CORE, survival_fallback=survival_fallback, soft_beta=soft_beta)
+    assert fusion_names == ignited
+
+
+def test_gate_off_all_weak_fallback_still_agrees() -> None:
+    """门关 · 全弱刺激（无流过阈）：兜底分支下二者仍逐值相等。"""
+    weak = _streams(("survival", 0.01, 0.01, 0.01, 0.01), ("appraisal", 0.02, 0.01, 0.02, 0.02))
+    assert all(stream_salience(mu, p) < SALIENCE_THRESHOLD for _, mu, p in weak)
+    for fb in (False, True):
+        _, names = ignite(weak, survival_fallback=fb, soft_beta=None, gate_fusion=True)
+        assert names == report_ignited(weak, survival_fallback=fb, soft_beta=None)
+        assert len(names) == 1, "兜底应只保留一条"
+
+
+def test_gate_off_default_is_true_not_false() -> None:
+    """⚠ 方向锁定：不传 `gate_fusion` == 传 `True`（**不是** False）。
+
+    本门方向与仓内其它旗标相反，最容易写反的就是这一条。
+    """
+    assert ignite(_CORE) == ignite(_CORE, gate_fusion=True)
+    assert SessionConfig().gate_fusion is True
+    assert AffectState().gate_fusion is True
+    assert SessionConfig().to_state_flags()["gate_fusion"] is True
+
+
+def _core_state(**kw: object) -> AffectState:
+    base: dict = {
+        "stimulus": Stimulus(name="s", goal_congruence=0.4, intensity=0.6),
+        "prior_mu": (0.2, 0.3),
+        "prior_sigma": (0.25, 0.25),
+        "reward": 0.4,
+        "rpe": 0.35,
+        "precision": 0.6,
+        "workspace_enabled": True,
+        "rng_seed": 20260729,
+        "affect_readout": "map",
+    }
+    base.update(kw)
+    return AffectState(**base)
+
+
+def test_gate_off_affect_core_unchanged() -> None:
+    """门关：`AffectCoreAgent` 的后验与 `ignited_streams` 与显式关一致。"""
+    agent = AffectCoreAgent()
+    a = agent(_core_state())
+    b = agent(_core_state(gate_fusion=True))
+    assert a["post_mu"] == b["post_mu"]
+    assert a["ignited_streams"] == b["ignited_streams"]
+
+
+def test_gate_on_actually_changes_posterior() -> None:
+    """门开：后验确实变了——防漏接线导致静默 no-op（BLOCK-1 同款防护）。"""
+    agent = AffectCoreAgent()
+    off = agent(_core_state())
+    on = agent(_core_state(gate_fusion=False))
+    assert off["post_mu"] != on["post_mu"], "门开后 post_mu 未变化，接线可能没通"
+
+
+# ---------------------------------------------------------------------------
+# 2. BLOCK 1 —— 两个返回值恒对齐
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("gate_fusion", [True, False])
+@pytest.mark.parametrize("soft_beta", [None, 20.0])
+def test_block1_fusion_terms_and_names_always_aligned(
+    gate_fusion: bool, soft_beta: float | None
+) -> None:
+    """BLOCK 1 的实质保证：`ignite()` 两个返回值**恒等长**，`zip(strict=True)` 永不失配。
+
+    第四轮方案是把 `ignite()` 改三元组；实现期改判为**拆两个函数**（design D13）——
+    对齐由「同一次筛选产出」在构造上保证，不需要第三个返回值，
+    且 24 个既有调用点的返回元数一个不动。
+    """
+    terms, names = ignite(_CORE, soft_beta=soft_beta, gate_fusion=gate_fusion)
+    assert len(terms) == len(names)
+    list(zip(names, terms, strict=True))  # 不抛即通过
+
+
+def test_block1_report_subset_would_have_broken_the_old_zip() -> None:
+    """反向证明 BLOCK 1 真实存在：门开时报告集**真的**比融合集短。
+
+    若 `affect_core` 仍用 `zip(ignited, terms, strict=True)`，这里就会 ValueError。
+    """
+    terms, names = ignite(_CORE, soft_beta=None, gate_fusion=False)
+    ignited = report_ignited(_CORE, soft_beta=None)
+    assert len(ignited) < len(names), "该场景下报告集应真子集于融合集，否则本用例没在测东西"
+    with pytest.raises(ValueError):
+        list(zip(ignited, terms, strict=True))
+
+
+# ---------------------------------------------------------------------------
+# 3. BLOCK 2 —— 与 HPC 显式互斥，在 SessionConfig 构造期 fail-fast
+# ---------------------------------------------------------------------------
+
+
+def test_block2_gate_fusion_x_hpc_rejected_at_config_time() -> None:
+    """`gate_fusion=False` × `layers≥2` × `coupling>0` → 构造期抛错。
+
+    **位置很关键**（第五轮订正）：两个纯函数各自都拿不到三字段全集；且若在热路径抛，
+    MCP 面就是永久 DoS（活跃会话 config 不可变，client 无法自救），
+    而触发组合 `coupling∈[0.3,0.8]` 恰是 README 推荐值、不是坏输入。
+    """
+    with pytest.raises(ValueError, match="联合语义未定义"):
+        SessionConfig(gate_fusion=False, hierarchical_layers=2, hierarchical_coupling=0.5)
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        pytest.param({"gate_fusion": False, "hierarchical_layers": 1}, id="HPC-层数退化"),
+        pytest.param(
+            {"gate_fusion": False, "hierarchical_layers": 2, "hierarchical_coupling": 0.0},
+            id="HPC-耦合退化",
+        ),
+        pytest.param(
+            {"gate_fusion": True, "hierarchical_layers": 2, "hierarchical_coupling": 0.5},
+            id="门关+HPC（旧路径须照常可用）",
+        ),
+    ],
+)
+def test_block2_does_not_over_reject(kw: dict) -> None:
+    """互斥只收缩**两个开关的乘积空间**，不得误伤任一单独开启的路径。"""
+    assert SessionConfig(**kw) is not None
+
+
+# ---------------------------------------------------------------------------
+# 4. D12 —— 空 fusion_terms 的前置条件
+# ---------------------------------------------------------------------------
+
+
+def test_d12_all_physio_streams_raise_named_error() -> None:
+    """传入的流全是被排除流 → 指名道姓的报错，不是 `ZeroDivisionError`。"""
+    only_physio = _streams(("eda_tonic", 0.0, 0.8, 0.001, 0.175))
+    with pytest.raises(ValueError, match="全部命中 physio 排除前缀"):
+        ignite(only_physio, gate_fusion=False, exclude_physio_fusion=True)
+    # 显式关掉排除即可正常返回（逃生舱有效）
+    terms, _ = ignite(only_physio, gate_fusion=False, exclude_physio_fusion=False)
+    assert len(terms) == 1
+
+
+def test_d12_fuse_terms_empty_raises_informative_error() -> None:
+    """`fuse_terms([])` 从 `ZeroDivisionError` 改成指名道姓的 `ValueError`。"""
+    with pytest.raises(ValueError, match="收到空的 terms"):
+        fuse_terms([])
+    # **非空输入逐位不变**——纯错误信息改善，非行为变更
+    got = fuse_terms([((0.2, 0.3), (1.0, 2.0)), ((0.4, 0.1), (3.0, 1.0))])
+    assert got[0][0] == pytest.approx((1.0 * 0.2 + 3.0 * 0.4) / 4.0)
+
+
+def test_d12_empty_input_is_not_a_precondition_violation() -> None:
+    """`ignite([])` 本身不报错——空输入是空输出，不是「全被排除」。"""
+    assert ignite([], gate_fusion=False) == ([], [])
+
+
+# ---------------------------------------------------------------------------
+# 5. D7 —— physio 排除（跨仓承诺）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["physio", "eda_tonic", "hrv_rmssd", "pupil_d", "scr_amp"])
+def test_d7_physio_excluded_from_fusion_by_default(name: str) -> None:
+    """五个 physio 前缀在门开时默认**不进数值通路**。
+
+    Zero_MCP 用 WESAD 真被试验证其 EDA arousal 与唤醒**系统性反号**，明确请求
+    「宁可继续门掉——『暂时不参与融合』优于『以反号参与』」。由我方单边可控。
+    """
+    with_physio = [*_CORE, (name, (0.0, 0.85), (MIN_PRECISION, 0.175))]
+    _, names = ignite(with_physio, gate_fusion=False)
+    assert name not in names
+    _, names_off = ignite(with_physio, gate_fusion=False, exclude_physio_fusion=False)
+    assert name in names_off
+
+
+def test_d7_physio_still_reportable_even_when_excluded_from_fusion() -> None:
+    """**反向语义须被验收**：physio 可以「点燃（可报告）」却**不参与数值**。
+
+    这不是 bug，是新架构的直接推论——报告通路与数值通路分离。
+    但该列表经 supervisor 落进 USER 作用域 episode 并注入 LLM 上下文，
+    故这个反直觉组合必须被显式测到、而不是等人在生产里读到才发现。
+    """
+    strong_physio = [*_CORE, ("physio", (0.0, 0.95), (MIN_PRECISION, 5.0))]
+    _, fusion_names = ignite(strong_physio, gate_fusion=False, soft_beta=None)
+    ignited = report_ignited(strong_physio, soft_beta=None)
+    assert "physio" in ignited, "高显著 physio 应可报告"
+    assert "physio" not in fusion_names, "但不得进数值通路"
+
+
+# ---------------------------------------------------------------------------
+# 6. 锚点 A/B/C + 变异测试
+#
+# 🛑 每条锚点两件事都要做到：(a) 接回历史 bug 会红；(b) **先证明在正确实现上恒绿**。
+# (b) 比 (a) 更要紧——第四轮的①④各自在正确实现上也会红，而
+# **「在正确实现上会红的断言」比「不可证伪的绿灯」更危险**：它会在落地时被调松，
+# 而调松方向恰好把判别力一起调没。
+# ---------------------------------------------------------------------------
+
+_GRID = [-1.0, -0.4, 0.0, 0.4, 1.0]
+
+
+def _random_streams(seed: int) -> list[Stream]:
+    import random
+
+    rnd = random.Random(seed)
+    n = rnd.randint(2, 5)
+    return [
+        (
+            f"s{i}",
+            (rnd.uniform(-1, 1), rnd.uniform(-1, 1)),
+            (10 ** rnd.uniform(-9, 0.5), 10 ** rnd.uniform(-9, 0.5)),
+        )
+        for i in range(n)
+    ]
+
+
+# ── 锚点 A：后验落在各流 μ 的凸包内（退化轴保护）──
+
+
+def _assert_anchor_a(terms: list[tuple[tuple[float, float], tuple[float, float]]]) -> None:
+    post, _ = fuse_terms(terms)
+    for d in (0, 1):
+        mus = [mu[d] for mu, _ in terms]
+        lo, hi = min(mus), max(mus)
+        if hi > lo:
+            # 非退化轴：精度加权平均必**严格**落在开区间内（各权重均 >0）
+            assert lo < post[d] < hi, f"维{d}: post={post[d]} 不在开区间 ({lo}, {hi})"
+        else:
+            # 🛑 **退化轴保护**：全流同 μ 时开区间为空，严格断言会在**正确实现上假红**。
+            # 中性轮正是这种输入（Stimulus 三个 appraisal 字段默认 0.0 → 全流 μ_v ≡ 0）。
+            assert post[d] == pytest.approx(lo), f"维{d}: 退化轴上 post 应等于该值"
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_anchor_a_holds_on_correct_implementation(seed: int) -> None:
+    """锚点 A · (b) 恒绿证明：30 组随机装配 + 门开门关，正确实现下永不假红。"""
+    streams = _random_streams(seed)
+    for gate in (True, False):
+        terms, _ = ignite(streams, gate_fusion=gate, soft_beta=None)
+        _assert_anchor_a(terms)
+
+
+def test_anchor_a_degenerate_axis_is_the_neutral_turn() -> None:
+    """锚点 A · 退化轴保护的**必要性**：中性轮就是退化输入，没保护就假红。"""
+    neutral = _streams(
+        ("survival", 0.0, 0.60, 0.40, 0.40),
+        ("appraisal", 0.0, 0.09, 11.11, 11.11),
+        ("value", 0.0, 0.30, 0.001, 0.62),
+    )
+    terms, _ = ignite(neutral, gate_fusion=False, soft_beta=None)
+    assert len({mu[0] for mu, _ in terms}) == 1, "valence 轴应退化（全流 μ_v ≡ 0）"
+    _assert_anchor_a(terms)  # 有保护 → 绿
+    # 无保护（严格开区间）会红——这正是第四轮①的假红形态
+    post, _ = fuse_terms(terms)
+    mus = [mu[0] for mu, _ in terms]
+    assert not (min(mus) < post[0] < max(mus)), "开区间为空，严格断言必假——故保护是必须的"
+
+
+def test_anchor_a_goes_red_on_dominant_mu_bug() -> None:
+    """锚点 A · (a) 变异测试：把后验挪出凸包（「大 μ 独占」形态）→ 变红。"""
+    terms, _ = ignite(_CORE, gate_fusion=False, soft_beta=None)
+    mus = [mu[1] for mu, _ in terms]
+    bogus = max(mus) + 0.05  # 越出凸包上界
+    lo, hi = min(mus), max(mus)
+    assert not (lo < bogus < hi), "变异未生效——锚点 A 对此无判别力"
+
+
+# ── 锚点 B：硬契约（用有效精度作参考量）──
+
+
+def _assert_anchor_b(terms: list[tuple[tuple[float, float], tuple[float, float]]]) -> None:
+    post, _ = fuse_terms(terms)
+    for d in (0, 1):
+        ref = _weighted_ref(terms, d)
+        if abs(ref) <= 1.0:  # clamp 未生效的区间才谈 1e-9 契约
+            assert abs(post[d] - ref) < 1e-9, f"维{d}: post={post[d]} vs ref={ref}"
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_anchor_b_holds_on_correct_implementation(seed: int) -> None:
+    """锚点 B · (b) 恒绿证明：50 组随机装配，**Π 对数均匀跨 [1e-9, ~3]**。
+
+    这正是第四轮②假红的采样域（10 万组里 84427 组红）——用有效精度作参考量后恒绿。
+    """
+    streams = _random_streams(seed)
+    for gate in (True, False):
+        terms, _ = ignite(streams, gate_fusion=gate, soft_beta=None)
+        _assert_anchor_b(terms)
+
+
+def test_anchor_b_would_false_red_with_raw_precision_reference() -> None:
+    """🛑 证明「必须用有效精度」不是空话：用**原生 Π** 当参考量会在正确实现上假红。"""
+    tiny = _streams(("a", 0.9, 0.9, 1e-9, 1e-9), ("b", -0.9, -0.9, 1.0, 1.0))
+    terms, _ = ignite(tiny, gate_fusion=False, soft_beta=None)
+    post, _ = fuse_terms(terms)
+    raw_ps = [prec[1] for _, prec in terms]
+    raw_ref = sum(p * mu[1] for (mu, _), p in zip(terms, raw_ps, strict=True)) / sum(raw_ps)
+    assert abs(post[1] - raw_ref) > 1e-9, "原生 Π 参考量应产生可观偏差（第四轮②的假红来源）"
+    _assert_anchor_b(terms)  # 有效精度参考量 → 绿
+
+
+def test_anchor_b_goes_red_on_hard_gate_collapse() -> None:
+    """锚点 B · (a) 变异测试：接回硬门塌缩（`gate_fusion=True`）→ 相对全流参考量变红。
+
+    这是 4 个历史变体里 B 命中的三个之一。
+    """
+    all_terms, _ = ignite(_CORE, gate_fusion=False, soft_beta=None)
+    gated_terms, _ = ignite(_CORE, gate_fusion=True, soft_beta=None)
+    assert len(gated_terms) < len(all_terms), "该场景硬门须真的排除掉流，否则没在测东西"
+    post_gated, _ = fuse_terms(gated_terms)
+    ref_all = _weighted_ref(all_terms, 1)
+    assert abs(post_gated[1] - ref_all) > 1e-9, "变异未生效——锚点 B 对硬门塌缩无判别力"
+
+
+# ── 锚点 C：流级（承接 floor bug）──
+#
+# 🛑 **为什么必须有一条不看 post 的锚点**：第四轮四条锚点全部漏掉 floor bug，
+# 根因是**结构性的**——四条都是 `(streams → post)` 的函数，而 floor 污染的是
+# **装配阶段的 μ**，锚点会从**已被污染的流列表**重新推导参照 → 按构造恒绿。
+
+
+@pytest.mark.parametrize("goal", _GRID)
+def test_anchor_c_no_signal_no_arousal_claim(goal: float) -> None:
+    """锚点 C · 修复后：零强度输入下 survival 不再断言「确定的中等唤醒」。"""
+    mu, _ = fast_survival_prior([goal, 0.0, 0.0, 0.0], arousal_floor_fix=True)
+    assert mu[1] == 0.0, f"I=0 时 μ_a 应为 0，实际 {mu[1]}"
+
+
+def test_anchor_c_goes_red_on_floor_bug() -> None:
+    """锚点 C · (a) 变异测试：接回地板 → 立刻变红。"""
+    mu, _ = fast_survival_prior([0.0, 0.0, 0.0, 0.0], arousal_floor_fix=False)
+    assert mu[1] == 0.5, "变异未生效——锚点 C 对 floor bug 无判别力"
+
+
+def test_anchor_c_catches_what_post_shaped_anchors_structurally_cannot() -> None:
+    """🛑 锚点 C 的**存在理由**：证明 A/B 这类 `(streams→post)` 锚点确实抓不到 floor bug。
+
+    做法：拿带地板与不带地板的两套流各自算后验——**两个后验都各自满足 A 与 B**
+    （因为锚点从各自已污染/未污染的流重新推导参照），而两者数值明显不同。
+    即：A/B 全绿，但后验被改变了。
+    """
+    feats = [0.0, 0.0, 0.0, 0.0]
+    posts = []
+    for fix in (False, True):
+        surv_mu, surv_prec = fast_survival_prior(feats, arousal_floor_fix=fix)
+        streams: list[Stream] = [("survival", surv_mu, surv_prec), *_CORE[1:]]
+        terms, _ = ignite(streams, gate_fusion=False, soft_beta=None)
+        _assert_anchor_a(terms)  # 两边都绿
+        _assert_anchor_b(terms)  # 两边都绿
+        posts.append(fuse_terms(terms)[0][1])
+    assert abs(posts[0] - posts[1]) > 1e-6, (
+        f"地板确实改变了后验（{posts[0]} vs {posts[1]}），而 A/B 两边全绿——"
+        "这就是为什么必须有流级锚点 C"
+    )
+
+
+def test_anchor_c_is_bound_to_the_same_switch_as_gate_fusion() -> None:
+    """D5 强制：地板修复与 `gate_fusion` **共用同一开关**，杜绝未评审的中间态。"""
+    agent = AffectCoreAgent()
+    for gate_fusion, expect_floor in ((True, True), (False, False)):
+        st = _core_state(gate_fusion=gate_fusion, features=[0.0, 0.0, 0.0, 0.0])
+        agent(st)
+        mu, _ = fast_survival_prior(st.features, arousal_floor_fix=not st.gate_fusion)
+        assert (mu[1] == 0.5) is expect_floor
+
+
+# ---------------------------------------------------------------------------
+# 7. 治理 + 场景矩阵（精简版：在场流集合 × 门 × 软门）
+# ---------------------------------------------------------------------------
+
+
+def test_governance_flags_are_paired_and_direction_is_right() -> None:
+    """治理白名单与 base dict **成对**；且默认方向是 True（最容易写反的一条）。"""
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS, _build_session_config
+
+    assert {"gate_fusion", "exclude_physio_fusion"} <= _MCP_GOVERNANCE_GATED_FLAGS
+    cfg = _build_session_config(None)
+    assert cfg.gate_fusion is True, "漏 base dict 会使其永久 True——但那样这条也过，看下一条"
+    assert cfg.exclude_physio_fusion is True
+    # client override 不得旁路（跨仓承诺不容单边解除）
+    hacked = _build_session_config({"gate_fusion": False, "exclude_physio_fusion": False})
+    assert hacked.gate_fusion is True
+    assert hacked.exclude_physio_fusion is True
+
+
+def test_env_end_to_end_wiring_reads_false_set_not_true_set() -> None:
+    """🛑 env 解析必须判**假值集**：本门默认 True，用真值集会把「未设」判成 False。"""
+    from src.orchestration import chat_driver
+
+    with open(chat_driver.__file__, encoding="utf-8") as fh:
+        text = fh.read()
+    assert 'os.getenv("ZERO_IGNITION_GATE_FUSION", "").lower() not in (' in text
+    assert "gate_fusion=gate_fusion," in text
+
+
+@pytest.mark.parametrize(
+    "present",
+    [
+        pytest.param([], id="核心3"),
+        pytest.param([("text", (0.2, 0.2), (0.3, 0.3))], id="+text"),
+        pytest.param([("mood", (0.1, -0.1), (0.8, 0.8))], id="+mood"),
+        pytest.param(
+            [("text", (0.2, 0.2), (0.3, 0.3)), ("mood", (0.1, -0.1), (0.8, 0.8))],
+            id="+text+mood",
+        ),
+    ],
+)
+@pytest.mark.parametrize("n_external", [0, 1, 2])
+@pytest.mark.parametrize("soft_beta", [None, 20.0])
+def test_scenario_matrix(present: list[Stream], n_external: int, soft_beta: float | None) -> None:
+    """场景矩阵：在场流集合 × external 注入数 × 软门 × 门开关。
+
+    每格断言：融合集与流名对齐 · 报告集 ⊆ 全流名 · 锚点 A/B 成立 · physio 不在融合集。
+    """
+    ext: list[Stream] = [(f"face_{i}", (0.3, 0.2), (0.20, 0.12)) for i in range(n_external)]
+    streams: list[Stream] = [*_CORE, *present, *ext]
+    for gate in (True, False):
+        terms, names = ignite(streams, gate_fusion=gate, soft_beta=soft_beta)
+        assert len(terms) == len(names)
+        ignited = report_ignited(streams, soft_beta=soft_beta)
+        assert set(ignited) <= {n for n, _, _ in streams}
+        _assert_anchor_a(terms)
+        _assert_anchor_b(terms)
+        if not gate:
+            assert not any(
+                n.lower().startswith(("physio", "eda", "hrv", "pupil", "scr")) for n in names
+            )
+
+
+def test_domain_sweep_gate_on_never_violates_hard_contract() -> None:
+    """域穷举：门开时硬契约在整个评价域上成立（这是新架构的定义性质）。"""
+    for gc, inten in itertools.product(_GRID, _GRID):
+        surv_mu, surv_prec = fast_survival_prior([gc, 0.0, 0.0, inten], arousal_floor_fix=True)
+        streams: list[Stream] = [("survival", surv_mu, surv_prec), *_CORE[1:]]
+        terms, _ = ignite(streams, gate_fusion=False, soft_beta=None)
+        post, _ = fuse_terms(terms)
+        for d in (0, 1):
+            ref = _weighted_ref(terms, d)
+            if abs(ref) <= 1.0:
+                assert math.isclose(post[d], ref, abs_tol=1e-9)

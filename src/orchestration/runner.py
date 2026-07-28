@@ -139,6 +139,14 @@ class SessionConfig(BaseModel):
     # 经 ZERO_PRECISION_COMMENSURABLE → chat_driver → SessionConfig → to_state_flags。
     precision_commensurable: bool = False
 
+    # ── gate_fusion：硬门摘出数值通路（议会第三轮 D1；默认 True=门关=逐字旧行为）──
+    # ⚠ **方向与其它旋钮相反**：True 是「关」。漏传/漏接会使其永久 True，
+    #   新架构在该路径**永远开不出来**（不是永远开着）。双向用例须按此写，否则会写反。
+    gate_fusion: bool = True
+    # ── exclude_physio_fusion：physio 排除出数值通路（D7 跨仓承诺；默认 True=排除）──
+    # Zero_MCP 的 EDA arousal 经 WESAD 真被试验证与唤醒系统性反号，其明确请求继续门掉。
+    exclude_physio_fusion: bool = True
+
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
     # 此处只存会话级固定系数（contagion/care/vicarious alpha + threshold）。
@@ -188,6 +196,40 @@ class SessionConfig(BaseModel):
                 f"precision_commensurable=True 与旧标度精度旋钮 {'/'.join(stale)} 同时设置："
                 f"齐次化会把 mood/text 精度换成 1/σ²，与裸常数标度不可混用。"
                 f"请改回默认（mood=0.8 / text=0.3）或关闭 ZERO_PRECISION_COMMENSURABLE"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_gate_fusion_hpc_exclusive(self) -> SessionConfig:
+        """BLOCK 2（议会第四轮 · 位置由第五轮改判到此）：新融合架构 × HPC 显式互斥。
+
+        `gate_fusion=False`（全流精度加权）与 `hierarchical_layers≥2 且 coupling>0`（HPC）
+        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.py:410-412`
+        `pi_core = pi_l1e + w2 * pi_l0`），实测 coupling=0.3 时硬契约
+        `|post_mu − ΣΠμ/ΣΠ|` 偏差 **0.0773**、arousal 符号翻转。本轮**不解**该数学，
+        只做显式互斥——收缩的是两个独立开关的乘积空间，不是整个特性。
+
+        **为什么落在这里而不是纯函数**（第五轮订正）：`ignite()` 没有 layers/coupling、
+        `hierarchical_fuse()` 没有 gate_fusion，**两个纯函数各自都拿不到三字段全集**。
+        会话构造期是唯一信息完备且不在热路径上的位置（与齐次化的混标度校验同一形状）。
+
+        **为什么必须 fail-fast 而非静默取舍**：触发组合 `coupling∈[0.3,0.8]` 是 README
+        推荐值、**不是坏输入**——用户会理直气壮地这么配。静默按某一侧执行 = 产出未经评审
+        的数值。而 MCP 面若在热路径抛错则是**永久 DoS**（活跃会话 config 不可变，
+        client 无法自救），故必须在**构造期**就拒绝。
+        """
+        if (
+            not self.gate_fusion
+            and self.hierarchical_layers >= 2
+            and self.hierarchical_coupling > 0.0
+        ):
+            raise ValueError(
+                f"gate_fusion=False（全流精度加权）与 HPC（hierarchical_layers="
+                f"{self.hierarchical_layers} 且 coupling={self.hierarchical_coupling}）"
+                f"的联合语义未定义、本轮不支持：HPC 给 L0 流额外乘 w²，实测破坏硬契约"
+                f"（coupling=0.3 时偏差 0.0773、arousal 符号翻转）。"
+                f"请二选一——关 HPC（hierarchical_layers=1 或 hierarchical_coupling=0）"
+                f"或关新融合架构（ZERO_IGNITION_GATE_FUSION 留默认 true）"
             )
         return self
 
@@ -303,6 +345,9 @@ async def run(
     max_external_streams: int = 5,
     # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
     precision_commensurable: bool = False,
+    # gate_fusion：硬门摘出数值通路（议会第三轮 D1）⚠ 默认 True=门关（方向与其它旋钮相反）
+    gate_fusion: bool = True,
+    exclude_physio_fusion: bool = True,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -406,6 +451,9 @@ async def run(
                 "max_external_streams": max_external_streams,
                 # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
                 "precision_commensurable": precision_commensurable,
+                # gate_fusion / exclude_physio_fusion（议会第三轮 D1/D7）⚠ 二者默认均 True
+                "gate_fusion": gate_fusion,
+                "exclude_physio_fusion": exclude_physio_fusion,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -512,6 +560,9 @@ class ConversationSession:
         max_external_streams: int = 5,
         # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
         precision_commensurable: bool = False,
+        # gate_fusion：硬门摘出数值通路（议会第三轮 D1）⚠ 默认 True=门关
+        gate_fusion: bool = True,
+        exclude_physio_fusion: bool = True,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -593,6 +644,9 @@ class ConversationSession:
                 max_external_streams=max_external_streams,
                 # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
                 precision_commensurable=precision_commensurable,
+                # gate_fusion / exclude_physio_fusion（议会第三轮 D1/D7）⚠ 二者默认均 True
+                gate_fusion=gate_fusion,
+                exclude_physio_fusion=exclude_physio_fusion,
             )
 
     @property

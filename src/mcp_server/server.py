@@ -52,6 +52,10 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
         # 比上面三个门更深——client 经 config 打开它等于在 MCP 面单方面换掉内核的精度标度。
         # 同治理模式：只受 ZERO_MCP_PRECISION_COMMENSURABLE env 管，overrides 静默忽略。
         "precision_commensurable",
+        # gate_fusion（议会第三轮 D1）：它决定**数值后验怎么算**（硬门是否参与数值通路），
+        # 比上面几个门更深；且 physio 排除是对 Zero_MCP 的跨仓承诺，不容 client 单边解除。
+        "gate_fusion",
+        "exclude_physio_fusion",
     }
 )
 
@@ -102,6 +106,12 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # 无条件执行的默认融合路径，MCP 面不得旁路生效；仅 ZERO_MCP_PRECISION_COMMENSURABLE
         # env 治理，client override 被 gated_flags 静默忽略。
         "precision_commensurable": _env_flag("ZERO_MCP_PRECISION_COMMENSURABLE", False),
+        # ⚠ 默认 **True**（=门关=与生产/chat 零回归一致）。方向与上面几个相反：
+        # 漏了这一行会使 gate_fusion 在 MCP 路径**永久 True**——新架构永远开不出来
+        # （不是永远开着）。写双向用例时别按其它旗标的方向照抄。
+        "gate_fusion": _env_flag("ZERO_MCP_IGNITION_GATE_FUSION", True),
+        # physio 排除默认 True（D7 跨仓承诺·由我方单边可控）。
+        "exclude_physio_fusion": _env_flag("ZERO_MCP_EXCLUDE_PHYSIO_FUSION", True),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),

@@ -301,6 +301,21 @@ class AffectState(BaseModel):
     # 经 SessionConfig.precision_commensurable → to_state_flags() → ainvoke 贯通。
     precision_commensurable: bool = False  # 默认关=零回归
 
+    # ── 硬门摘出数值通路（议会第三轮 D1；ZERO_IGNITION_GATE_FUSION env）──
+    # ⚠ **方向与其它旋钮相反**：默认 **True = 门关 = 逐字旧行为**（硬门同时决定「谁进
+    #   fuse_terms」与「谁可报告」）。设 False 才是新架构：硬门只留报告通路，
+    #   数值后验走**全流原生 (μ, Π) 精度加权**，不乘任何 gate/D 因子。
+    # 神经席裁定：GNW ignition = 「什么内容变得**可报告**」，不是「谁计算数值」；
+    #   **阈下不点燃 ≠ 阈下零影响**。同一开关一并解除 fast_survival_prior 的 arousal 地板
+    #   （D5「失真必改」），杜绝「只修地板不改架构」这种未评审的中间态。
+    # 仅 workspace 分支消费（非 workspace 两条分支本就不经 ignite）。
+    gate_fusion: bool = True  # 默认 True=门关=零回归（注意方向）
+    # ── physio 流排除出数值通路（议会 D7·跨仓承诺；默认 True=排除）──
+    # 配套项目 Zero_MCP 用 WESAD 真被试验证其 EDA arousal 与唤醒**系统性反号**，明确请求
+    # 「宁可继续门掉——『暂时不参与融合』优于『以反号参与』」。由我方单边可控。
+    # 仅在 gate_fusion=False 时有意义（门关时 physio 本就受硬门管）。
+    exclude_physio_fusion: bool = True
+
     # text_coping 独立标量流（议会 2026-07-16 B3；来源：PerceptionAgent 词典/回归产出）。
     # ── text_coping_enabled：B3 总门控（默认 False=零回归）──
     # False → AppraisalAgent B3 强制 text=None，只走分支1/3（纯 ctrl 路径），逐字旧行为；

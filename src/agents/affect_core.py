@@ -26,6 +26,7 @@ from src.agents.affect_math import (
     ignite,
     mood_precision,
     precision_da,
+    report_ignited,
     sample_affect,
     text_affect_precision,
 )
@@ -59,7 +60,11 @@ class AffectCoreAgent:
             # precision_commensurable（议会 2026-07-28 第四轮）：门开时 survival 流的精度
             # 由裸常数 0.4 改为 1/σ²（conf→σ→Π 链路，同构 occ_prior 但截距/斜率远低）。
             comm = state.precision_commensurable
-            surv_mu, surv_prec = fast_survival_prior(state.features, commensurable=comm)
+            # arousal_floor_fix 与 gate_fusion **共用同一开关**（议会 D5 强制）：
+            # 杜绝「只修地板不改架构」这种未评审的中间态。门关时逐字旧行为（带 0.5 地板）。
+            surv_mu, surv_prec = fast_survival_prior(
+                state.features, commensurable=comm, arousal_floor_fix=not state.gate_fusion
+            )
 
             # A-P1-A（议会裁决·神经席 M5+数学席 M6）：precision_split 门控。
             # True → value 流证据精度用 precision_da(rpe)（仅 DA 路径 |δ|，消 β·V 混同）；
@@ -118,7 +123,19 @@ class AffectCoreAgent:
                         max_streams=state.max_external_streams,
                     )
                 )
-            terms, ignited = ignite(
+            # 数值通路与报告通路**分离**（议会第三轮 D1 + 实现期 D13）：
+            #   `ignite()` → 供 fuse_terms 的 (μ,Π) + **与之对齐**的流名（BLOCK 1 的实质保证：
+            #     二者同一次筛选产出、恒等长，下面的 zip(strict=True) 永不失配）；
+            #   `report_ignited()` → 「哪些流变得可报告」，**不影响任何数值**。
+            # gate_fusion=True（默认）时两者返回逐值相等 → out["ignited_streams"] 逐字不变。
+            terms, fusion_names = ignite(
+                streams,
+                survival_fallback=state.ignition_survival_fallback,
+                soft_beta=state.ignition_beta,
+                gate_fusion=state.gate_fusion,
+                exclude_physio_fusion=state.exclude_physio_fusion,
+            )
+            ignited = report_ignited(
                 streams,
                 survival_fallback=state.ignition_survival_fallback,
                 soft_beta=state.ignition_beta,
@@ -132,7 +149,10 @@ class AffectCoreAgent:
             # 精度语义自洽（gate 先于 HPC）；soft_beta=None（默认）时精度不变，零回归。
             if state.hierarchical_layers >= 2 and state.hierarchical_coupling > 0.0:
                 named_terms: list[tuple[str, tuple[float, float], tuple[float, float]]] = [
-                    (name, mu, prec) for name, (mu, prec) in zip(ignited, terms, strict=True)
+                    # 用 fusion_names（与 terms 同源对齐）而非 ignited（报告子集）——
+                    # 门开时后者是前者的子集、长度不等，用它会当场 ValueError（BLOCK 1）。
+                    (name, mu, prec)
+                    for name, (mu, prec) in zip(fusion_names, terms, strict=True)
                 ]
                 if named_terms:
                     post_mu, post_sigma = hierarchical_fuse(
