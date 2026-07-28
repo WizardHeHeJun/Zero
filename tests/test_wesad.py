@@ -17,7 +17,7 @@ pytest.importorskip("scipy")
 
 import numpy as np  # noqa: E402
 
-from src.agents.datasets.wesad import CHEST_FS, load_wesad  # noqa: E402
+from src.agents.datasets.wesad import CHEST_FS, CONDITION_TO_VA, load_wesad  # noqa: E402
 from src.agents.expression import ExpressionAgent  # noqa: E402
 from src.agents.models.composite import CompositeChannelDecoder  # noqa: E402
 from src.agents.models.physiology_decoder import (  # noqa: E402
@@ -64,6 +64,41 @@ def wesad_dir(tmp_path: Path) -> Path:
     subject.mkdir()
     make_wesad_pkl(subject / "S2.pkl", seconds=5)
     return tmp_path
+
+
+@pytest.fixture
+def wesad_dir_two_subjects(tmp_path: Path) -> Path:
+    """两个被试——受试者留出至少要能分辨出「哪些行属于同一个人」。"""
+    for name in ("S2", "S3"):
+        subject = tmp_path / name
+        subject.mkdir()
+        make_wesad_pkl(subject / f"{name}.pkl", seconds=5)
+    return tmp_path
+
+
+class TestReturnGroups:
+    """`return_groups` 是受试者留出的前提：X 只有 4 个取值，反推不出行属于哪个被试。"""
+
+    def test_default_shape_unchanged(self, wesad_dir: Path) -> None:
+        """默认不返回 groups——旧调用方（train_physiology 等）逐字零回归。"""
+        result = load_wesad(wesad_dir, window_seconds=2)
+        assert len(result) == 2
+
+    def test_groups_align_with_rows(self, wesad_dir_two_subjects: Path) -> None:
+        x, y, groups = load_wesad(wesad_dir_two_subjects, window_seconds=2, return_groups=True)
+        assert len(groups) == x.shape[0] == y.shape[0]
+        assert set(groups) == {"S2", "S3"}, "id 应回退到文件名（本 fixture 的 pkl 无 subject 字段）"
+        # 每个被试贡献的行数相同（两份 fixture 结构一致）——分组确实按人切，不是按行乱贴
+        assert groups.count("S2") == groups.count("S3") == x.shape[0] // 2
+
+    def test_x_alone_cannot_recover_subject(self, wesad_dir_two_subjects: Path) -> None:
+        """坐实「不加 return_groups 就做不到受试者留出」：X 的不同取值只有 4 个 condition。"""
+        x, _, groups = load_wesad(wesad_dir_two_subjects, window_seconds=2, return_groups=True)
+        distinct_x = {tuple(row.tolist()) for row in x}
+        assert len(distinct_x) <= len(CONDITION_TO_VA)
+        assert len(distinct_x) < len(set(groups)) * len(CONDITION_TO_VA), (
+            "X 取值数少于 被试×condition 组合数 → 同一 X 对应多个被试，从 X 反推不出归属"
+        )
 
 
 def test_load_wesad_shapes_and_ranges(wesad_dir: Path) -> None:
@@ -126,7 +161,18 @@ def test_train_physiology_smoke(wesad_dir: Path, tmp_path: Path) -> None:
     from scripts.train_physiology import train
 
     out = tmp_path / "physio.pt"
-    final = train(str(wesad_dir), epochs=100, window_seconds=2, out=str(out))
+    final = train(str(wesad_dir), epochs=100, stop="fixed", window_seconds=2, out=str(out))
     assert out.exists()
     assert math.isfinite(final)
     assert final < 0.2
+
+    # provenance sidecar 与权重同产（旁挂 json，不改 .pt 格式）
+    import json
+
+    from scripts._train_common import provenance_path
+
+    rec = json.loads(provenance_path(out).read_text(encoding="utf-8"))
+    assert rec["script"] == "scripts/train_physiology.py"
+    assert rec["training"]["epochs_ran"] == 100
+    assert rec["training"]["window_seconds"] == 2  # 切窗口径影响样本，必须落账
+    assert rec["data"]["kind"] == "directory"

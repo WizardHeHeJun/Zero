@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
+from typing import Literal, overload
 
 import numpy as np
 import torch
@@ -62,12 +63,52 @@ def extract_physiology(
     ]
 
 
+def _subject_id(data: dict[str, object], path: Path) -> str:
+    """受试者 id：优先 pkl 自带的 `subject` 字段，回退文件名（WESAD 布局是 `Sxx/Sxx.pkl`）。"""
+    raw = data.get("subject")
+    if isinstance(raw, bytes):
+        return raw.decode("latin1")
+    if raw:
+        return str(raw)
+    return path.stem
+
+
+@overload
 def load_wesad(
-    root: str | Path, *, window_seconds: int = 30, limit: int | None = None
-) -> tuple[torch.Tensor, torch.Tensor]:
+    root: str | Path,
+    *,
+    window_seconds: int = ...,
+    limit: int | None = ...,
+    return_groups: Literal[False] = ...,
+) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+
+@overload
+def load_wesad(
+    root: str | Path,
+    *,
+    window_seconds: int = ...,
+    limit: int | None = ...,
+    return_groups: Literal[True],
+) -> tuple[torch.Tensor, torch.Tensor, list[str]]: ...
+
+
+def load_wesad(
+    root: str | Path,
+    *,
+    window_seconds: int = 30,
+    limit: int | None = None,
+    return_groups: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, list[str]]:
     """递归加载 WESAD pkl，按 condition 切窗，返回 (X=(v,a), Y=生理3维) float32 张量。
 
     X ∈ [-1,1]^2，Y ∈ [0,1]^3。无可用段时抛 FileNotFoundError。
+
+    `return_groups=True` 时额外返回每行的受试者 id（长度 == X 行数），供**受试者留出**
+    （leave-one-subject-out）用。没有它，受试者留出在本仓根本做不到——X 只有 4 个不同取值
+    （`CONDITION_TO_VA` 的 4 个 condition），从 X 反推不出这一行来自哪个被试；而 WESAD 的
+    方差主要在被试之间，按行随机切分会让同一被试的窗口跨切分泄漏、val 失去意义。
+    默认 False，返回值逐字保持旧形态（零回归）。
     """
     files = sorted(Path(root).rglob("*.pkl"))
     if limit is not None:
@@ -76,9 +117,11 @@ def load_wesad(
     win = int(window_seconds * CHEST_FS)
     xs: list[list[float]] = []
     ys: list[list[float]] = []
+    groups: list[str] = []
     for path in files:
         with open(path, "rb") as fh:
             data = pickle.load(fh, encoding="latin1")
+        subject = _subject_id(data, path)
         chest = data["signal"]["chest"]
         ecg = np.asarray(chest["ECG"]).reshape(-1)
         eda = np.asarray(chest["EDA"]).reshape(-1)
@@ -93,10 +136,12 @@ def load_wesad(
                 sel = idx[start : start + win]
                 xs.append(list(va))
                 ys.append(extract_physiology(ecg[sel], eda[sel], temp[sel]))
+                groups.append(subject)
 
     if not xs:
         raise FileNotFoundError(f"未在 {root} 找到可用 WESAD 段（检查 window_seconds 是否过大）")
-    return (
-        torch.tensor(xs, dtype=torch.float32),
-        torch.tensor(ys, dtype=torch.float32),
-    )
+    x = torch.tensor(xs, dtype=torch.float32)
+    y = torch.tensor(ys, dtype=torch.float32)
+    if return_groups:
+        return x, y, groups
+    return x, y

@@ -19,7 +19,11 @@ from src.agents.models.text_affect_regressor import TEXT_FEATURE_DIM, hash_featu
 
 
 def read_emobank_rows(
-    path: str | Path, *, limit: int | None = None, include_d: bool = False
+    path: str | Path,
+    *,
+    limit: int | None = None,
+    include_d: bool = False,
+    split: str | None = None,
 ) -> tuple[list[str], list[list[float]]]:
     """读取 EmoBank CSV，返回 (texts, Y)。V/A/D 由 1~5 归一化到 [-1,1]。
 
@@ -28,6 +32,11 @@ def read_emobank_rows(
     Args:
         path: EmoBank CSV 路径。
         limit: 最多读取行数，None 表示全量。
+        split: 按 EmoBank 自带的 `split` 列过滤（`train` / `dev` / `test`）。
+            默认 None＝读全量（旧行为，零回归）。⚠ **训练务必传 `split="train"`**——
+            读全量会把官方 dev/test 一并训进去，之后在 dev/test 上的评分是记忆而非泛化
+            （2026-07-27 实测：全量训出的权重 dev MSE 0.01486「优于常数基线 33%」，
+            而只用 train 训、同样 300 轮的 dev MSE 是 0.02357、**劣于**常数基线 0.02235）。
         include_d: 默认 False（零回归），Y shape=(n,2) 只含 V/A；
             True 时 Y shape=(n,3)，第三列为 D，归一化公式同 V/A：
             clamp((D-3)/2, -1, 1)。
@@ -41,7 +50,12 @@ def read_emobank_rows(
     texts: list[str] = []
     ys: list[list[float]] = []
     with open(path, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
+        reader = csv.DictReader(fh)
+        if split is not None and "split" not in (reader.fieldnames or []):
+            raise ValueError(f"{path} 无 split 列，无法按官方切分过滤（传 split=None 读全量）")
+        for row in reader:
+            if split is not None and row.get("split", "").strip() != split:
+                continue
             texts.append(row["text"])
             entry: list[float] = [
                 clamp((float(row["V"]) - 3.0) / 2.0, -1.0, 1.0),
@@ -59,13 +73,18 @@ def read_emobank_rows(
 
 
 def load_emobank(
-    path: str | Path, *, dim: int = TEXT_FEATURE_DIM, limit: int | None = None
+    path: str | Path,
+    *,
+    dim: int = TEXT_FEATURE_DIM,
+    limit: int | None = None,
+    split: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """读取 EmoBank CSV，返回 (X=哈希词袋特征, Y=(v,a)) float32 张量。
 
     X ∈ [0,1]^dim，Y ∈ [-1,1]^2。无数据行时抛 ValueError。
+    `split` 语义与泄漏警告见 `read_emobank_rows`（默认 None＝全量＝旧行为）。
     """
-    texts, ys = read_emobank_rows(path, limit=limit)
+    texts, ys = read_emobank_rows(path, limit=limit, split=split)
     xs = [hash_features(text, dim) for text in texts]
     return (
         torch.tensor(xs, dtype=torch.float32),

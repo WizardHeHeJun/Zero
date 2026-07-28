@@ -15,7 +15,8 @@ Stimulus(goal/standard/attitude) → (valence,arousal) → {FACS AU, 文本标�
 | 全通道 bootstrap | `ExpressionDecoder` | 合成（无需外部数据） | — | `scripts/train_expression.py` |
 | 韵律 prosody | `ProsodyDecoder` | **RAVDESS** | 🟢 | `scripts/train_prosody.py --root data/ravdess` |
 | 生理 physiology | `PhysiologyDecoder` | **WESAD** | 🟢 | `scripts/train_physiology.py --root data/wesad` |
-| 表情 FACS AU | `FacsDecoder` | **AffectNet / DISFA / EmotioNet** | 🟡 | `scripts/train_facs.py --csv data/facs/labels.csv` |
+| 表情 FACS AU（13-AU 扩展·**已实跑**） | `FacsDecoder(extended=True)` | **emonet-face-binary**（CC-BY-4.0）+ OpenFace 抽 AU | 🟢 | `build_emonet_dataset` → OpenFace → `build_facs_ext_csv` → `train_facs.py --csv data/facs/labels_ext.csv --ext` |
+| 表情 FACS AU（旧 5-AU·更高保真备选） | `FacsDecoder` | **AffectNet / DISFA / EmotioNet** | 🟡 | `scripts/train_facs.py --csv data/facs/labels.csv` |
 | 文本→(v,a) 输入侧 | `TextAffectRegressor` | **EmoBank** | 🟢 | `scripts/train_text_affect.py --csv data/emobank.csv` |
 
 ## 数据集详情与链接
@@ -30,6 +31,8 @@ Stimulus(goal/standard/attitude) → (valence,arousal) → {FACS AU, 文本标�
 | EmoBank | 文本 V-A-D（1–5 量表） | 10,062 句 | <https://github.com/JULIELab/EmoBank> · <https://www.kaggle.com/datasets/jackksoncsie/emobank> |
 | NRC-VAD | 词级 V-A-D 词典（文本特征辅助） | 55k+ 词 | <https://saifmohammad.com/WebPages/nrc-vad.html> |
 | crowd-enVent | 文本事件 + **评价维度**标注（贴 OCC） | ~6,600 | <https://www.romanklinger.de/data-sets/> |
+
+> **表情通道现状**：13-AU 扩展模型已用 `laion/emonet-face-binary`（CC-BY-4.0，40 类合成脸）+ OpenFace 抽 AU 的 **EULA-free 路径**训出真权重，无需等待下表的 EULA 申请。下表的 AffectNet/DISFA 等仍是**更高保真的逐帧 AU 数据源**（自发表情、真人脸），可作后续升级选项。
 
 ### 🟡 需申请 EULA（填表授权，可能数天）
 

@@ -120,7 +120,7 @@ def test_train_facs_smoke(facs_csv: Path, tmp_path: Path) -> None:
     from scripts.train_facs import train
 
     out = tmp_path / "facs.pt"
-    final = train(str(facs_csv), epochs=200, out=str(out))
+    final = train(str(facs_csv), epochs=200, stop="fixed", out=str(out))
     assert out.exists()
     assert math.isfinite(final)
     assert final < 0.1  # 仅 4 样本，应快速拟合

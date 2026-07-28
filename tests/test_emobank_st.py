@@ -109,3 +109,14 @@ def test_train_st_smoke(emobank_csv: Path, tmp_path: Path) -> None:
     final = train(str(emobank_csv), epochs=200, out=str(out))
     assert out.exists()
     assert math.isfinite(final)
+
+    # provenance sidecar 与权重同产（旁挂 json，不改 .pt 格式）
+    import json
+
+    from scripts._train_common import provenance_path
+
+    rec = json.loads(provenance_path(out).read_text(encoding="utf-8"))
+    assert rec["script"] == "scripts/train_text_affect_st.py"
+    assert rec["training"]["epochs_ran"] == 200
+    assert rec["model"]["encoder"] and rec["model"]["dim"] > 0  # 换编码器即换表征，须落账
+    assert rec["data"]["kind"] == "file"

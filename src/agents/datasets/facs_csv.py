@@ -7,9 +7,11 @@
 导出本 CSV。放到例如 data/facs/labels.csv（已 gitignore）。
 训练：python -m scripts.train_facs --csv data/facs/labels.csv
 
-扩展集（11-AU）独立 loader：
-  CSV 列：valence,arousal,AU01,AU02,AU04,AU05,AU06,AU07,AU12,AU15,AU20,AU23,intensity
-  数据阻塞：需 AffectNet/DISFA 含 AU01/02/05/07/20/23 标注（外部数据，Q3 等待 EULA）。
+扩展集（13-AU）独立 loader：
+  CSV 列：valence,arousal + FACS_KEYS_EXT 全部键（当前 13 键：AU01,AU02,AU04,AU05,AU06,
+  AU07,AU12,AU15,AU17,AU20,AU23,AU26,intensity；实现按 FACS_KEYS_EXT 动态取，随其演进）。
+  EULA-free 路径（已可训，无需 AffectNet/DISFA）：laion/emonet-face-binary（CC-BY-4.0）
+  → scripts/build_emonet_dataset → OpenFace 抽 AU → scripts/build_facs_ext_csv。
   训练：python -m scripts.train_facs --csv data/facs/labels_ext.csv --ext
 """
 
@@ -51,12 +53,12 @@ def load_facs_csv(path: str | Path) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def load_facs_csv_ext(path: str | Path) -> tuple[torch.Tensor, torch.Tensor]:
-    """读取扩展集 FACS 标注 CSV（11-AU），返回 (X=(v,a), Y=AU 11维) float32 张量。
+    """读取扩展集 FACS 标注 CSV，返回 (X=(v,a), Y=AU 强度) float32 张量。
 
-    X ∈ [-1,1]^2，Y ∈ [0,1]^11。无数据行时抛 ValueError。
+    X ∈ [-1,1]^2，Y ∈ [0,1]^len(FACS_KEYS_EXT)（当前 13 维）。无数据行时抛 ValueError。
 
-    CSV 列：valence,arousal,AU01,AU02,AU04,AU05,AU06,AU07,AU12,AU15,AU20,AU23,intensity
-    数据阻塞：需 AffectNet/DISFA 含 AU01/02/05/07/20/23 完整标注（外部 EULA，Q3 等待）。
+    CSV 需含 valence,arousal + FACS_KEYS_EXT 全部键（按该常量动态取，随其演进不必改此处）。
+    EULA-free 数据路径见模块 docstring（emonet CC-BY + OpenFace，已产出真权重）。
     此 loader 独立于 load_facs_csv，不改旧签名（CS 席约束 #9）。
     """
     xs: list[list[float]] = []

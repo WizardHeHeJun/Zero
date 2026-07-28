@@ -16,6 +16,16 @@ from pathlib import Path
 import torch
 from torch import nn
 
+from scripts._train_common import (
+    DEFAULT_MAX_EPOCHS,
+    add_stop_arguments,
+    add_val_split_arguments,
+    evaluate_with_baselines,
+    resolve_cli_epochs,
+    resolve_epoch_budget,
+    split_by_groups,
+    write_provenance,
+)
 from src.agents.datasets.wesad import load_wesad
 from src.agents.models.physiology_decoder import PhysiologyDecoder
 
@@ -32,28 +42,115 @@ def train(
     hidden: int = 16,
     num_layers: int = 1,
     out: str = "artifacts/physiology_decoder.pt",
+    stop: str = "plateau",
+    max_epochs: int = DEFAULT_MAX_EPOCHS,
+    val_split: str = "none",
+    val_seed: int = 0,
+    seed: int = 0,
 ) -> float:
-    """加载 WESAD、全批量训练 PhysiologyDecoder 并保存权重，返回最终 MSE。"""
-    x, y = load_wesad(root, window_seconds=window_seconds, limit=limit)
+    """加载 WESAD、全批量训练 PhysiologyDecoder 并保存权重，返回最终 MSE。
+
+    `stop="plateau"`（默认）：训练 loss 每 100 步相对下降 <1e-4 即停、`max_epochs` 封顶，
+    不再依赖 `epochs=300` 这个魔数（换个 lr 它就静默失效）。`stop="fixed"` 跑满 `epochs`，
+    供既有调用方保持逐字旧行为。判据只看训练 loss，**不是**泛化最优点——本通道要做泛化
+    评估须走受试者留出（`load_wesad(return_groups=True)`）。
+    `seed` 固定初始化，保证可复现；落盘时另写 `<out>.json` provenance sidecar
+    （轮数/lr/种子/数据/commit），`.pt` 仍是裸 state_dict、格式不变。
+    """
+    x_val = y_val = None
+    split_info: dict[str, object] = {}
+    if val_split == "none":
+        x, y = load_wesad(root, window_seconds=window_seconds, limit=limit)
+    else:
+        # 按**受试者**留出（leave-subjects-out）：WESAD 的方差 67.9% 来自被试间差异，
+        # 这才是本通道唯一有意义的切分方式。分组键由 P1-3 的 return_groups 提供——
+        # 没有它就只能按 (v,a) 切，而 X 只有 4 个取值、反推不出被试归属。
+        x, y, subjects = load_wesad(
+            root, window_seconds=window_seconds, limit=limit, return_groups=True
+        )
+        x, y, x_val, y_val, val_groups, split_info = split_by_groups(
+            x, y, subjects, val_seed=val_seed
+        )
+        logger.info(
+            "受试者留出：train %d 行/%d 人 · val %d 行/%d 人",
+            split_info["n_train_samples"],
+            split_info["n_train_groups"],
+            split_info["n_samples"],
+            split_info["n_val_groups"],
+        )
+
+    torch.manual_seed(seed)
     model = PhysiologyDecoder(hidden=hidden, num_layers=num_layers)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
+    budget, stopper = resolve_epoch_budget(stop=stop, epochs=epochs, max_epochs=max_epochs)
     model.train()
     final_loss = 0.0
-    for epoch in range(epochs):
+    epochs_ran = 0
+    for epoch in range(budget):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
         optimizer.step()
         final_loss = float(loss.item())
+        epochs_ran = epoch + 1
         if epoch % 50 == 0:
             logger.info("epoch %d loss %.6f (n=%d)", epoch, final_loss, x.shape[0])
+        if stopper is not None and stopper.should_stop(epochs_ran, final_loss):
+            logger.info("训练 loss 进入平台，停于 epoch %d（loss %.6f）", epochs_ran, final_loss)
+            break
+
+    val = None
+    if x_val is not None:
+        model.eval()
+        with torch.no_grad():
+            pred_val = model(x_val)
+        model.train()
+        metrics = evaluate_with_baselines(
+            y_val, pred_val, val_groups, train_mean=y.mean(dim=0, keepdim=True)
+        )
+        logger.info(
+            "留出评估：技能分 %.4f（MSE %.6f · 常数基线 %.6f · 下界 %.6f · 可学空间走了 %.1f%%）",
+            metrics["skill_score"],
+            metrics["mse"],
+            metrics["mse_constant"],
+            metrics["within_group_floor"],
+            metrics["headroom_used"] * 100,
+        )
+        val = {
+            "split": f"group-holdout:{val_split}",
+            "group_key": "受试者 id（leave-subjects-out）",
+            "note": "val 里的被试在 train 中从未出现；⚠ 单次切分噪声极大"
+            "（见计划文档 8-seed 扫描），须走多折才能下结论。",
+            **metrics,
+            **split_info,
+        }
 
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_path)
     logger.info("saved physiology decoder -> %s (final loss %.6f)", out_path, final_loss)
+    write_provenance(
+        out_path,
+        script="scripts/train_physiology.py",
+        model=model,
+        model_config={"hidden": hidden, "num_layers": num_layers},
+        data_config={
+            "window_seconds": window_seconds,
+            "limit": limit,
+            "stop": stop,
+            "val_split": val_split,
+        },
+        data_source=root,
+        n_samples=int(x.shape[0]),
+        seed=seed,
+        lr=lr,
+        epochs_requested=budget,
+        epochs_ran=epochs_ran,
+        final_train_loss=final_loss,
+        val=val,
+    )
     return final_loss
 
 
@@ -61,21 +158,28 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, help="WESAD 解压根目录（含 Sxx/Sxx.pkl）")
-    parser.add_argument("--epochs", type=int, default=300)
+    add_stop_arguments(parser)
+    add_val_split_arguments(parser, choices=["none", "group"], group_key="受试者 id")
     parser.add_argument("--window-seconds", type=int, default=30)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--hidden", type=int, default=16)
     parser.add_argument("--num-layers", type=int, default=1)
     parser.add_argument("--out", default="artifacts/physiology_decoder.pt")
+    parser.add_argument("--seed", type=int, default=0, help="固定初始化，保证可复现")
     args = parser.parse_args()
     final = train(
         args.root,
-        epochs=args.epochs,
+        epochs=resolve_cli_epochs(args),
+        stop=args.stop,
+        max_epochs=args.max_epochs,
+        val_split=args.val_split,
+        val_seed=args.val_seed,
         window_seconds=args.window_seconds,
         limit=args.limit,
         hidden=args.hidden,
         num_layers=args.num_layers,
         out=args.out,
+        seed=args.seed,
     )
     print(f"done, final loss={final:.6f}")
 

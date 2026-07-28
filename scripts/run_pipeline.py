@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 async def run_pipeline() -> None:
     # 1. 合成数据训练表达解码器并保存
     out = "artifacts/expression_decoder.pt"
-    train(epochs=300, n=2048, out=out)
+    # stop="fixed"：demo 管线要的是「跑得快、结果稳定」，不需要 plateau 判据多跑几千轮
+    train(epochs=300, stop="fixed", n=2048, out=out)
     decoder = load_decoder(out)
 
     # 2. 把训练好的解码器注入管线，跑一组对比刺激
