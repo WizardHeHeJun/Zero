@@ -61,9 +61,9 @@ EmoBank 有官方 8062/1000/1000 切分。下面用同样 300 轮，只改「读
 种子间标准差极小（0.00003 / 0.00009），说明这两个通道对初始化几乎不敏感——与需要多种子才能下结论的
 表情通道不同，这里单次结果就是可信的。
 
-> ✅ **provenance 干净，满足发布前置条件**：代码提交后按同样命令重跑了一次，两份权重的 sha256
-> 与提交前**逐字节一致**——固定种子确实能复现同一份权重。sidecar 现在记
-> `git.commit = 60a18b9`、`git.dirty = false`，即这两份权重可以从该 commit 精确重建。
+> ✅ **provenance 干净，满足发布前置条件**：代码提交后按同样命令重跑，得到的**权重张量与提交前
+> 逐一相同**（`torch.equal` 全等）。sidecar 记 `git.commit = 60a18b9`、`git.dirty = false`，
+> 即这两份权重可以从该 commit 重建。
 >
 > 复现命令（在 `affective-expression` 环境内，仓库处于 `60a18b9`）：
 >
@@ -71,6 +71,15 @@ EmoBank 有官方 8062/1000/1000 切分。下面用同样 300 轮，只改「读
 > python -m scripts.train_text_affect    --csv data/emobank.csv --epochs 300 --seed 2
 > python -m scripts.train_text_affect_st --csv data/emobank.csv --epochs 300 --seed 4
 > ```
+>
+> ⚠ **核对时请用 `state_dict_sha256`，不要用文件 sha256**：`torch.save` 会把**输出文件名**写进
+> zip 条目前缀（实测同一个 state_dict 存成 `a.pt` / `b.pt`，条目分别是 `a/data.pkl` /
+> `b/data.pkl`，文件哈希因此不同）。所以上表的文件 sha256 **只在输出到同一路径时可比**——
+> 存到别处重跑，文件哈希必然不同，但权重一个 bit 都没变。sidecar 从 v2 起记录
+> `model.state_dict_sha256`（权重数值的哈希，对文件名与容器元数据免疫），那才是
+> 「这份权重是不是那次训练产出的」的判据。
+>
+> （本节两份权重的 sidecar 仍是 v1 格式、尚无该字段，下次重训时自动补上。）
 
 校验值（`sha256sum <文件>` 可自行核对）：
 
