@@ -11,6 +11,11 @@ import math
 import random
 from typing import TYPE_CHECKING, Any
 
+# 运行期 import（不是仅注解）：`expand_external_priors` 真的要抛它。
+# 同层导入（`project-root.md`：`src/agents/` 与 `src/orchestration/` 同属编排层），
+# 且 external_prior 是零依赖叶子协议模块——不破坏本模块「纯函数、无 I/O、无副作用」。
+from src.orchestration.external_prior import ExternalPriorError
+
 if TYPE_CHECKING:
     # 仅注解用（PEP 563 惰性注解下不产生运行时 import）——external_prior 是编排层叶子协议
     # 类型（无任何 import），置于 TYPE_CHECKING 顶部消 code-reviewer W1 的末尾延迟 import 味道。
@@ -1077,7 +1082,12 @@ def expand_external_priors(
 ) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
     """外部多模态先验流展开 + 防御性校验，返回可直接 extend 进 streams 的列表。
 
-    M6（数学席·流数上界）：len(external_priors) > max_streams → raise ValueError。
+    M6（数学席·流数上界）：len(external_priors) > max_streams → raise ExternalPriorError。
+
+    ⚠ 本函数的所有校验失败一律抛 **`ExternalPriorError`**（`ValueError` 子类，向后兼容），
+    **不是**裸 `ValueError`。理由是归责可辨：边界层 `server.py` 据此把「真的是 client 传参
+    不对」与「内核自己出错了」分开报——后者若被贴成前者，client 照着改传参永远改不好
+    （议会 2026-07-29 第五轮校验 §四-5）。新增校验请沿用该类型。
     校验精度来自 MCP payload，Zero 只校验+防御——不硬编码各模态精度。
 
     形状良构校验（澄清 2）：每条须 (str, (float, float), (float, float))；
@@ -1103,7 +1113,7 @@ def expand_external_priors(
     """
     # M6：流数上界
     if len(external_priors) > max_streams:
-        raise ValueError(
+        raise ExternalPriorError(
             f"external_priors 条数 {len(external_priors)} 超过 max_external_streams={max_streams}；"
             f"请检查 MCP 传参（ZERO_MAX_EXTERNAL_STREAMS 调大或减少注入流数）"
         )
@@ -1120,7 +1130,7 @@ def expand_external_priors(
             or not all(isinstance(x, (int, float)) for x in prior[1])
             or not all(isinstance(x, (int, float)) for x in prior[2])
         ):
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] 形状不合法：须为 (str, (float,float), (float,float))，"
                 f"实际为 {prior!r}；请检查 MCP as_zero_streams() 输出格式"
             )
@@ -1135,7 +1145,7 @@ def expand_external_priors(
         # 买到本不该有的点燃资格（实测注入 μ=(0,2.0) 可越过 SALIENCE_THRESHOLD）。
         # 纯边界收紧：合法输入行为逐字不变（零回归）。NaN 亦由此条拦下。
         if not (-1.0 <= mu[0] <= 1.0 and -1.0 <= mu[1] <= 1.0):
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] ({name!r}) 的 μ 须在 [-1, 1] 内，"
                 f"实际 μv={mu[0]}, μa={mu[1]}；请检查 MCP ModalityPrior 输出"
             )
@@ -1148,13 +1158,13 @@ def expand_external_priors(
 
         # M3：精度正值校验（physio Πv 已被 M2 覆写为 MIN_PRECISION>0；Πa 恒校验）
         if pi_v <= 0.0 or pi_a <= 0.0:
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] ({name!r}) 精度须 >0，"
                 f"实际 Πv={pi_v}, Πa={pi_a}；请检查 MCP 传参"
             )
         # M3：精度上界校验（physio Πv=MIN_PRECISION<<cap 必过；Πa 恒校验）
         if pi_v > precision_cap or pi_a > precision_cap:
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] ({name!r}) 精度超过上界 {precision_cap}，"
                 f"实际 Πv={pi_v}, Πa={pi_a}；请降低 MCP 精度或调高 "
                 f"ZERO_EXTERNAL_PRIOR_PRECISION_CAP"

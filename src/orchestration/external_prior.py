@@ -25,3 +25,17 @@ EXTERNAL_PRIOR_SCHEMA_VERSION: int = 1
 # 与 affect_core.py streams 类型 list[tuple[str, tuple[float, float], tuple[float, float]]]
 # 原生一致，无需引入新机制——直接 extend（M1 议会三席强收敛）。
 ExternalPrior = tuple[str, tuple[float, float], tuple[float, float]]
+
+
+class ExternalPriorError(ValueError):
+    """external_priors 载荷违约（M3/M6/M7 校验失败）——**确实指向 MCP 传参**。
+
+    存在的理由是**归责可辨**（议会 2026-07-29 第五轮校验 §四-5）：边界层 `server.py` 原先
+    用一个 `except ValueError` 包住**整个** `session.step()`（全图执行），把内核任何位置抛出的
+    `ValueError` 一律贴成「external_priors 校验失败（指向 MCP 传参）」。后果是**误导性甩锅**：
+    client 照着改传参永远改不好，而活跃会话的 config 不可变（`server.py:230-234`）→ 无法自救，
+    表现为 open 成功、每 step 崩。
+
+    继承 `ValueError` 以保持向后兼容（既有 `except ValueError` 仍能捕获），
+    但让边界层能把「真的是你传的参不对」与「内核自己出错了」分开报。
+    """

@@ -36,6 +36,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from src.agents.expression import ChannelDecoder
 from src.mcp_server.mapping import external_priors_from_payload, stimulus_from_payload
 from src.mcp_server.registry import SessionRegistry
+from src.orchestration.external_prior import ExternalPriorError
 from src.orchestration.runner import ConversationSession, SessionConfig
 
 logger = logging.getLogger(__name__)
@@ -295,9 +296,22 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         async with lock:
             try:
                 step_out = await session.step(stimulus, state_overrides={"external_priors": priors})
-            except ValueError as e:
-                # expand_external_priors 的 M3/M6 fail-fast（精度>0/≤cap、流数≤max、形状良构）。
+            except ExternalPriorError as e:
+                # expand_external_priors 的 M3/M6/M7 fail-fast（精度>0/≤cap、流数≤max、
+                # 形状良构、μ∈[-1,1]）——**确实**指向 client 传参，改传参就能好。
                 raise ToolError(f"external_priors 校验失败（指向 MCP 传参）：{e}") from e
+            except ValueError as e:
+                # 内核其它位置抛的 ValueError（如 HPC coupling 越界、未来的配置互斥 fail-fast）。
+                # ⚠ 这里**必须**与上一分支分开报（议会 2026-07-29 第五轮校验 §四-5）：
+                # 原先一个 except 包住整个 step（全图执行），把内核任何异常都贴成
+                # 「external_priors 校验失败（指向 MCP 传参）」→ 误导性甩锅。client 照着改
+                # 传参永远改不好，而活跃会话的 config 不可变（见 open_session 的 config 语义）
+                # → 无法自救，表现为 open 成功、**每 step 崩**。
+                logger.exception("zero.step 内核执行失败 sid=%s", session_id)
+                raise ToolError(
+                    f"内核执行失败（**非** external_priors 传参问题，改传参无效）：{e}；"
+                    "多为会话级配置组合不兼容，须以新配置重开会话"
+                ) from e
         expression = step_out.get("expression") or {}
         return expression
 
