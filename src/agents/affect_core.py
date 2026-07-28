@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+from typing import TypedDict
 
 from src.agents.affect_math import (
     AROUSAL_GAIN,
@@ -33,6 +34,17 @@ from src.agents.affect_math import (
 from src.orchestration.state import AffectState
 
 logger = logging.getLogger(__name__)
+
+
+class _GateCriteria(TypedDict):
+    """`ignite()` 与 `report_ignited()` **必须共享**的判据参数。
+
+    用 TypedDict 而非裸 dict：`**kwargs` 展开裸 dict 会丢类型信息（mypy 报 arg-type），
+    而用 TypedDict 既保住「一处定义、两处消费」的防漂移结构，又不牺牲静态检查。
+    """
+
+    survival_fallback: bool
+    soft_beta: float | None
 
 
 class AffectCoreAgent:
@@ -128,18 +140,22 @@ class AffectCoreAgent:
             #     二者同一次筛选产出、恒等长，下面的 zip(strict=True) 永不失配）；
             #   `report_ignited()` → 「哪些流变得可报告」，**不影响任何数值**。
             # gate_fusion=True（默认）时两者返回逐值相等 → out["ignited_streams"] 逐字不变。
+            # 两个函数**共享同一份判据参数**，写成一个 dict 传——不是风格偏好：
+            # 分开手写两遍时，「参数保持同步」是一条只靠人维护的隐性契约，一旦漂移
+            # （比如只给一边改了 soft_beta）两边都不会报错，`ignited_streams` 会悄悄变成
+            # 与实际融合流集合不一致的标签。长度失配有 zip(strict=True) 响亮兜底，
+            # **参数漂移没有任何兜底** → 用共享 dict 从结构上消除这种可能。
+            gate_criteria: _GateCriteria = {
+                "survival_fallback": state.ignition_survival_fallback,
+                "soft_beta": state.ignition_beta,
+            }
             terms, fusion_names = ignite(
                 streams,
-                survival_fallback=state.ignition_survival_fallback,
-                soft_beta=state.ignition_beta,
                 gate_fusion=state.gate_fusion,
                 exclude_physio_fusion=state.exclude_physio_fusion,
+                **gate_criteria,
             )
-            ignited = report_ignited(
-                streams,
-                survival_fallback=state.ignition_survival_fallback,
-                soft_beta=state.ignition_beta,
-            )
+            ignited = report_ignited(streams, **gate_criteria)
             # P3 层级预测编码（HPC v1）：门控关（默认 layers=1 或 coupling=0.0）→
             # 走现 fuse_terms 路径逐字不变（hierarchical_fuse 内部退化旁路保证零回归）。
             # 开启（layers>=2 且 coupling>0）→ 重建带 name 的流列表传给 hierarchical_fuse。

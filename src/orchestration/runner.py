@@ -204,7 +204,7 @@ class SessionConfig(BaseModel):
         """BLOCK 2（议会第四轮 · 位置由第五轮改判到此）：新融合架构 × HPC 显式互斥。
 
         `gate_fusion=False`（全流精度加权）与 `hierarchical_layers≥2 且 coupling>0`（HPC）
-        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.py:410-412`
+        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.py:419`
         `pi_core = pi_l1e + w2 * pi_l0`），实测 coupling=0.3 时硬契约
         `|post_mu − ΣΠμ/ΣΠ|` 偏差 **0.0773**、arousal 符号翻转。本轮**不解**该数学，
         只做显式互斥——收缩的是两个独立开关的乘积空间，不是整个特性。
@@ -377,6 +377,17 @@ async def run(
         expression_decoder=expression_decoder,
         language_model=language_model,
     )
+
+    # 🛑 显式过一遍 SessionConfig，只为**触发它的跨字段校验**（返回值有意丢弃）。
+    # `run()` 是一条不经 ConversationSession 的公开入口（scripts/run_pipeline.py 等直接调），
+    # 它手拼 ainvoke 初值 dict、从不构造 SessionConfig ——若不在此补这一道，
+    # `_check_gate_fusion_hpc_exclusive`（BLOCK 2 互斥）与 `_check_precision_scale_consistency`
+    # （混标度）这两道护栏在本路径上**等于不存在**：同样的参数组合经 ConversationSession 会
+    # fail-fast，经 run() 却静默产出 BLOCK 2 自己写明的那类错误数值（硬契约偏差 0.0773、
+    # arousal 符号翻转）。code-reviewer 实测复现，BLOCK 级。
+    # 用 `locals()` 按 model_fields 过滤而非手写字段清单：**自维护**——将来 SessionConfig
+    # 新增字段/新增校验自动覆盖，不会重演这次「新增校验漏了一条入口」的漂移。
+    SessionConfig(**{k: v for k, v in locals().items() if k in SessionConfig.model_fields})
 
     trajectory: list[dict[str, Any]] = []
     for stim in stimuli:

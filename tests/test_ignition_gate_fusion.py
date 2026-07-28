@@ -303,8 +303,13 @@ def _random_streams(seed: int) -> list[Stream]:
 # ── 锚点 A：后验落在各流 μ 的凸包内（退化轴保护）──
 
 
-def _assert_anchor_a(terms: list[tuple[tuple[float, float], tuple[float, float]]]) -> None:
-    post, _ = fuse_terms(terms)
+def _assert_anchor_a(
+    terms: list[tuple[tuple[float, float], tuple[float, float]]],
+    post: tuple[float, float] | None = None,
+) -> None:
+    """`post` 可注入——供变异测试**真的驱动本断言变红**，而不是在旁边算个恒真的不等式。"""
+    if post is None:
+        post, _ = fuse_terms(terms)
     for d in (0, 1):
         mus = [mu[d] for mu, _ in terms]
         lo, hi = min(mus), max(mus)
@@ -343,19 +348,47 @@ def test_anchor_a_degenerate_axis_is_the_neutral_turn() -> None:
 
 
 def test_anchor_a_goes_red_on_dominant_mu_bug() -> None:
-    """锚点 A · (a) 变异测试：把后验挪出凸包（「大 μ 独占」形态）→ 变红。"""
+    """锚点 A · (a) 变异测试：注入越出凸包的后验 → **断言真的抛 AssertionError**。
+
+    🛑 本用例的**上一版是错的**，如实记录：它只断言 `max(mus)+0.05 不在 (min,max) 内`——
+    这对任意 `mus` **数学上恒真**，从头到尾没调过 `_assert_anchor_a`，
+    既不依赖 `ignite`/`fuse_terms` 的任何真实行为，也不会在断言被改弱（`<` 改 `<=`）时变红。
+    那正是本 PRP 反复强调的反模式的一个变体：**看起来在测，其实什么都没测到**。
+    现改为把 bogus post 注入 `_assert_anchor_a` 并要求它抛。
+    """
     terms, _ = ignite(_CORE, gate_fusion=False, soft_beta=None)
     mus = [mu[1] for mu, _ in terms]
-    bogus = max(mus) + 0.05  # 越出凸包上界
-    lo, hi = min(mus), max(mus)
-    assert not (lo < bogus < hi), "变异未生效——锚点 A 对此无判别力"
+    good_post, _ = fuse_terms(terms)
+    _assert_anchor_a(terms, post=good_post)  # 正确后验 → 绿
+    for bogus_a in (max(mus) + 0.05, min(mus) - 0.05, max(mus)):  # 越上界 / 越下界 / 恰在边界
+        with pytest.raises(AssertionError):
+            _assert_anchor_a(terms, post=(good_post[0], bogus_a))
+
+
+def test_anchor_b_goes_red_on_injected_wrong_posterior() -> None:
+    """锚点 B · 补一条同款：注入偏离参考量的后验 → 断言真的抛。
+
+    与 `test_anchor_b_goes_red_on_hard_gate_collapse` 互补：那条测「真实历史 bug」，
+    这条测「断言本身的驱红能力」。
+    """
+    terms, _ = ignite(_CORE, gate_fusion=False, soft_beta=None)
+    good_post, _ = fuse_terms(terms)
+    _assert_anchor_b(terms, post=good_post)
+    for delta in (1e-8, -1e-8, 0.05):  # 刚过容差 / 反向 / 明显偏离
+        with pytest.raises(AssertionError):
+            _assert_anchor_b(terms, post=(good_post[0], good_post[1] + delta))
 
 
 # ── 锚点 B：硬契约（用有效精度作参考量）──
 
 
-def _assert_anchor_b(terms: list[tuple[tuple[float, float], tuple[float, float]]]) -> None:
-    post, _ = fuse_terms(terms)
+def _assert_anchor_b(
+    terms: list[tuple[tuple[float, float], tuple[float, float]]],
+    post: tuple[float, float] | None = None,
+) -> None:
+    """`post` 可注入——同 `_assert_anchor_a`，供变异测试真的驱红本断言。"""
+    if post is None:
+        post, _ = fuse_terms(terms)
     for d in (0, 1):
         ref = _weighted_ref(terms, d)
         if abs(ref) <= 1.0:  # clamp 未生效的区间才谈 1e-9 契约
@@ -469,14 +502,50 @@ def test_governance_flags_are_paired_and_direction_is_right() -> None:
     assert hacked.exclude_physio_fusion is True
 
 
-def test_env_end_to_end_wiring_reads_false_set_not_true_set() -> None:
-    """🛑 env 解析必须判**假值集**：本门默认 True，用真值集会把「未设」判成 False。"""
-    from src.orchestration import chat_driver
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(None, True, id="未设→True(门关)"),
+        pytest.param("", True, id="空串→True"),
+        pytest.param("false", False, id="false→开"),
+        pytest.param("FALSE", False, id="大小写不敏感"),
+        pytest.param("0", False, id="0→开"),
+        pytest.param("no", False, id="no→开"),
+        pytest.param("off", False, id="off→开"),
+        pytest.param("true", True, id="true→关"),
+        pytest.param("yes", True, id="其它值一律按关（保守）"),
+    ],
+)
+def test_env_parsing_is_false_set_and_defaults_to_gate_closed(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: bool
+) -> None:
+    """🛑 env 解析必须判**假值集**，且未设时默认 True（门关）。
 
-    with open(chat_driver.__file__, encoding="utf-8") as fh:
-        text = fh.read()
-    assert 'os.getenv("ZERO_IGNITION_GATE_FUSION", "").lower() not in (' in text
-    assert "gate_fusion=gate_fusion," in text
+    这条改成了**真行为测试**（实跑 `build_chat_driver`），不再用源码文本匹配——
+    文本匹配只能防「把 `not in` 整体换成 `in`」这种字面改法，**防不住假值集里漏写一个值**
+    （如漏掉 `"off"`），而这恰恰是这个「方向最容易写反」的开关的最高风险点。
+    用弱测试守最高风险处不对称。
+    """
+    from src.orchestration.chat_driver import build_chat_driver
+
+    monkeypatch.delenv("ZERO_OPENAI_API_KEY", raising=False)  # 不走网络
+    if raw is None:
+        monkeypatch.delenv("ZERO_IGNITION_GATE_FUSION", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_IGNITION_GATE_FUSION", raw)
+    driver = build_chat_driver(thread=f"env-gate-{raw!r}")
+    assert driver.session.config.gate_fusion is expected
+
+
+def test_env_physio_exclusion_defaults_to_excluded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """physio 排除同为「默认 True + 判假值集」——跨仓承诺不能因未设 env 而失效。"""
+    from src.orchestration.chat_driver import build_chat_driver
+
+    monkeypatch.delenv("ZERO_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ZERO_EXCLUDE_PHYSIO_FUSION", raising=False)
+    assert build_chat_driver(thread="env-physio-unset").session.config.exclude_physio_fusion is True
+    monkeypatch.setenv("ZERO_EXCLUDE_PHYSIO_FUSION", "off")
+    assert build_chat_driver(thread="env-physio-off").session.config.exclude_physio_fusion is False
 
 
 @pytest.mark.parametrize(
@@ -499,7 +568,10 @@ def test_scenario_matrix(present: list[Stream], n_external: int, soft_beta: floa
     每格断言：融合集与流名对齐 · 报告集 ⊆ 全流名 · 锚点 A/B 成立 · physio 不在融合集。
     """
     ext: list[Stream] = [(f"face_{i}", (0.3, 0.2), (0.20, 0.12)) for i in range(n_external)]
-    streams: list[Stream] = [*_CORE, *present, *ext]
+    # 🛑 矩阵里**必须**有一条 physio 前缀的流，否则下面那条「physio 不在融合集」的断言
+    # 按构造恒真（没有可被排除的东西可测），是零判别力的摆设。上一版就漏了这条。
+    physio: list[Stream] = [("eda_tonic", (0.0, 0.7), (MIN_PRECISION, 0.175))]
+    streams: list[Stream] = [*_CORE, *present, *ext, *physio]
     for gate in (True, False):
         terms, names = ignite(streams, gate_fusion=gate, soft_beta=soft_beta)
         assert len(terms) == len(names)
