@@ -364,6 +364,21 @@ async def run(
     可变量，经 `ConversationSession.step(stim, state_overrides={"external_priors": [...]})` 注入
     （同 interlocutor_affect）。run() 批量接口每条 stimulus 不携带外部先验（code-reviewer W5）。
     """
+    # 🛑 显式过一遍 SessionConfig，只为**触发它的跨字段校验**（返回值有意丢弃）。
+    # `run()` 是一条不经 ConversationSession 的公开入口（scripts/run_pipeline.py 等直接调），
+    # 它手拼 ainvoke 初值 dict、从不构造 SessionConfig ——若不在此补这一道，
+    # `_check_gate_fusion_hpc_exclusive`（BLOCK 2 互斥）·`_check_precision_scale_consistency`
+    # （混标度）·`_check_empathy_l1`（共情系数 L1）这三道护栏在本路径上**等于不存在**：
+    # 同样的参数组合经 ConversationSession 会 fail-fast，经 run() 却静默产出 BLOCK 2
+    # 自己写明的那类错误数值（硬契约偏差 0.0773、arousal 符号翻转）。code-reviewer 实测复现。
+    #
+    # 用 `locals()` 按 model_fields 过滤而非手写字段清单：**自维护**——将来 SessionConfig
+    # 新增字段/新增校验自动覆盖，不会重演这次「新增校验漏了一条入口」的漂移。
+    # ⚠ **必须放在函数体最前**（早于任何中间变量绑定）：此刻 `locals()` 只含函数形参，
+    # 彻底排除「将来某个中间量恰好与 SessionConfig 新字段撞名 → 传错值」的风险。
+    # 下面四个中间量与本校验无数据依赖，挪到其后不影响任何行为。
+    SessionConfig(**{k: v for k, v in locals().items() if k in SessionConfig.model_fields})
+
     client = (
         memory
         if memory is not None
@@ -377,17 +392,6 @@ async def run(
         expression_decoder=expression_decoder,
         language_model=language_model,
     )
-
-    # 🛑 显式过一遍 SessionConfig，只为**触发它的跨字段校验**（返回值有意丢弃）。
-    # `run()` 是一条不经 ConversationSession 的公开入口（scripts/run_pipeline.py 等直接调），
-    # 它手拼 ainvoke 初值 dict、从不构造 SessionConfig ——若不在此补这一道，
-    # `_check_gate_fusion_hpc_exclusive`（BLOCK 2 互斥）与 `_check_precision_scale_consistency`
-    # （混标度）这两道护栏在本路径上**等于不存在**：同样的参数组合经 ConversationSession 会
-    # fail-fast，经 run() 却静默产出 BLOCK 2 自己写明的那类错误数值（硬契约偏差 0.0773、
-    # arousal 符号翻转）。code-reviewer 实测复现，BLOCK 级。
-    # 用 `locals()` 按 model_fields 过滤而非手写字段清单：**自维护**——将来 SessionConfig
-    # 新增字段/新增校验自动覆盖，不会重演这次「新增校验漏了一条入口」的漂移。
-    SessionConfig(**{k: v for k, v in locals().items() if k in SessionConfig.model_fields})
 
     trajectory: list[dict[str, Any]] = []
     for stim in stimuli:

@@ -17,6 +17,7 @@ from src.agents.affect_math import (
     AROUSAL_GAIN,
     MIN_PRECISION,
     MIN_SIGMA,
+    SALIENCE_THRESHOLD,
     effective_stream_count,
     evidence_from_value,
     expand_external_priors,
@@ -45,6 +46,11 @@ class _GateCriteria(TypedDict):
 
     survival_fallback: bool
     soft_beta: float | None
+    # `threshold` 也纳入——**即使当前两处调用都用签名默认值 `SALIENCE_THRESHOLD`**。
+    # 不纳入的话它就退回「两边各自吃同一个默认值」这种**隐性**对齐，正是本结构要消灭的模式，
+    # 只是收窄到一个字段上：将来若有人加 `ignition_threshold` 旋钮要传非默认阈值，
+    # TypedDict 不会提醒他两处都改。纳入后两处引用同一个键，改阈值会被这个结构自然架住。
+    threshold: float
 
 
 class AffectCoreAgent:
@@ -148,6 +154,9 @@ class AffectCoreAgent:
             gate_criteria: _GateCriteria = {
                 "survival_fallback": state.ignition_survival_fallback,
                 "soft_beta": state.ignition_beta,
+                # 当前恒为签名默认值；显式写出来是为了让「改阈值」这件事必须动这一处，
+                # 而不是分头改两个调用点（见 _GateCriteria docstring）。
+                "threshold": SALIENCE_THRESHOLD,
             }
             terms, fusion_names = ignite(
                 streams,

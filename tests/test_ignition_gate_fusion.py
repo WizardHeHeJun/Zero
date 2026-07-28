@@ -618,3 +618,66 @@ def test_survival_fallback_scope_narrows_but_does_not_vanish_when_gate_opens() -
     for fb in (True, False):
         _, names = ignite(weak, survival_fallback=fb, soft_beta=None, gate_fusion=False)
         assert names == ["survival", "appraisal"]
+
+
+# ---------------------------------------------------------------------------
+# 8. `run()` 入口的护栏覆盖（BLOCK-1 回归锁）
+#
+# 🛑 `run()` 是一条**不经 ConversationSession 的公开入口**（scripts/run_pipeline.py 等
+# 直接调），它手拼 ainvoke 初值 dict、从不构造 SessionConfig ——写在 SessionConfig
+# 校验器里的护栏在这条路径上曾经**等于不存在**（code-reviewer 实测：同参数经
+# ConversationSession fail-fast、经 run() 静默产出错误数值）。
+#
+# 修复本身此前**没有回归测试**：没有任何东西能防止它被移位/删除/被 try-except 吞掉。
+# 这条 PRP 全篇强调「断言要真的能变红」，这个位置不该是例外。
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_entrypoint_enforces_block2_mutual_exclusion() -> None:
+    """`run()` 必须触发 BLOCK 2 互斥校验（护栏不能只在 ConversationSession 上生效）。"""
+    from src.orchestration.runner import run
+
+    with pytest.raises(ValueError, match="联合语义未定义"):
+        await run(
+            [Stimulus(name="s", goal_congruence=0.4, intensity=0.6)],
+            thread_id="block2-via-run",
+            gate_fusion=False,
+            hierarchical_layers=2,
+            hierarchical_coupling=0.5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_entrypoint_enforces_all_session_config_validators() -> None:
+    """不止 BLOCK 2——`run()` 补的这一道会触发 SessionConfig 的**全部**跨字段校验。
+
+    这正是用 `locals()` 按 `model_fields` 过滤（而非手写字段清单）换来的：
+    线 B 的混标度校验、共情系数 L1 上界这些**早于本轮就存在**的护栏，
+    在 `run()` 上此前同样是缺口，一并被补上了。
+    """
+    from src.orchestration.runner import run
+
+    stim = [Stimulus(name="s", goal_congruence=0.4, intensity=0.6)]
+    # 线 B：齐次化门开 + 旧标度旋钮 → 混标度
+    with pytest.raises(ValueError, match="不可混用"):
+        await run(
+            stim, thread_id="mixscale-via-run", precision_commensurable=True, mood_precision=1.2
+        )
+    # 更早就存在的：共情系数 L1 和 > 0.6
+    with pytest.raises(ValueError, match="共情系数"):
+        await run(stim, thread_id="empathy-via-run", contagion_alpha=0.3, care_bias_alpha=0.4)
+
+
+@pytest.mark.asyncio
+async def test_run_entrypoint_does_not_over_reject() -> None:
+    """护栏不得误伤——合法参数组合经 `run()` 照常跑完。"""
+    from src.orchestration.runner import run
+
+    traj = await run(
+        [Stimulus(name="s", goal_congruence=0.4, intensity=0.6)],
+        thread_id="ok-via-run",
+        workspace_enabled=True,
+        gate_fusion=False,  # 新架构单独开（不配 HPC）→ 合法
+    )
+    assert len(traj) == 1
