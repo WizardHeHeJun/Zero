@@ -16,6 +16,7 @@ from src.agents.affect_math import (
     AROUSAL_GAIN,
     MIN_PRECISION,
     MIN_SIGMA,
+    effective_stream_count,
     evidence_from_value,
     expand_external_priors,
     fast_survival_prior,
@@ -194,6 +195,10 @@ class AffectCoreAgent:
             entry["ignited_streams"] = ignited
             out["ignited_streams"] = ignited
             out["affect_precision"] = 0.5 * (1.0 / post_sigma[0] ** 2 + 1.0 / post_sigma[1] ** 2)
+            # Kish 有效流数（议会 2026-07-28 第四轮 D5）：**纯观测量**，只进 trace、
+            # 不进 out（不入 state、不做门、不参与计算）。读数 →1 = 后验实际由单流决定。
+            # ⚠ 不得据此下硬断言：单流主导在合法校准下也会发生（见函数 docstring）。
+            entry["n_eff"] = effective_stream_count(terms)
         logger.debug(
             "affect_core e*=%s post_mu=%s post_sigma=%s ignited=%s",
             e_star,

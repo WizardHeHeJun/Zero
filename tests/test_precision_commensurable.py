@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import random
 
 import pytest
 
@@ -572,3 +573,125 @@ def test_commensurable_preserves_monotonicity() -> None:
     intens = [0.0, 0.25, 0.5, 0.75, 1.0]
     surv = [fast_survival_prior([0, 0, 0, i], commensurable=True)[1][0] for i in intens]
     assert surv == sorted(surv)
+
+
+# ---------------------------------------------------------------------------
+# 6. 装配阶段锚点（T6.3）
+#
+# 线 A 的四条锚点结构性地漏掉了 floor bug——它们全是 `(streams → post)` 的函数，
+# 而污染发生在**装配阶段**（μ 在进 streams 之前就已被污染）。这里补两条装配阶段的断言。
+# ---------------------------------------------------------------------------
+
+
+def test_homogenization_never_touches_any_stream_mu() -> None:
+    """装配锚点 A：齐次化只改 Π，**任何一条流的 μ 都必须逐位不变**。
+
+    这是"尺度重标定"的定义性质。若哪天有人试图通过挪动均值来"修"权重失衡，
+    本用例会红——那已经不是换尺子，是改数据。
+    """
+    for gc, sc, aa, inten in itertools.product(_GRID, _GRID, _GRID, _GRID):
+        off = _build_streams(gc, sc, aa, inten, comm=False)
+        on = _build_streams(gc, sc, aa, inten, comm=True)
+        assert [name for name, _, _ in off] == [name for name, _, _ in on]
+        for (name, mu_off, _), (_, mu_on, _) in zip(off, on, strict=True):
+            assert mu_off == mu_on, f"{name} 的 μ 被齐次化改动了：{mu_off} → {mu_on}"
+
+
+def test_survival_arousal_floor_is_still_present_and_owned_by_line_a() -> None:
+    """装配锚点 B（**特征化**，非通过性断言）：钉住尚未修复的 survival arousal 地板。
+
+    `fast_survival_prior` 的 `arousal = clamp(0.5 + 0.5·|I|, 0, 1)` 有 **0.5 的地板**——
+    完全中性、零强度的输入也让快生存流断言「唤醒 0.5」。这是第二次推翻（P1-c 符号翻转）
+    的直接成因，也是装配阶段 μ 污染的教科书例子。
+
+    **齐次化不修它**：本项只改 Π 不改 μ（见上一条用例）。修法（`clamp(0.5·|I|)`，
+    与主开关共用同一 default-off 门控）属线 A 范围，见
+    `PRP/点火判据按轴精度加权修复/`。
+
+    本用例故意钉死当前数值：线 A 修好那天它会红，强制回来更新说明——
+    这正是「判别力边界写成用例而非注释」的用法。
+    """
+    for comm in (False, True):
+        mu, _ = fast_survival_prior([0.0, 0.0, 0.0, 0.0], commensurable=comm)
+        assert mu == (0.0, 0.5), f"地板行为变了（comm={comm}）：{mu}——若线 A 已修，请更新本用例"
+    # 地板的后果：任何输入下 survival 的 arousal 都进不了下半区（circumplex 静息侧）
+    lows = [
+        fast_survival_prior([g, 0.0, 0.0, i], commensurable=True)[0][1]
+        for g in _GRID
+        for i in _GRID
+    ]
+    assert min(lows) == 0.5, "survival 恒不产 <0.5 的唤醒——这就是地板 bug 的可观测形态"
+
+
+# ---------------------------------------------------------------------------
+# 7. 同进程自比对（T4.2）：固定 seed 大样本，门关侧须逐位等于写死的旧公式
+# ---------------------------------------------------------------------------
+
+
+def test_gate_off_bitwise_identical_to_legacy_over_10k_random_cases() -> None:
+    """门关时五个精度入口在 1e4 组随机输入下**逐位**等于旧公式（非近似相等）。
+
+    参数化用例只覆盖了少数离散点；这条用大样本堵住"某个区间恰好不同"的可能。
+    用 `==` 而非 `approx`——零回归的含义就是浮点逐位一致。
+    """
+    rnd = random.Random(20260729)
+    for _ in range(10_000):
+        delta = rnd.uniform(-5.0, 5.0)
+        value = rnd.uniform(-2.0, 2.0)
+        inten = rnd.uniform(-1.0, 1.0)
+        gc = rnd.uniform(-1.0, 1.0)
+        assert precision(delta, value, commensurable=False) == _legacy_precision(delta, value)
+        assert precision_da(delta, commensurable=False) == _legacy_precision_da(delta)
+        assert fast_survival_prior([gc, 0.0, 0.0, inten], commensurable=False)[1] == (0.4, 0.4)
+        assert mood_precision(commensurable=False) == 0.8
+        assert text_affect_precision(commensurable=False) == 0.3
+
+
+# ---------------------------------------------------------------------------
+# 8. 域穷举回归锁（T5.2）
+#
+# ⚠ **这是结构回归锁，不是正确性证明**。区间内 ≠ 数学正确；它只保证「今天的取值范围
+# 没有被无意改动」。每个区间下面注明推导它的 `file:line`，否则日后没人知道数字从哪来、
+# 就会变成"事后填数字"的空洞绿灯（`prp.md` R4）。
+# ---------------------------------------------------------------------------
+
+
+def test_domain_enumeration_regression_lock() -> None:
+    """各流精度在全域上的取值区间锁（门开侧）。区间来源逐条标注。"""
+    ranges: dict[str, list[float]] = {}
+    for gc, sc, aa, inten in itertools.product(_GRID, _GRID, _GRID, _GRID):
+        for name, _, prec in _build_streams(gc, sc, aa, inten, comm=True):
+            ranges.setdefault(name, []).extend(prec)
+
+    def span(name: str) -> tuple[float, float]:
+        vs = [v for v in ranges[name] if v > MIN_PRECISION]
+        return min(vs), max(vs)
+
+    # survival：conf = clamp(0.1+0.1·|I|, 0, 0.5)（affect_math.py SURVIVAL_CONF_*），
+    # σ = max(MIN_SIGMA, 0.5(1−conf))；|I|∈[0,1] → conf∈[0.1,0.2] → σ∈[0.40,0.45] → Π∈[4.938,6.25]
+    lo, hi = span("survival")
+    assert (lo, hi) == (pytest.approx(4.938, abs=1e-3), pytest.approx(6.250, abs=1e-3))
+
+    # mood：常量 1/SIGMA_MOOD²，SIGMA_MOOD=1.0
+    # （affect_math.py SIGMA_MOOD，来源=mood_step 吸引盆半宽）
+    assert span("mood") == (1.0, 1.0)
+
+    # text：常量 1/SIGMA_TEXT²，SIGMA_TEXT=0.5（affect_math.py SIGMA_TEXT，保守占位）
+    assert span("text") == (4.0, 4.0)
+
+    # value：MIN_PRECISION + (VALUE_PRECISION_CEILING−MIN_PRECISION)·sigmoid(0)，δ 恒为 0（本装配）
+    # → 0.001 + 6.249×0.5 = 3.1255；再乘 arousal_gain=1+max(0,μ_a)∈[1,2] → [3.1255, 6.251]
+    lo, hi = span("value")
+    assert lo == pytest.approx(3.1255, abs=1e-3)
+    assert hi <= 2.0 * VALUE_PRECISION_CEILING
+
+    # appraisal：arousal_gain/σ_occ²，σ_occ=max(MIN_SIGMA, 0.5(1−clamp(0.3+0.5|I|)))
+    # （affect_math.py occ_prior:152-153）；|I|=0 → σ=0.35 → Π=8.163；|I|=1 → σ=0.10 → Π=100
+    # 乘 arousal_gain∈[1,2] → [8.163, 200]
+    lo, hi = span("appraisal")
+    assert lo == pytest.approx(8.163, abs=1e-3)
+    assert hi <= 200.0 + 1e-9
+
+    # 🔴 锁的判别力：区间必须真的收紧过——若某流的上下界相等且不是设计上的常量，说明扫描没生效
+    assert span("survival")[0] < span("survival")[1], "survival 应随 |I| 变化，区间不该退化"
+    assert span("appraisal")[0] < span("appraisal")[1], "appraisal 应随 |I| 变化，区间不该退化"

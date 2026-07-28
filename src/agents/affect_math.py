@@ -220,6 +220,30 @@ def precision_da(delta: float, *, alpha: float = 1.0, commensurable: bool = Fals
     return max(MIN_PRECISION, sigmoid(alpha * abs(delta)))
 
 
+def effective_stream_count(
+    terms: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> tuple[float, float]:
+    """Kish 有效样本量 `N_eff = (ΣΠ)²/ΣΠ²`，逐维返回。**纯观测量，不参与任何计算。**
+
+    读数：`N_eff → 1` = 后验实际上只由一条流决定（其余流的权重被碾压）；
+    `N_eff → N` = N 条流均衡贡献。齐次化前实测均值 1.175（几乎恒为单流独裁），
+    齐次化后 2.117。
+
+    ⚠ **不得据此下硬断言**——`N_eff → 1` 在**合法**校准下也会发生（Ernst & Banks 2002：
+    某模态噪声趋零时它的权重本就该趋 1）。它回答的是「有几条流在说话」，
+    不回答「这样对不对」。写进 trace 供观测/排障，不做门。
+
+    Kish, L. (1965). *Survey Sampling*. Wiley. —— 加权估计量的有效样本量定义。
+    """
+    out = []
+    for d in (0, 1):
+        ps = [max(MIN_PRECISION, prec[d]) for _, prec in terms]
+        s1 = sum(ps)
+        s2 = sum(p * p for p in ps)
+        out.append(s1 * s1 / s2 if s2 > 0.0 else 0.0)
+    return (out[0], out[1])
+
+
 def mood_precision(*, commensurable: bool = False) -> float:
     """心境流精度。门开时 = 1/σ_mood²（σ_mood = mood_step 吸引盆半宽，见 SIGMA_MOOD）。"""
     return 1.0 / SIGMA_MOOD**2 if commensurable else MOOD_PRECISION
