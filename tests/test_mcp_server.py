@@ -50,6 +50,26 @@ def test_stimulus_intensity_is_abs_and_clamped() -> None:
     assert stimulus_from_payload({"valence": 0.0, "arousal": 1.5}).intensity == 1.0  # clamp ≤1
 
 
+def test_stimulus_out_of_domain_valence_raises() -> None:
+    """越域 valence 在边界 fail-fast（议会 2026-07-28 第四轮 A4 落地后的**新契约**）。
+
+    ⚠ 与 arousal 的处置**有意不对称**，见 `mapping.py` docstring：
+      - `intensity = min(1.0, max(floor, |arousal|))` 是**语义映射**（幅度→强度），
+        `min(1.0, ...)` 顺带把越域 arousal 静默钳到 1.0；
+      - `goal_congruence = valence` 是**恒等透传**，越域即 client 违约 → 拒绝，
+        与 M3/M6/M7 一致（fail-fast 指向 MCP 传参）。
+    该拒绝不会裸崩：`server.py:288-292` 的 `except (ValueError, TypeError)` 转 ToolError。
+    """
+    for bad in (1.5, -1.5, 1.0001):
+        with pytest.raises(ValueError):  # pydantic ValidationError 是 ValueError 子类
+            stimulus_from_payload({"valence": bad, "arousal": 0.1})
+    # 边界值合法，不得误伤
+    for ok in (-1.0, 1.0, 0.0):
+        assert stimulus_from_payload({"valence": ok, "arousal": 0.1}).goal_congruence == ok
+    # 对照：同样越域的 arousal 仍被静默钳制（不对称是有意的，改它须与 Zero_MCP 协调）
+    assert stimulus_from_payload({"valence": 0.0, "arousal": 99.0}).intensity == 1.0
+
+
 def test_stimulus_missing_va_raises() -> None:
     with pytest.raises(ValueError):
         stimulus_from_payload({"valence": 0.5})  # 缺 arousal

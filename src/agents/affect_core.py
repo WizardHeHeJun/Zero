@@ -92,8 +92,12 @@ class AffectCoreAgent:
                 ("value", evidence, value_prec),  # 价值流（RPE）
             ]
             # mood/text 两条流的精度是 env 可调旋钮（ZERO_MOOD_PRECISION / ZERO_TEXT_AFFECT_
-            # PRECISION），默认停在旧标度 0.8/0.3。门开时改用齐次值 1/σ²；旋钮被显式改过
-            # 时不在此静默覆盖——SessionConfig 校验会在配置期 fail-fast（混标度正是本项要消灭的）。
+            # PRECISION），默认停在旧标度 0.8/0.3。门开时**无条件**改用齐次值 1/σ²，
+            # 即丢弃 state 里的旋钮值——这在热路径里是有意为之（节点不做校验、不抛异常）。
+            # 防线在上游：SessionConfig._check_precision_scale_consistency 在配置期就拒绝
+            # 「门开 + 旋钮被显式改过」的组合，使这里永远不会真的丢弃用户的显式配置。
+            # AffectState 层刻意不设对等校验——它要能从 checkpoint 原样反序列化（同 :284 的理由）。
+            # 直接构造 AffectState 绕过 SessionConfig 的调用点（测试）会静默忽略旋钮，非数值错误。
             mood_prec = mood_precision(commensurable=True) if comm else state.mood_precision
             text_prec = (
                 text_affect_precision(commensurable=True) if comm else state.text_affect_precision
