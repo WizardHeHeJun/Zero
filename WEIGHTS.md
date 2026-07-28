@@ -119,8 +119,43 @@ EmoBank 有官方 8062/1000/1000 切分。下面用同样 300 轮，只改「读
 | 权重文件 | 方向 | 训练配方（已知部分） | 最终 loss |
 | --- | --- | --- | --- |
 | `facs_decoder_ext.pt` | (v,a)→11 AU | `train_facs --ext --epochs 500`，emonet-face-binary（CC-BY）→ OpenFace AU，1634 行 | 0.032 |
-| `facs_decoder_ext_v2.pt` | (v,a)→13 AU | 同上数据管线，13-AU 词表；最近一次重训于 2026-07-25 | 0.034407 |
+| `facs_decoder_ext_v2.pt` | (v,a)→13 AU | **2026-07-28 重训**：`train_facs --ext --seed 0`（默认 `stop=plateau`，实跑满 5000 步），同上数据管线 | 0.029479 |
 | `expression_decoder_canonical.pt` | (v,a)→表情 | `train_expression --canonical-physiology`（idx7 = 体温，与 legacy 口径**不可互换**） | — |
+
+### `facs_decoder_ext_v2.pt` 2026-07-28 重训：修 AU15 方向缺陷
+
+**为什么重训**：旧版（2026-07-25）的 **AU15 沿 valence 方向与训练数据相反**——数据锚点级
+相关 r = −0.526，模型却学成 Δ(v:−1→+1) = **+0.115**。AU15 不在 `_COPING_DRIVEN_AUS` 内，
+composite 默认 α=1.0 下不被解析占位覆盖，所以那条错误方向**真实进入过运行时表情**。
+
+根因是**全局欠训练**：旧版训于 ≈300–400 步（`epochs=300` 魔数时代的产物），而实测 AU15 的
+valence 斜率符号在 ≤500 步时很大程度上是初始化残留，1500 步起才由数据接管。整改 P1-1 落地的
+`stop="plateau"` + `max_epochs=5000` 已使默认配方必定跑满 5000 步，**重训一次即自动修好**。
+完整根因见 `notes/2026-07-28-au15-direction-root-cause.md`。
+
+| 量 | 旧（≈300–400 步·无种子） | **新（5000 步·seed 0）** |
+| --- | --- | --- |
+| Δ(AU15) @ a=0 | +0.115（方向反） | **−0.047（正确）** |
+| 强信号维方向正确数（\|r\|≥0.5，6 维） | 5/6 | **6/6** |
+| 全网格 13 键输出上界 | 0.377（从不出高强度 AU） | **0.850** |
+| AU12 / AU06 全网格动态范围 | 0.220 / 0.258 | **0.760 / 0.681** |
+| train MSE（单侧参考，非泛化指标） | 0.0343805 | **0.0294785** |
+| provenance sidecar | ❌ 无 | ✅ 有 |
+| sha256 | `0977777380…f473` | `b7ec88d7be…f12b` |
+
+⚠ **不要读成「预测变准了」**：AU15 在留出面上**没有任何配置打赢常数基线**（最好 −0.0097）。
+这次修的是**方向错误**，不是精度。
+
+⚠ **旧权重无法精确复现**：它训于 `torch.manual_seed` 加进 `train_facs.py`（`798f0ef`,
+2026-07-27）之前，没有固定种子、也没有 sidecar。文件本身留档于
+`artifacts/archive/facs_decoder_ext_v2-300steps-noseed-2026-07-25.pt`，但**配方无法重建**。
+
+复现新权重：
+
+```powershell
+python -m scripts.train_facs --csv data/facs/labels_ext.csv --ext `
+    --out artifacts/facs_decoder_ext_v2.pt --seed 0
+```
 
 ---
 
