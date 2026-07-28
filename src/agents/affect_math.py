@@ -1031,6 +1031,17 @@ def expand_external_priors(
         pi_v: float = float(prior[2][0])
         pi_a: float = float(prior[2][1])
 
+        # M7：μ 域校验（议会 2026-07-28）。契约（external_prior.py）声明 μv/μa ∈[-1,1]，
+        # 但此前只是注释、运行期不校验——安全边界实际靠 MCP 侧 ModalityPrior 自律维持。
+        # 按 Parse-don't-validate 在解析处一次性校验到位：越界 μ 会直接抬高 stream_salience
+        # 买到本不该有的点燃资格（实测注入 μ=(0,2.0) 可越过 SALIENCE_THRESHOLD）。
+        # 纯边界收紧：合法输入行为逐字不变（零回归）。NaN 亦由此条拦下。
+        if not (-1.0 <= mu[0] <= 1.0 and -1.0 <= mu[1] <= 1.0):
+            raise ValueError(
+                f"external_priors[{i}] ({name!r}) 的 μ 须在 [-1, 1] 内，"
+                f"实际 μv={mu[0]}, μa={mu[1]}；请检查 MCP ModalityPrior 输出"
+            )
+
         # M2：生理流 valence 精度强制归 MIN_PRECISION（无条件·唯一失真必改）。
         # 置于 M3 校验之前（code-reviewer W1 2026-07-15）：physio 的 Πv 无条件覆写，
         # 不因 MCP 误传超 cap / 非正 Πv 而在 M3 处误报——覆写后 Πv=MIN_PRECISION∈(0,cap]。

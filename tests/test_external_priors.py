@@ -5,6 +5,7 @@
      - 空列表 → []
      - M2：physio 类 name Πv 强制 MIN_PRECISION；非生理原样透传
      - M3：精度 <=0 / >cap / 形状不合法 → ValueError；边界值通过
+     - M7：μ 域校验（议会 2026-07-28）——越界/NaN → ValueError；[-1,1] 边界通过
      - M6：len>max_streams → ValueError；==max_streams 通过
   2. AffectCore 节点集成
      - 零回归：external_priors=[]（默认）→ 返回 dict 与无该字段时 key/集合一致
@@ -16,9 +17,14 @@
      - 第一轮注入外部流、第二轮不注入 → 第二轮结果与完全不注入对照相同
   4. 风险 #125 seeking 回归（连续多轮高 arousal 外部流）
      - 连续 K=10 轮注入高 arousal 外部流，断言 emotion/attitude 不单调锁定 seeking 象限
-  5. AffectState 默认值断言
+  5. ⚠ 点燃门可达性特征化（议会 2026-07-28）
+     - 用 design.md §五 **推荐默认精度**（非夸大值）驱动 ignite，锁定当前已知缺陷行为：
+       physio 结构性不可点燃、face/audio 真实最强样本仍亚阈、单维饱和三模态均不可达
+     - 公式修复（按轴加权马氏距离 + θ'=0.28）落地时本组应变红，届时按新式更新断言，
+       **不得靠放宽断言让它变绿**
+  6. AffectState 默认值断言
      - external_prior_precision_cap==0.8、max_external_streams==5、external_priors==[]
-  6. _PHYSIO_PREFIXES 派生的前缀覆盖抽样
+  7. _PHYSIO_PREFIXES 派生的前缀覆盖抽样
 """
 
 from __future__ import annotations
@@ -253,6 +259,62 @@ class TestExpandExternalPriorsM3:
             )
 
 
+class TestExpandExternalPriorsM7MuDomain:
+    """M7：μ 域校验（议会 2026-07-28）。
+
+    契约 external_prior.py 声明 μv/μa ∈[-1,1]，此前只是注释、运行期不校验——
+    越界 μ 会直接抬高 stream_salience 买到本不该有的点燃资格。纯边界收紧：
+    合法输入行为逐字不变。
+    """
+
+    def test_mu_valence_above_one_raises(self) -> None:
+        """μv > 1 → raise ValueError。"""
+        with pytest.raises(ValueError, match=r"μ 须在 \[-1, 1\] 内"):
+            expand_external_priors(
+                [("face", (1.5, 0.2), (0.5, 0.5))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_mu_arousal_above_one_raises(self) -> None:
+        """μa > 1（此前实测可越过 SALIENCE_THRESHOLD 点燃）→ raise ValueError。"""
+        with pytest.raises(ValueError, match=r"μ 须在 \[-1, 1\] 内"):
+            expand_external_priors(
+                [("eda_sc", (0.0, 2.0), (0.5, 0.18))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_mu_below_negative_one_raises(self) -> None:
+        """μ < -1 → raise ValueError。"""
+        with pytest.raises(ValueError, match=r"μ 须在 \[-1, 1\] 内"):
+            expand_external_priors(
+                [("audio", (-1.01, 0.0), (0.1, 0.25))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_mu_nan_raises(self) -> None:
+        """μ 为 NaN → 比较恒 False → 由同一条校验拦下。"""
+        with pytest.raises(ValueError, match=r"μ 须在 \[-1, 1\] 内"):
+            expand_external_priors(
+                [("face", (float("nan"), 0.0), (0.2, 0.12))],
+                precision_cap=0.8,
+                max_streams=5,
+            )
+
+    @pytest.mark.parametrize("mu", [(-1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (0.0, 0.0)])
+    def test_mu_domain_boundary_passes(self, mu: tuple[float, float]) -> None:
+        """μ 恰在闭区间边界与内部 → 通过（合法输入零回归）。"""
+        result = expand_external_priors(
+            [("face", mu, (0.2, 0.12))], precision_cap=0.8, max_streams=5
+        )
+        assert result[0][1] == mu
+
+    def test_mu_check_precedes_m2_physio_override(self) -> None:
+        """physio 流越界 μ 同样被拦（M7 早于 M2 覆写，不因 Πv 归零而漏检）。"""
+        with pytest.raises(ValueError, match=r"μ 须在 \[-1, 1\] 内"):
+            expand_external_priors(
+                [("physio_eda", (0.0, 1.2), (0.9, 0.18))],
+                precision_cap=0.8,
+                max_streams=5,
+            )
+
+
 class TestExpandExternalPriorsM6:
     """M6：流数上界校验。"""
 
@@ -466,6 +528,101 @@ class TestAffectCoreM1ExternalPriorsInfluence:
         assert out_two["post_mu"][1] > out_one["post_mu"][1], (
             "两条非冲突外部流融合应比单条有更强的 arousal 偏移（累积精度）"
         )
+
+
+class TestIgnitionReachabilityAtRecommendedPrecision:
+    """⚠ 特征化用例：用 design.md §五 **推荐默认精度**驱动点燃门（议会 2026-07-28）。
+
+    这些断言锁定的是**当前已知缺陷行为**，不是期望行为——记录真实状态而非掩盖。
+    此前唯一断言 external 点燃的用例用 Π=(0.7,0.7)（推荐值的 4~700 倍），
+    绿灯具误导性，缺陷因此静默存活到配套项目 Zero_MCP 实测才暴露。
+
+    现行 stream_salience = hypot(μv,μa)·(Πv+Πa)/2 ≥ SALIENCE_THRESHOLD=0.18 下：
+      face  mean(Π)=0.1600 → 需 |μ|≥1.1250（>1.0，单维不可达）
+      audio mean(Π)=0.1750 → 需 |μ|≥1.0286（>1.0，单维不可达）
+      physio mean(Π)=0.0905 → 需 |μ|≥1.9890 > √2 → **数学上恒不可点燃**
+
+    ⚠ 修复（按轴加权马氏距离 D=sqrt(Πv·μv²+Πa·μa²) + θ'=0.28）落地时本类应当变红，
+    那正是预期信号——届时按新公式更新断言，**不得靠放宽断言让它变绿**。
+    见 notes/2026-07-28-ignition-gate-external-priors-council.md。
+    """
+
+    # design.md §五 推荐默认（physio Πv 由 M2 强制覆写为 MIN_PRECISION）
+    FACE_PREC = (0.20, 0.12)
+    AUDIO_PREC = (0.10, 0.25)
+    PHYSIO_PREC = (MIN_PRECISION, 0.18)
+
+    def test_physio_at_recommended_precision_never_ignites(self) -> None:
+        """physio 取合法域内最强读数（μa=1.0）仍不点燃——结构性不可达。"""
+        state = _base_state(
+            external_priors=[("physio", (0.0, 1.0), self.PHYSIO_PREC)],
+        )
+        out = AffectCoreAgent()(state)
+        assert "physio" not in out["ignited_streams"], (
+            "特征化：physio 在推荐精度下 salience 上限 0.0905 < 0.18，恒不点燃"
+        )
+
+    def test_physio_expanded_but_gated(self) -> None:
+        """physio 确实被展开成合法流（M1-M3 通过），只是被点燃门挡在融合外。"""
+        expanded = expand_external_priors(
+            [("physio", (0.0, 0.91), self.PHYSIO_PREC)],
+            precision_cap=0.8,
+            max_streams=5,
+        )
+        assert expanded == [("physio", (0.0, 0.91), (MIN_PRECISION, 0.18))], (
+            "展开层正常：问题出在下游 ignite 的绝对阈值判据，不在展开/校验"
+        )
+
+    def test_face_at_recommended_precision_real_strong_sample_drops(self) -> None:
+        """真人脸最强样本（EmotiEffLib Anger |μ|=0.9037）在推荐精度下仍不点燃。"""
+        state = _base_state(
+            external_priors=[("face", (-0.7177, 0.5492), self.FACE_PREC)],
+        )
+        out = AffectCoreAgent()(state)
+        assert "face" not in out["ignited_streams"], (
+            "特征化：真人脸最强表情 salience 0.1446 < 0.18，差门槛约 24%"
+        )
+
+    def test_audio_at_recommended_precision_real_strong_sample_drops(self) -> None:
+        """真语音最强样本（audeering w2v2 尖叫 |μ|=0.4729）在推荐精度下不点燃。"""
+        state = _base_state(
+            external_priors=[("audio", (0.0, 0.4729), self.AUDIO_PREC)],
+        )
+        out = AffectCoreAgent()(state)
+        assert "audio" not in out["ignited_streams"], (
+            "特征化：真语音最强样本 salience 0.0828 << 0.18"
+        )
+
+    def test_single_axis_saturation_unreachable_for_all_modalities(self) -> None:
+        """三模态门槛均 >1.0 → 单维饱和（|μ|=1.0）一律不可达。
+
+        环状模型里纯效价轴/纯唤醒轴（如「惊讶」「平静满足」）是合法基本方位，
+        当前判据在几何上把这一整类情绪判了死刑（心理席，Russell 1980）。
+        """
+        for name, prec, mu in [
+            ("face", self.FACE_PREC, (1.0, 0.0)),
+            ("face", self.FACE_PREC, (0.0, 1.0)),
+            ("audio", self.AUDIO_PREC, (1.0, 0.0)),
+            ("audio", self.AUDIO_PREC, (0.0, 1.0)),
+        ]:
+            state = _base_state(external_priors=[(name, mu, prec)])
+            out = AffectCoreAgent()(state)
+            assert name not in out["ignited_streams"], (
+                f"特征化：{name} 单维饱和 μ={mu} 在推荐精度下仍不可点燃"
+            )
+
+    def test_merged_physio_at_omega_half_still_gated_under_old_formula(self) -> None:
+        """MCP 侧 ω=0.5 预合并（Π_merged=0.175）后，旧公式下仍不点燃。
+
+        与配套项目既有特征化断言自洽——预合并解决的是 Σπ 虚增（重复计数），
+        不解决点燃门的构造缺陷，两者是不同层面的问题。
+        """
+        # eda μa=0.76 / hrv μa=0.91，ω=0.5 → μ_merged=0.845714, Π_merged=0.175
+        state = _base_state(
+            external_priors=[("physio", (0.0, 0.845714), (MIN_PRECISION, 0.175))],
+        )
+        out = AffectCoreAgent()(state)
+        assert "physio" not in out["ignited_streams"], "特征化：合并后 salience≈0.0744 仍 < 0.18"
 
 
 class TestAffectCoreNoPollution:
