@@ -65,11 +65,30 @@ _UNKNOWN_SESSION_MARKER = "unknown-session"
 
 
 def _env_flag(name: str, default: bool) -> bool:
-    """读布尔 env；未设 → default。真值集与 chat_driver 一致（1/true/yes/on）。"""
+    """读布尔 env：真值集 → True，假值集 → False，**其余一律回落 `default`**。
+
+    🛑 **旧实现只判真值集**（`raw.lower() in ("1","true","yes","on")`），未识别值一律 False。
+    那对「默认 False」的旗标恰好等于 default，看不出问题；但用在**默认 True** 的旗标上
+    （`workspace_enabled` / `gate_fusion` / `exclude_physio_fusion`）**失败方向就反了**：
+    空串 / 带空格的 `"true "` / `"enabled"` 这类值会静默把门**打开**，
+    而 `chat_driver` 侧同样取值判的是假值集、结论是门**关**——两侧语义直接冲突。
+    后果实测：`ZERO_MCP_EXCLUDE_PHYSIO_FUSION=""` 时反号 physio 回到数值通路，
+    arousal 后验被抬高 150%+，等于单边解除对 Zero_MCP 的 D7 跨仓承诺。
+    （终审工作流抓出，两名独立验证者复现。）
+
+    现改为**方向无关**：未识别值回落 `default`，并 `strip()` 掉首尾空白。
+    对三个既有的「默认 False」旗标**逐字零回归**（未识别值 → default → False，与旧实现同值）；
+    对「默认 True」的旗标则把失败方向从「打开未评审的新架构」改回「保持默认」。
+    """
     raw = os.getenv(name)
     if raw is None:
         return default
-    return raw.lower() in ("1", "true", "yes", "on")
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return default  # 未识别（含空串）→ 回落默认，**不再一律 False**
 
 
 def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:

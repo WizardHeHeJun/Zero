@@ -473,14 +473,38 @@ def test_anchor_c_catches_what_post_shaped_anchors_structurally_cannot() -> None
     )
 
 
-def test_anchor_c_is_bound_to_the_same_switch_as_gate_fusion() -> None:
-    """D5 强制：地板修复与 `gate_fusion` **共用同一开关**，杜绝未评审的中间态。"""
-    agent = AffectCoreAgent()
-    for gate_fusion, expect_floor in ((True, True), (False, False)):
-        st = _core_state(gate_fusion=gate_fusion, features=[0.0, 0.0, 0.0, 0.0])
-        agent(st)
-        mu, _ = fast_survival_prior(st.features, arousal_floor_fix=not st.gate_fusion)
-        assert (mu[1] == 0.5) is expect_floor
+def test_anchor_c_is_bound_to_the_same_switch_as_gate_fusion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D5 强制：地板修复与 `gate_fusion` **共用同一开关**，杜绝未评审的中间态。
+
+    🛑 **本用例的上一版是同义反复，如实记录**（终审工作流抓出，同一反模式第三次）：
+    它 `agent(st)` 后把返回值整个丢弃，再自己用 `arousal_floor_fix=not st.gate_fusion`
+    **重算一遍期望**——断言的是测试代码自己，与生产调用点 `affect_core.py` 零耦合。
+    实测把那行的门方向写反（**在默认门关位直接破零回归**，`post_mu`/`ignited_streams` 都变），
+    全套 1687 条**无一变红**。
+
+    现改为**监视生产调用点**：spy 掉 `affect_core` 命名空间里的 `fast_survival_prior`，
+    断言它**实际收到**的 `arousal_floor_fix` 与 `gate_fusion` 反相。门方向写反即红。
+    """
+    import src.agents.affect_core as core_mod
+
+    real = core_mod.fast_survival_prior
+    captured: list[bool | None] = []
+
+    def spy(features: list[float], **kw: object) -> tuple:
+        captured.append(kw.get("arousal_floor_fix"))  # type: ignore[arg-type]
+        return real(features, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(core_mod, "fast_survival_prior", spy)
+
+    for gate_fusion, expect_floor_fix in ((True, False), (False, True)):
+        captured.clear()
+        AffectCoreAgent()(_core_state(gate_fusion=gate_fusion, features=[0.0, 0.0, 0.0, 0.0]))
+        assert captured == [expect_floor_fix], (
+            f"gate_fusion={gate_fusion} 时生产调用点传的 arousal_floor_fix 应为 "
+            f"{expect_floor_fix}，实际 {captured}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -681,3 +705,96 @@ async def test_run_entrypoint_does_not_over_reject() -> None:
         gate_fusion=False,  # 新架构单独开（不配 HPC）→ 合法
     )
     assert len(traj) == 1
+
+
+# ---------------------------------------------------------------------------
+# 9. MCP 侧与 chat 侧的 env 语义必须一致（终审工作流抓出的第二条）
+#
+# 🛑 `_env_flag` 旧实现只判**真值集**，未识别值一律 False。那对「默认 False」的旗标恰好
+# 等于 default、看不出问题；用在**默认 True** 的旗标上失败方向就反了——空串 /「true 」/
+# 「enabled」会静默把门**打开**，而 chat 侧同样取值判假值集、结论是门**关**。
+# 后果：`ZERO_MCP_EXCLUDE_PHYSIO_FUSION=""` 时反号 physio 回到数值通路、arousal 抬高 150%+，
+# 等于单边解除对 Zero_MCP 的 D7 跨仓承诺。
+# ---------------------------------------------------------------------------
+
+_ENV_VALUES = [
+    None,
+    "",
+    " ",
+    "true",
+    "TRUE",
+    "true ",
+    " true",
+    "1",
+    "yes",
+    "on",
+    "false",
+    "FALSE",
+    "0",
+    "no",
+    "off",
+    "enabled",
+    "disabled",
+    "y",
+    "n",
+    "t",
+    "f",
+]
+
+
+@pytest.mark.parametrize("raw", _ENV_VALUES)
+def test_mcp_and_chat_agree_on_every_env_value(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None
+) -> None:
+    """同一 env 取值，MCP 边界与 chat 工厂必须给出**相同**的 gate_fusion 结论。
+
+    两侧各测各的（本文件早先那组 chat 侧用例）**测不出跨侧分歧**——必须直接断言一致性。
+    """
+    from src.mcp_server.server import _build_session_config
+    from src.orchestration.chat_driver import build_chat_driver
+
+    monkeypatch.delenv("ZERO_OPENAI_API_KEY", raising=False)
+    for name in ("ZERO_IGNITION_GATE_FUSION", "ZERO_MCP_IGNITION_GATE_FUSION"):
+        if raw is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, raw)
+    chat = build_chat_driver(thread=f"agree-{raw!r}").session.config.gate_fusion
+    mcp = _build_session_config(None).gate_fusion
+    assert chat == mcp, f"取值 {raw!r}：chat={chat} 但 mcp={mcp} —— 两侧语义分歧"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, True), ("", True), (" ", True), ("enabled", True), ("true ", True), ("off", False)],
+)
+def test_env_flag_falls_back_to_default_not_to_false(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: bool
+) -> None:
+    """未识别值（含空串）回落 `default`，**不是**一律 False——这是失败方向的关键。"""
+    from src.mcp_server.server import _env_flag
+
+    if raw is None:
+        monkeypatch.delenv("ZERO_TEST_FLAG_DIRECTION", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_TEST_FLAG_DIRECTION", raw)
+    assert _env_flag("ZERO_TEST_FLAG_DIRECTION", True) is expected
+
+
+@pytest.mark.parametrize("raw", ["", " ", "enabled", "y", "t"])
+def test_env_flag_zero_regression_for_default_false_flags(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """对三个既有的「默认 False」旗标**逐字零回归**：未识别值仍得 False（旧实现同值）。"""
+    from src.mcp_server.server import _env_flag
+
+    monkeypatch.setenv("ZERO_TEST_FLAG_DIRECTION", raw)
+    assert _env_flag("ZERO_TEST_FLAG_DIRECTION", False) is False
+
+
+def test_physio_exclusion_survives_empty_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🛑 跨仓承诺不得因一个空 env 值被单边解除。"""
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.setenv("ZERO_MCP_EXCLUDE_PHYSIO_FUSION", "")
+    assert _build_session_config(None).exclude_physio_fusion is True
