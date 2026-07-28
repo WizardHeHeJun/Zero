@@ -85,7 +85,7 @@ class TestPtFormatUnchanged:
         csv_path = tmp_path / "labels.csv"
         _make_facs_csv(csv_path)
         out = tmp_path / "facs.pt"
-        train(str(csv_path), epochs=5, out=str(out))
+        train(str(csv_path), epochs=5, stop="fixed", out=str(out))
 
         raw = torch.load(out, weights_only=True)
         assert isinstance(raw, dict), "顶层必须是裸 state_dict，不能是 {'state_dict':…} 包装"
@@ -100,7 +100,7 @@ class TestPtFormatUnchanged:
         from src.agents.models.expression_decoder import load_decoder
 
         out = tmp_path / "expr.pt"
-        train(epochs=3, n=64, out=str(out))
+        train(epochs=3, stop="fixed", n=64, out=str(out))
         assert load_decoder(str(out)) is not None
 
     def test_sidecar_is_a_separate_file(self, tmp_path: Path) -> None:
@@ -110,7 +110,7 @@ class TestPtFormatUnchanged:
         from src.agents.models.expression_decoder import load_decoder
 
         out = tmp_path / "expr.pt"
-        train(epochs=3, n=64, out=str(out))
+        train(epochs=3, stop="fixed", n=64, out=str(out))
         sidecar = provenance_path(out)
         assert sidecar.exists() and sidecar != out
         sidecar.unlink()
@@ -125,7 +125,7 @@ class TestSidecarRecordsRecipe:
         csv_path = tmp_path / "labels.csv"
         n_rows = _make_facs_csv(csv_path)
         out = tmp_path / "facs.pt"
-        train(str(csv_path), epochs=7, lr=2e-3, hidden=8, out=str(out), seed=3)
+        train(str(csv_path), epochs=7, lr=2e-3, hidden=8, stop="fixed", out=str(out), seed=3)
 
         rec = _read_sidecar(out)
         assert rec["schema_version"] == SCHEMA_VERSION
@@ -134,6 +134,7 @@ class TestSidecarRecordsRecipe:
         assert rec["model"]["hidden"] == 8
         assert rec["model"]["extended"] is False
         assert rec["model"]["param_count"] > 0
+        # 精确字典比较：新增/漏记字段都会在这里失败，比逐个 in 检查更能防漂移
         assert rec["training"] == {
             "seed": 3,
             "lr": 2e-3,
@@ -141,6 +142,8 @@ class TestSidecarRecordsRecipe:
             "epochs_ran": 7,
             "stopped_early": False,
             "n_samples": n_rows,
+            "stop": "fixed",
+            "val_split": "none",
         }
         assert rec["data"]["kind"] == "file"
         assert rec["data"]["lines"] == n_rows + 1  # 含表头
@@ -149,22 +152,47 @@ class TestSidecarRecordsRecipe:
         assert "commit" in rec["git"] and "dirty" in rec["git"]
 
     def test_artifact_sha256_pairs_sidecar_to_weights(self, tmp_path: Path) -> None:
-        """sidecar 记的权重哈希必须等于磁盘上那份——这是两者「配对」的唯一凭证。"""
+        """sidecar 记的文件哈希必须等于磁盘上那份——用于发现「.pt 被换过、sidecar 还是旧的」。"""
         pytest.importorskip("torch")
         from scripts.train_expression import train
 
         out = tmp_path / "expr.pt"
-        train(epochs=3, n=64, out=str(out))
+        train(epochs=3, stop="fixed", n=64, out=str(out))
         rec = _read_sidecar(out)
         assert rec["artifact_sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
         assert rec["artifact_bytes"] == out.stat().st_size
+
+    def test_state_dict_hash_is_immune_to_filename(self, tmp_path: Path) -> None:
+        """权重数值哈希不随输出文件名变——文件哈希会变，所以它才是真正的「同一份权重」凭证。
+
+        `torch.save` 把输出文件名写进 zip 条目前缀，同一份 state_dict 存成两个文件名就是两个
+        文件 sha256。只用 `artifact_sha256` 的话，把权重改个名就会误报「权重被替换」。
+        """
+        torch = pytest.importorskip("torch")
+        from scripts.train_expression import train
+
+        out_a = tmp_path / "alpha.pt"
+        out_b = tmp_path / "beta.pt"
+        train(epochs=3, stop="fixed", n=64, out=str(out_a), seed=11)
+        train(epochs=3, stop="fixed", n=64, out=str(out_b), seed=11)
+
+        rec_a, rec_b = _read_sidecar(out_a), _read_sidecar(out_b)
+        # 同种子同配置 → 数值必然一致
+        state_a = torch.load(out_a, weights_only=True)
+        state_b = torch.load(out_b, weights_only=True)
+        assert all(torch.equal(state_a[k], state_b[k]) for k in state_a), "同种子应产出相同张量"
+
+        assert rec_a["model"]["state_dict_sha256"] == rec_b["model"]["state_dict_sha256"]
+        assert rec_a["artifact_sha256"] != rec_b["artifact_sha256"], (
+            "文件哈希受文件名影响而不同——正是它不能单独当配对凭证的原因"
+        )
 
     def test_synthetic_source_and_no_holdout_note(self, tmp_path: Path) -> None:
         pytest.importorskip("torch")
         from scripts.train_expression import train
 
         out = tmp_path / "expr.pt"
-        train(epochs=3, n=64, out=str(out), canonical_physiology=True)
+        train(epochs=3, stop="fixed", n=64, out=str(out), canonical_physiology=True)
         rec = _read_sidecar(out)
         assert rec["data"] == {"kind": "synthetic", "path": None}
         # canonical 与 legacy 的 idx7 语义不同、权重不可互换，必须随权重落账

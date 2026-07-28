@@ -72,7 +72,7 @@ def test_train_smoke_reduces_loss_and_load_roundtrip(tmp_path) -> None:
     from scripts.train_expression import train
 
     out = tmp_path / "dec.pt"
-    final = train(epochs=300, n=1024, out=str(out))
+    final = train(epochs=300, stop="fixed", n=1024, out=str(out))
     assert out.exists()
     assert final < 0.05  # 蒸馏分段线性解析函数，MLP 应拟合到很低
     model = load_decoder(str(out))

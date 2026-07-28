@@ -110,7 +110,7 @@ def test_converter_to_train_one_shot(tmp_path: Path) -> None:
 
     # 5) train --ext → 隔离命名权重（管线末段：真训练循环消费转换器产物）
     out = tmp_path / "facs_decoder_ext.pt"
-    final = train(str(labels), extended=True, epochs=5, out=str(out))
+    final = train(str(labels), extended=True, epochs=5, stop="fixed", out=str(out))
     assert out.exists(), "端到端应产出扩展权重文件"
     assert math.isfinite(final), f"最终 loss 应有限（整链通、无 NaN），实为 {final}"
     assert out.name == "facs_decoder_ext.pt", "隔离命名，不覆盖旧 5-AU 权重"
@@ -156,7 +156,7 @@ def test_category_source_one_shot(tmp_path: Path) -> None:
     assert n_rows == 2
 
     out = tmp_path / "facs_decoder_ext.pt"
-    final = train(str(labels), extended=True, epochs=5, out=str(out))
+    final = train(str(labels), extended=True, epochs=5, stop="fixed", out=str(out))
     assert out.exists(), "category 路径应产出扩展权重"
     assert math.isfinite(final), f"category 路径 loss 应有限，实为 {final}"
 

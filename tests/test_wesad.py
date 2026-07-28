@@ -161,7 +161,7 @@ def test_train_physiology_smoke(wesad_dir: Path, tmp_path: Path) -> None:
     from scripts.train_physiology import train
 
     out = tmp_path / "physio.pt"
-    final = train(str(wesad_dir), epochs=100, window_seconds=2, out=str(out))
+    final = train(str(wesad_dir), epochs=100, stop="fixed", window_seconds=2, out=str(out))
     assert out.exists()
     assert math.isfinite(final)
     assert final < 0.2

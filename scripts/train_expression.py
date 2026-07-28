@@ -34,7 +34,13 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from scripts._train_common import write_provenance
+from scripts._train_common import (
+    DEFAULT_MAX_EPOCHS,
+    add_stop_arguments,
+    resolve_cli_epochs,
+    resolve_epoch_budget,
+    write_provenance,
+)
 from src.agents.datasets.synthetic import synthetic_pairs
 from src.agents.models.expression_decoder import ExpressionDecoder
 
@@ -51,8 +57,14 @@ def train(
     num_layers: int = 2,
     out: str = "artifacts/expression_decoder.pt",
     canonical_physiology: bool = False,
+    stop: str = "plateau",
+    max_epochs: int = DEFAULT_MAX_EPOCHS,
 ) -> float:
     """全批量训练解码器并保存权重，返回最终 MSE 损失。
+
+    `stop="plateau"`（默认）：训练 loss 每 100 步相对下降 <1e-4 即停、`max_epochs` 封顶，
+    不再依赖 `epochs=300` 这个魔数（换个 lr 它就静默失效）。`stop="fixed"` 跑满 `epochs`，
+    供既有调用方保持逐字旧行为。本脚本是解析函数蒸馏，训练 loss 即目标误差、无泛化面。
 
     `canonical_physiology`（默认 False=legacy 目标·零回归）透传 `synthetic_pairs` →
     `affect_to_vector`：True 时蒸馏 canonical 布局（idx7=temperature_n），须配 canonical 输出路径。
@@ -65,10 +77,11 @@ def train(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
+    budget, stopper = resolve_epoch_budget(stop=stop, epochs=epochs, max_epochs=max_epochs)
     model.train()
     final_loss = 0.0
     epochs_ran = 0
-    for epoch in range(epochs):
+    for epoch in range(budget):
         optimizer.zero_grad()
         loss = loss_fn(model(x), y)
         loss.backward()
@@ -77,6 +90,9 @@ def train(
         epochs_ran = epoch + 1
         if epoch % 50 == 0:
             logger.info("epoch %d loss %.6f", epoch, final_loss)
+        if stopper is not None and stopper.should_stop(epochs_ran, final_loss):
+            logger.info("训练 loss 进入平台，停于 epoch %d（loss %.6f）", epochs_ran, final_loss)
+            break
 
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,12 +105,12 @@ def train(
         model_config={"hidden": hidden, "num_layers": num_layers},
         # canonical_physiology 决定 idx7 是 pupil_n 还是 temperature_n——两种口径的权重
         # 不可互换（见本模块 docstring），必须随权重一起落账。
-        data_config={"n": n, "canonical_physiology": canonical_physiology},
+        data_config={"n": n, "canonical_physiology": canonical_physiology, "stop": stop},
         data_source=None,
         n_samples=int(x.shape[0]),
         seed=seed,
         lr=lr,
-        epochs_requested=epochs,
+        epochs_requested=budget,
         epochs_ran=epochs_ran,
         final_train_loss=final_loss,
     )
@@ -104,7 +120,7 @@ def train(
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=300)
+    add_stop_arguments(parser)
     parser.add_argument("--n", type=int, default=4096)
     parser.add_argument("--hidden", type=int, default=32)
     parser.add_argument("--num-layers", type=int, default=2)
@@ -123,7 +139,9 @@ def main() -> None:
         else "artifacts/expression_decoder.pt"
     )
     final = train(
-        epochs=args.epochs,
+        epochs=resolve_cli_epochs(args),
+        stop=args.stop,
+        max_epochs=args.max_epochs,
         n=args.n,
         hidden=args.hidden,
         num_layers=args.num_layers,

@@ -523,7 +523,7 @@ class TestExtTrainingPipelineTurnkey:
         assert y.shape == (n_rows, len(FACS_KEYS_EXT))
 
         out = tmp_path / "facs_decoder_ext.pt"
-        final = train(str(csv_path), extended=True, epochs=3, out=str(out))
+        final = train(str(csv_path), extended=True, epochs=3, stop="fixed", out=str(out))
 
         assert out.exists(), "训练应产出扩展权重文件"
         assert math.isfinite(final), f"最终 loss 应有限（管线通、无 NaN），实为 {final}"
@@ -544,7 +544,7 @@ class TestExtTrainingPipelineTurnkey:
         csv_path = tmp_path / "labels_ext.csv"
         self._write_synthetic_ext_csv(csv_path)
         out = tmp_path / "facs_decoder_ext.pt"
-        train(str(csv_path), extended=True, epochs=3, out=str(out))
+        train(str(csv_path), extended=True, epochs=3, stop="fixed", out=str(out))
 
         # 用旧 5 维模型载 13 维权重应失败（形状不匹配 → 破坏 expression_decoder.pt 的守卫）。
         # match= 限定「size mismatch」，避免任意 RuntimeError（IO/读取失败等）假绿。

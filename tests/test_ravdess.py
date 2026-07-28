@@ -105,7 +105,7 @@ def test_train_prosody_smoke(ravdess_dir: Path, tmp_path: Path) -> None:
     from scripts.train_prosody import train
 
     out = tmp_path / "prosody.pt"
-    final = train(str(ravdess_dir), epochs=100, out=str(out))
+    final = train(str(ravdess_dir), epochs=100, stop="fixed", out=str(out))
     assert out.exists()
     assert math.isfinite(final)
     assert final < 0.2  # 仅 4 样本，应能快速拟合
