@@ -98,7 +98,14 @@ async def test_open_step_close_roundtrip() -> None:
     async with connect(build_server()) as client:
         await client.initialize()
         names = {t.name for t in (await client.list_tools()).tools}
-        assert names == {"zero.open_session", "zero.step", "zero.close_session"}  # 点名工具
+        # 全等断言（非子集）：新增或删除工具都会红，逼迫改动方来这里确认对外面变了。
+        assert names == {
+            "zero.open_session",
+            "zero.step",
+            "zero.close_session",
+            "zero.describe_config",
+            "zero.purge_session",
+        }
 
         r = await client.call_tool("zero.open_session", {})
         assert r.isError is False
@@ -578,13 +585,237 @@ def test_active_resume_branch_does_not_echo_freshly_built_cfg() -> None:
     import src.mcp_server.server as srv
 
     tree = ast.parse(inspect.getsource(srv))
-    for node in ast.walk(tree):
+    # ⚠ 必须**收窄到 open_session**：`describe_config` 的 return 里出现 `cfg` 是合法的——
+    # 那里的 cfg 取自 `session.config`（会话真实生效值）或部署端默认，正是它该回的东西。
+    # 第一版守卫扫全模块，加了 describe_config 后当场假红——判据要盯**语义位置**而非文本出现。
+    targets = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "open_session"
+    ]
+    assert targets, "未找到 open_session——本守卫已失去锚点，请重写而不是删掉"
+    for node in ast.walk(targets[0]):
         if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)):
             continue
         names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
         assert "cfg" not in names, (
             "open_session 的 return 字典里出现了 cfg——活跃 resume 分支回显它会造成语义分叉"
         )
+
+
+# ── close 饿死 与 归责错位（两条同批·修前者会制造后者）────────────────────
+
+
+async def test_close_session_not_starved_by_inflight_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 一次挂起的 step 持锁时，`close_session` **不得**被无限饿死。
+
+    配套项目原话：「这条我方无法自救」——client 侧超时不发取消通知，锁只能我方自解。
+    修法是**先摘牌、再带超时取锁**：摘牌只持 registry 表级锁，不会被在飞 step 卡住。
+    改回旧的裸 `async with lock:` 包住两步，本用例会挂到 wait_for 超时而失败。
+    """
+    import asyncio
+
+    from src.mcp_server.registry import SessionRegistry
+
+    monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", "0.05")
+    registry = SessionRegistry()
+    async with connect(build_server(registry=registry)) as client:
+        await client.initialize()
+        opened = await client.call_tool("zero.open_session", {})
+        sid = json.loads(getattr(opened.content[0], "text", ""))["session_id"]
+        _, lock = await registry.acquire(sid)
+        assert lock is not None
+        await lock.acquire()  # 模拟「一次挂起的 step 永久持锁」
+        try:
+            r = await asyncio.wait_for(
+                client.call_tool("zero.close_session", {"session_id": sid}), timeout=5.0
+            )
+            # 契约是幂等 {ok:true}——为「连接没来得及关」而破坏它得不偿失
+            assert r.isError is False
+            assert json.loads(getattr(r.content[0], "text", "")) == {"ok": True}
+            assert await registry.get(sid) is None, "close 必须先摘牌，才能止住新活"
+        finally:
+            lock.release()
+
+
+async def test_queued_step_after_close_reports_unknown_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 归责：close 摘牌后，排队中的 step 必须报 `unknown-session`，不得报 config-incompatible。
+
+    竞态成因：`registry.acquire()` 到真正拿到锁之间，会话可能已被 close 摘牌并关掉 aiosqlite。
+    此时若照常 step，会撞 `ValueError("Connection closed")` 落进 `except ValueError`
+    → 被贴成 config-incompatible（语义是「须以新配置重开」）——归责完全错，
+    且会把 client 引到错误的自救动作。正确语义是 unknown-session（同 id 重开即可）。
+
+    **与上一条必须同批**：修了 close 的饿死，才会真正出现「摘牌后仍有 step 在排队」。
+    """
+    from src.mcp_server.registry import SessionRegistry
+
+    monkeypatch.delenv("ZERO_MCP_STEP_LOCK_TIMEOUT", raising=False)
+    registry = SessionRegistry()
+    async with connect(build_server(registry=registry)) as client:
+        await client.initialize()
+        opened = await client.call_tool("zero.open_session", {})
+        sid = json.loads(getattr(opened.content[0], "text", ""))["session_id"]
+        await registry.close(sid)  # 模拟 close 抢先摘牌
+        r = await client.call_tool(
+            "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
+        )
+        assert r.isError is True
+        code = _wire_code(getattr(r.content[0], "text", ""))
+        assert code == "unknown-session", f"归责错位：期望 unknown-session，实得 {code}"
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"hierarchical_layers": 2, "hierarchical_coupling": 1.5},
+        {"hierarchical_layers": 0},
+        {"hierarchical_coupling": -0.1},
+    ],
+)
+def test_hpc_knobs_rejected_at_construction(kw: dict) -> None:
+    """HPC 两个旋钮的越界值必须在**构造期**被拒。
+
+    此前两者均无 Field 约束：`coupling=1.5` 能构造成功 ⇒ `open_session` 通过、
+    **每一步 step 崩**在 `hierarchical_fuse` 的运行期 raise 上；而活跃会话的 config 不可变
+    ⇒ client 无法自救，且错误被贴成「内核执行失败」而非「配置越界」。
+    撤掉 Field 约束本组即红（实测撤掉后三格全部构造成功）。
+    """
+    from src.orchestration.runner import SessionConfig
+
+    with pytest.raises(ValueError):
+        SessionConfig(**kw)
+
+
+def test_hpc_knobs_accept_legal_range() -> None:
+    """不得误伤合法区间（layers≥1 · coupling∈[0,1] 含端点）。"""
+    from src.orchestration.runner import SessionConfig
+
+    cfg = SessionConfig(hierarchical_layers=2, hierarchical_coupling=1.0)
+    assert cfg.hierarchical_coupling == 1.0
+    assert SessionConfig(hierarchical_layers=1, hierarchical_coupling=0.0).hierarchical_layers == 1
+
+
+# ── describe_config / purge_session ──────────────────────────────────────
+
+
+async def test_describe_config_reflects_session_not_current_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 本组最要紧的一条：带 sid 时回的必须是**该会话真实生效**的值，不是当下 env 重算的。
+
+    造法：开会话时 env 为 A，开完后把 env 改成 B，再 describe。
+    会话门控构造时固定 ⇒ 必须仍回 A。若实现改成从 `_build_session_config(None)` 重算，
+    就会回 B —— 那正是配套项目 R11 警告的「回显本可生效但实际未生效的值」，
+    消费方会拿它当真、比对通过、实则语义已分叉，**比不回显更危险**。
+    """
+    monkeypatch.setenv("ZERO_MCP_PRECISION_COMMENSURABLE", "true")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        # 会话已建；此刻翻转 env
+        monkeypatch.setenv("ZERO_MCP_PRECISION_COMMENSURABLE", "false")
+
+        with_sid = json.loads(
+            getattr(
+                (await client.call_tool("zero.describe_config", {"session_id": sid})).content[0],
+                "text",
+                "",
+            )
+        )
+        assert with_sid["resolved_for_session"] is True
+        assert with_sid["precision_commensurable"] is True, (
+            "带 sid 时回的是当下 env 重算值而非会话生效值——语义分叉"
+        )
+
+        # 不带 sid = 部署端默认，应跟随当下 env
+        no_sid = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        assert no_sid["resolved_for_session"] is False
+        assert no_sid["precision_commensurable"] is False
+
+
+async def test_describe_config_shape_meets_consumer_requirements() -> None:
+    """形制三条（各对应配套项目 desktop 面踩过的一个坑）：
+
+    ① 带版本号——否则字段集增删后旧 client 静默少读；
+    ② 不可知项显式回 `null`、**不省略键**——否则「未实现」与「探测失败」不可区分；
+    ③ 值不得被类型过滤器吞掉——故此处断言含**非 bool** 字段（float/int/str/list）。
+    """
+    async with connect(build_server()) as client:
+        await client.initialize()
+        d = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        assert isinstance(d["describe_config_version"], int)
+        assert "weights_version" in d and d["weights_version"] is None, "不可知项须显式 null"
+        # 非 bool 字段必须在——它们正是类型过滤器会吞掉的那批
+        assert isinstance(d["external_prior_precision_cap"], float)
+        assert isinstance(d["max_external_streams"], int)
+        assert isinstance(d["external_prior_schema_version"], int)
+        assert isinstance(d["governance_gated_flags"], list) and d["governance_gated_flags"]
+        assert isinstance(d["error_codes"], list)
+
+
+async def test_describe_config_unknown_sid_falls_back_to_defaults() -> None:
+    """未知 sid 视同不传（不报错）——否则消费方探测一个已关会话会拿到工具错误。"""
+    async with connect(build_server()) as client:
+        await client.initialize()
+        d = json.loads(
+            getattr(
+                (await client.call_tool("zero.describe_config", {"session_id": "nope"})).content[0],
+                "text",
+                "",
+            )
+        )
+        assert d["resolved_for_session"] is False
+
+
+async def test_describe_config_governance_list_matches_source() -> None:
+    """回显的治理白名单必须与源常量同源——两处各写一份迟早分叉。"""
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS
+
+    async with connect(build_server()) as client:
+        await client.initialize()
+        d = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        assert set(d["governance_gated_flags"]) == set(_MCP_GOVERNANCE_GATED_FLAGS)
+
+
+async def test_purge_session_is_idempotent_on_unknown_id() -> None:
+    """未知 id 幂等——删除入口不得因「已经没了」而报错。"""
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.purge_session", {"session_id": "never-existed"})
+        assert r.isError is False
+        assert json.loads(getattr(r.content[0], "text", ""))["ok"] is True
+
+
+async def test_purge_session_closes_then_purges() -> None:
+    """purge 先走 close（摘牌），之后同 id step 报 unknown-session。"""
+    from src.mcp_server.registry import SessionRegistry
+
+    registry = SessionRegistry()
+    async with connect(build_server(registry=registry)) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        r = await client.call_tool("zero.purge_session", {"session_id": sid})
+        assert r.isError is False
+        assert await registry.get(sid) is None, "purge 必须先摘牌"
+        after = await client.call_tool(
+            "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
+        )
+        assert _wire_code(getattr(after.content[0], "text", "")) == "unknown-session"
 
 
 def test_server_env_error_is_not_valueerror() -> None:
@@ -902,7 +1133,13 @@ async def test_http_transport_roundtrip() -> None:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 names = {t.name for t in (await session.list_tools()).tools}
-                assert names == {"zero.open_session", "zero.step", "zero.close_session"}
+                assert names == {
+                    "zero.open_session",
+                    "zero.step",
+                    "zero.close_session",
+                    "zero.describe_config",
+                    "zero.purge_session",
+                }
                 sid = json.loads(
                     (await session.call_tool("zero.open_session", {})).content[0].text
                 )["session_id"]

@@ -39,7 +39,10 @@ from mcp.server.fastmcp.exceptions import ToolError
 from src.agents.expression import ChannelDecoder
 from src.mcp_server.mapping import external_priors_from_payload, stimulus_from_payload
 from src.mcp_server.registry import SessionRegistry
-from src.orchestration.external_prior import ExternalPriorError
+from src.orchestration.external_prior import (
+    EXTERNAL_PRIOR_SCHEMA_VERSION,
+    ExternalPriorError,
+)
 from src.orchestration.runner import ConversationSession, SessionConfig
 
 logger = logging.getLogger(__name__)
@@ -122,6 +125,32 @@ ZERO_ERROR_CODES: frozenset[str] = frozenset(
 
 # 兼容别名：旧名仍导出，值不变（配套项目现有断言含 "unknown-session" 子串者不受影响）。
 _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+# describe_config 的字段集版本：**增删任何键都要 bump**。
+# 没有它，消费方在字段集演进后会静默少读（对方 desktop 面踩过这个坑）。
+DESCRIBE_CONFIG_VERSION = 1
+
+
+async def _purge_thread_state(thread_id: str) -> bool:
+    """删掉某 thread_id 的全部持久 checkpoint；返回是否确有删除动作。
+
+    走 LangGraph checkpointer 的公开 `adelete_thread`（存在则用）。老版本 saver 没有该方法时
+    返回 False 并记 WARNING —— **不自己拼 SQL**：那会绑死 sqlite 的表结构，
+    后端一换（postgres）就是静默失效或删错表。
+    """
+    from src.storage.checkpointer import build_checkpointer
+
+    saver = build_checkpointer()
+    deleter = getattr(saver, "adelete_thread", None)
+    if deleter is None:
+        logger.warning(
+            "checkpointer %s 无 adelete_thread，purge 无法删除持久态 thread_id=%s",
+            type(saver).__name__,
+            thread_id,
+        )
+        return False
+    await deleter(thread_id)
+    return True
 
 
 def _tool_error(code: str, message: str) -> ToolError:
@@ -537,6 +566,18 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         # 默认 None = 无限等待 = 逐字旧行为（零回归）；秒数按对方 R12「先测再钉」，暂不预设。
         await _acquire_with_timeout(lock, session_id)
         try:
+            # 🛑 拿到锁后**复查在册**（TOCTOU）：`acquire()` 到真正拿到锁之间，
+            # `close_session` 可能已把该会话摘牌并关掉 aiosqlite 连接。此时若照常 step，
+            # 会撞 `ValueError("Connection closed")` 并被下面的 except ValueError 贴成
+            # **`config-incompatible`** —— 归责完全错（既不是配置不兼容、也不是传参问题，
+            # 而是会话已被关闭），且该码语义是「须以新配置重开」，会把 client 引到错误的自救动作。
+            # 正确语义是 `unknown-session`：会话没了，同 id 重开即可。
+            if await registry.get(session_id) is None:
+                raise _tool_error(
+                    ZERO_ERROR_CODE_UNKNOWN_SESSION,
+                    f"会话 {session_id!r} 在本轮排队等待期间已被关闭；"
+                    "本轮未进入内核，可用同 id 重开后重试",
+                )
             try:
                 step_out = await session.step(stimulus, state_overrides={"external_priors": priors})
             except ExternalPriorError as e:
@@ -573,12 +614,115 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         session, lock = await registry.acquire(session_id)
         if session is None or lock is None:
             return {"ok": True}  # 幂等：未知/已关 id 不报错（client 忽略返回值）
-        # lock=每会话 step 锁；registry.close() 持 registry 表级锁（两把不同 asyncio.Lock·无死锁）。
-        # 持锁再关串行化在飞 step，避免 aclose 关连接与 ainvoke 竞态（http 并发）。
-        async with lock:
-            await registry.close(session_id)  # 表内移除 → 后续 step 同 id 回 unknown-session
+        # ⚠ 顺序是**先摘牌、再取锁**（2026-07-29 改；此前是裸 `async with lock:` 包住两步）。
+        # 旧顺序的问题：一次挂起的 step **永久持有会话锁** ⇒ close 无限等待、连关会话都做不到
+        # （配套项目原话「这条我方无法自救」——client 侧超时不发取消通知，锁只能我方自解）。
+        # 新顺序：
+        #   ① 先 `registry.close()` 摘牌 —— 立刻止住新活（后续 step 拿不到会话），且它只持
+        #      registry 表级锁、不碰会话锁，**不会被在飞 step 卡住**；
+        #   ② 再带超时取会话锁做 `aclose()` —— 拿到锁说明在飞 step 已结束，关连接无竞态。
+        # 🛑 为什么 aclose 一定要等锁：摘牌后仍可能有 step **已经取到 session/lock 引用**在排队，
+        #    此时提前关连接会让它们撞 `ValueError("Connection closed")`。
+        #    该竞态的另一半由 `zero.step` 的「拿到锁后复查在册」兜住
+        #    （报 unknown-session 而非被误贴成 config-incompatible）。
+        await registry.close(session_id)  # 表内移除 → 后续 step 同 id 回 unknown-session
+        try:
+            await _acquire_with_timeout(lock, session_id)
+        except ToolError:
+            # 超时：在飞 step 仍未结束。**不上抛**——`close_session` 的契约是幂等 `{ok:true}`，
+            # 为「连接没来得及关」而破坏它得不偿失（会话已摘牌，不会再接新活）。
+            # 连接随对象回收/进程退出释放；长驻 HTTP server 下这是一条可观测的泄漏，故记 WARNING。
+            logger.warning(
+                "zero.close_session 等锁超时 sid=%s：会话已摘牌但 aiosqlite 连接未关"
+                "（在飞 step 仍在执行）。连接将随对象回收释放",
+                session_id,
+            )
+            return {"ok": True}
+        try:
             await session.aclose()  # 关运行态 aiosqlite 连接（sqlite）/InMemory no-op·幂等
+        finally:
+            lock.release()
         logger.info("zero.close_session sid=%s active=%d", session_id, await registry.count())
         return {"ok": True}
+
+    @mcp.tool(
+        name="zero.describe_config",
+        description=(
+            "只读回读面：不传 session_id 返回**部署端默认**（env + caps + versions，"
+            "供在 open_session 之前决定是否发某类流）；传 session_id 返回**该会话真实生效**的值。"
+            "未知 session_id 视同不传。字段集演进看 describe_config_version。"
+        ),
+        structured_output=False,
+    )
+    async def describe_config(session_id: str | None = None) -> dict[str, Any]:
+        """回读生效门控 —— 配套项目在**运行期**确认「这个会话到底拿到哪几个门」的唯一入口。
+
+        为什么必须有（Zero_MCP 2026-07-29）：我方源码注释把「确认部署端已开某 env」的义务
+        派给了消费方，却只挂 open/step/close 三个工具、`open_session` 只回 `{session_id}`
+        ⇒ 消费方**无手段可确认**。跨仓 env 对照表因此只能当文档、不能当校验。
+        且 HTTP 传输下两进程**不共享 env**，「同名 env 对齐」这条机制结构上不成立。
+
+        形制按对方三条要求（它们各自对应其 desktop 面踩过的一个坑）：
+        1. **带版本号** —— 否则字段集增删后旧 client 静默少读；
+        2. **按字段名显式取值，不得用类型过滤器** —— 其 desktop client 用
+           `{k: bool(v) for … if isinstance(v, bool)}` 过滤，实测让一个非 bool 字段无声蒸发；
+        3. **不可知项显式回 `null`，不省略键、不回 `False`** —— 否则「探测失败」与
+           「该能力不可用」不可区分。
+
+        🛑 取值源：**从 `session.config` 取，不从 `_build_session_config` 刚算出的 cfg 取**
+        （对方 R11 实现警告）。活跃会话的门控构造时固定，回显刚算的 cfg 等于回显
+        「本可生效但实际未生效」的值 —— 比不回显更危险：消费方会拿它当真、比对通过、
+        实则语义已分叉。
+        """
+        session = await registry.get(session_id) if session_id else None
+        cfg = session.config if session is not None else _build_session_config(None)
+        return {
+            "describe_config_version": DESCRIBE_CONFIG_VERSION,
+            "session_id": session_id,
+            "resolved_for_session": session is not None,
+            "workspace_enabled": cfg.workspace_enabled,
+            "gate_fusion": cfg.gate_fusion,
+            "exclude_physio_fusion": cfg.exclude_physio_fusion,
+            "precision_commensurable": cfg.precision_commensurable,
+            "ignition_beta": cfg.ignition_beta,
+            "coping_potential_enabled": cfg.coping_potential_enabled,
+            "text_coping_enabled": cfg.text_coping_enabled,
+            "fear_domain_enabled": cfg.fear_domain_enabled,
+            "canonical_physiology": cfg.canonical_physiology,
+            "facs_extended": cfg.facs_extended,
+            "external_prior_precision_cap": cfg.external_prior_precision_cap,
+            "max_external_streams": cfg.max_external_streams,
+            "external_prior_schema_version": EXTERNAL_PRIOR_SCHEMA_VERSION,
+            "governance_gated_flags": sorted(_MCP_GOVERNANCE_GATED_FLAGS),
+            "error_codes": sorted(ZERO_ERROR_CODES),
+            # 第二批（对方已接受后置）：显式回 null，**不省略键**——省略会让「未实现」
+            # 与「探测失败」不可区分，正是对方第 3 条形制要求要避开的。
+            "sample_sigma_cap": cfg.sample_sigma_cap,
+            "affect_readout": cfg.affect_readout,
+            "weights_version": None,  # sidecar 今天无读取方，见跨仓件
+        }
+
+    @mcp.tool(
+        name="zero.purge_session",
+        description=(
+            "删除一个会话的**全部持久运行态**（按 thread_id 清 checkpoint）；未知 id 幂等。"
+            "返回 {'ok': true, 'purged': bool}。⚠ 不可逆，与 close_session 语义不同："
+            "close 只释放连接与登记，purge 才真正删数据。"
+        ),
+        structured_output=False,
+    )
+    async def purge_session(session_id: str) -> dict[str, Any]:
+        """跨仓数据删除入口（Zero_MCP §4.5 三项提案之一）。
+
+        ⚠ **保留期天数与「哪侧是数据控制方」仍待双方各自的人拍板**，本工具不预设策略、
+        不自动清理 —— 它只提供「被要求删除时能删掉」的能力。双方已确认该能力的落地
+        **不依赖**那两项定性。
+
+        实现：先 `close_session` 走一遍（释放连接、摘牌，幂等），再删 checkpoint。
+        """
+        await close_session(session_id)
+        purged = await _purge_thread_state(session_id)
+        logger.info("zero.purge_session sid=%s purged=%s", session_id, purged)
+        return {"ok": True, "purged": purged}
 
     return mcp
