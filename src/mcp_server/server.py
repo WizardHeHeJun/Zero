@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import uuid
 from collections.abc import Callable
@@ -223,36 +224,70 @@ def _env_number[T: (int, float)](name: str, default: str, caster: Callable[[str]
         ) from e
 
 
-def _env_optional_float(name: str) -> float | None:
+def _env_optional_float(name: str, *, positive_finite: bool = False) -> float | None:
     """读「可选 float」env：未设 / 空串 → `None`（保留「未设即关」语义）；坏值抛 `ServerEnvError`。
 
     不能用 `_env_number`：那个必须给字符串默认值，而 `ignition_beta` 的 `None` 与任何浮点数
     语义不同（`None` = 硬 step 门，任何 float = 软门，含 `0.0`）。
+
+    `positive_finite=True` 时**额外**要求解析结果是正的有限数。
+    🛑 该判据必须 **opt-in**，绝不能做成本函数的无条件行为——两个使用者的合法域不同：
+      · `ZERO_MCP_STEP_LOCK_TIMEOUT`：`≤0` 会让 `asyncio.wait_for` 走快路径、协程根本没机会
+        执行 ⇒ **锁空闲时也无条件超时**（`nan` 效果等同 0），`inf` 则与未设等价；
+        三类都让「上一轮 step 仍在执行…可原样重试」这句文案变成假话，故读取即拒。
+      · `ZERO_MCP_IGNITION_BETA`：`0.0` 是**语义合法**的软门陡度（gate ≡ 0.5 均匀融合，
+        退化但可运行），与未设（硬门 `None`）语义不同 ⇒ 套上同一判据会当场误伤。
+    ⚠ 判据打在**解析后的 float** 上（`math.isfinite`），不做字符串黑名单：
+    `float()` 接受 `"nan"` / `"inf"` / `"Infinity"` / `"1e400"`(→inf) / `"1_0"` 等多种写法。
     """
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return None
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError as e:
         raise ServerEnvError(
             f"{name} 须为浮点数或留空，当前值={raw!r}；这是**部署端 env** 的问题，"
             "改 client 传的 config 无效"
         ) from e
+    if positive_finite and not (value > 0 and math.isfinite(value)):
+        raise ServerEnvError(
+            f"{name} 须为正的有限秒数（>0，不接受 0/负数/nan/inf），当前值={raw!r}；"
+            "留空=无限等待。这是**部署端 env** 的问题，改 client 传的 config 无效"
+        )
+    return value
 
 
 async def _acquire_with_timeout(lock: asyncio.Lock, session_id: str) -> None:
-    """按 `ZERO_MCP_STEP_LOCK_TIMEOUT`（秒，未设=无限）获取会话锁；超时抛 `[zero:timeout]`。
+    """按 `ZERO_MCP_STEP_LOCK_TIMEOUT`（秒，未设=无限）获取会话锁；超时抛 `[zero:timeout-lock]`。
 
     ⚠ **只超时「获取」，不超时「执行」**——见调用点注释。超时的是排队中的请求，
     正在跑的那一轮不受影响，故本函数**不会**引起运行态半落盘。
+    （两个超时码 2026-07-29 已拆分：`timeout-lock` 可原样重试 / `timeout-step` 不可，
+    后者只登记不产出；本函数只可能产出前者。）
+
+    **值域**：该 env 须为正的有限秒数。`≤0` / `nan` 会让 `asyncio.wait_for` 在锁空闲时也
+    无条件超时，`inf` 与未设等价 —— 三类一律读取即拒，出口是 `[zero:deploy-env-invalid]`
+    （**部署端**归责，与 `open_session` 的同款分支同一句式，便于消费方分类表复用）。
+    要「不设超时」请留空而不是写 `0`。
 
     ⚠ `asyncio.wait_for` 取消 `lock.acquire()` 时，CPython 的 `asyncio.Lock` 会在
     `CancelledError` 分支里把「取消瞬间恰好抢到锁」这种竞态还回去（唤醒下一个等待者）。
     该性质由 `test_lock_timeout_does_not_leak_the_lock` 实证锁住——它是本函数正确性的地基，
     不是可有可无的边界用例。
     """
-    timeout = _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT")
+    # 🛑 必须就地转成带码 ToolError：`ServerEnvError` 只在 `build_server.open_session` 被捕获转码，
+    # 而本函数在 `zero.step` 里是**裸 await**（不在任何 try 内）——直接上抛会裸奔到 FastMCP、
+    # 被加壳成 "Error executing tool zero.step: …"，wire 上**没有 `[zero:...]` 令牌**，
+    # 消费方 `re.search` 取到 None。这正是 `_UNKNOWN_SESSION_MARKER` 死码事故的同型
+    # （全过程见上方机读错误码注释段）。
+    try:
+        timeout = _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT", positive_finite=True)
+    except ServerEnvError as e:
+        raise _tool_error(
+            ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+            f"服务端 env 配置不合法（**非** client config 问题）：{e}",
+        ) from e
     if timeout is None:
         await lock.acquire()
         return
@@ -629,6 +664,10 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         try:
             await _acquire_with_timeout(lock, session_id)
         except ToolError:
+            # ⚠ 已知遗留（本轮接受·不修）：这一支也会吞掉 `_acquire_with_timeout` 新增的
+            # `deploy-env-invalid`（ZERO_MCP_STEP_LOCK_TIMEOUT 值域不合法），并误记成下面那条
+            # 「等锁超时」WARNING。收窄本 except 属 close 降级路径的语义变更，另走门；
+            # 对 client 可见行为不变（仍 `{ok: True}`），只是日志归因错。
             # 超时：在飞 step 仍未结束。**不上抛**——`close_session` 的契约是幂等 `{ok:true}`，
             # 为「连接没来得及关」而破坏它得不偿失（会话已摘牌，不会再接新活）。
             # 连接随对象回收/进程退出释放；长驻 HTTP server 下这是一条可观测的泄漏，故记 WARNING。

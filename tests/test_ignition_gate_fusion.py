@@ -572,6 +572,61 @@ def test_env_physio_exclusion_defaults_to_excluded(monkeypatch: pytest.MonkeyPat
     assert build_chat_driver(thread="env-physio-off").session.config.exclude_physio_fusion is False
 
 
+# ---------------------------------------------------------------------------
+# D7 缺口的方向常量 + 门关·硬门路径上的双向锚
+#
+# `_D7_GAP_OPEN` 钉的是**当前行为**、不是期望行为：True = 缺口仍在。缺口是指
+# `ignite()` 的 physio 前缀过滤只写在 `if gate_fusion:` 的门开分支里，门关（默认）分支
+# 调完 `_select_fired` 即提前 return，根本走不到过滤。
+# 收口（把过滤提到 `if gate_fusion:` 之前、三条路径同施）那天，把常量翻成 False 即可，
+# **不得**靠放宽断言让用例变绿。两条消息各自钉住一个方向，死记：
+#   · 常量 True 时，唯一可能的失败是 physio 从融合集里消失 ⇒ 缺口被堵上 ⇒ CLOSED；
+#   · 常量翻 False 后，唯一可能的失败是 physio 又回到融合集 ⇒ 收口被回退 ⇒ REOPENED。
+# 🛑 别改写成 `if gap: pass / else: fail` —— 那种写法在常量翻转后会失去反向判别力。
+# ---------------------------------------------------------------------------
+
+_D7_GAP_OPEN = True
+
+_MSG_D7_GAP_CLOSED = (
+    "D7 缺口已被堵上：门关路径下 physio 不再进数值通路。"
+    "这是**预期中的好事、不是回归**，请勿放宽断言让它变绿，改做三件事："
+    "(1) 把本文件的 `_D7_GAP_OPEN` 翻成 False —— 用例即恢复绿，并从此反过来守卫收口不被回退；"
+    "(2) 同步三处仍在描述缺口的文案：`affect_math.ignite` 的 docstring、"
+    "`state.AffectState.exclude_physio_fusion` 的注释、design.md 的「D7 补记」一节；"
+    "(3) ping Zero_MCP —— 其 `test_soft_gate_bypasses_physio_exclusion` 锚在 `_select_fired` 上，"
+    "我方只改 `ignite()` 的话它**不会变红**，而是静默失去刻画能力。"
+)
+
+_MSG_D7_GAP_REOPENED = (
+    "跨仓承诺的回归：D7 收口被回退，physio 又进了数值通路 —— "
+    "已知反号的 EDA 会以**反向 arousal** 参与数值后验。"
+    "这是真回归，须修实现；把 `_D7_GAP_OPEN` 翻回 True 只是把警报按掉。"
+)
+
+
+def test_d7_gap_hard_gate_high_salience_physio() -> None:
+    """门关 · 硬门路径上的 D7 双向锚 —— `test_scenario_matrix` 的硬门格在此**零判别力**。
+
+    矩阵那条 physio 的 salience = 0.7 × (1e-3 + 0.175)/2 = 0.0616 < 0.18，硬门下它落选
+    靠的是**自己的低 salience**、不是 D7 之功；收口前后都绿（低 salience 与 D7 双因同时
+    成立）⇒ 硬门那些格今天什么都没钉住。既有
+    `test_d7_physio_still_reportable_even_when_excluded_from_fusion` 与
+    `test_d12_all_physio_streams_raise_named_error` 都显式传 `gate_fusion=False`，同样
+    不覆盖门关路径。
+
+    本例把 physio 的 Πa 抬到 5.0（salience ≈ 2.375 ≥ 阈值）**让低 salience 这一因消失**，
+    于是「physio 在不在融合集」只由 D7 是否生效决定 —— 门关+硬门路径上唯一的 D7 探针。
+    """
+    strong: list[Stream] = [*_CORE, ("eda_tonic", (0.0, 0.95), (MIN_PRECISION, 5.0))]
+    assert stream_salience((0.0, 0.95), (MIN_PRECISION, 5.0)) >= SALIENCE_THRESHOLD, (
+        "本例的判别力全靠 physio 过阈：不过阈就退化成矩阵硬门格那种双因格局、什么都钉不住"
+    )
+    _, names = ignite(strong, gate_fusion=True, soft_beta=None)
+    assert ("eda_tonic" in names) is _D7_GAP_OPEN, (
+        _MSG_D7_GAP_CLOSED if _D7_GAP_OPEN else _MSG_D7_GAP_REOPENED
+    )
+
+
 @pytest.mark.parametrize(
     "present",
     [
@@ -612,13 +667,17 @@ def test_scenario_matrix(present: list[Stream], n_external: int, soft_beta: floa
             # 根本走不到 D7 过滤。此处**如实钉住当前行为**，而不是假装 D7 在门关下也生效：
             #   · 硬门：physio 落选靠它自己的低 salience（0.7×0.088=0.0616 < 0.18），非 D7 之功；
             #   · 软门：physio **全量进融合**（精度乘 logistic gate），D7 完全不生效 = 真实旁路。
-            # 堵缺口（把过滤提到 `if gate_fusion:` 之前）时本断言即红——届时改成「physio 不在
-            # names」，**不得靠放宽断言让它变绿**；且须先 ping Zero_MCP（其镜像守卫锚在
-            # `_select_fired`，我方只改 `ignite()` 的话它不会红、而是静默失去刻画能力）。
+            # 方向由 `_D7_GAP_OPEN` 单点承载（见其定义处）：堵缺口那天翻一个常量即可，
+            # 断言两个方向都有正确归因，**不得靠放宽断言让它变绿**。
+            physio_in_fusion = "eda_tonic" in names
             if soft_beta is None:
-                assert "eda_tonic" not in names, "硬门下 physio 应因低 salience 落选"
+                # 收口后本条仍绿（低 salience 与 D7 双因同时成立）⇒ 对 D7 **零判别力**；
+                # 门关路径上真正的 D7 锚见 `test_d7_gap_hard_gate_high_salience_physio`。
+                assert not physio_in_fusion, "硬门下 physio 应因低 salience 落选"
             else:
-                assert "eda_tonic" in names, "软门下 physio 全量进融合（D7 在此不生效）——缺口仍在"
+                assert physio_in_fusion is _D7_GAP_OPEN, (
+                    _MSG_D7_GAP_CLOSED if _D7_GAP_OPEN else _MSG_D7_GAP_REOPENED
+                )
 
 
 def test_domain_sweep_gate_on_never_violates_hard_contract() -> None:
