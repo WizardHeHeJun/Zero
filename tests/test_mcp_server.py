@@ -134,18 +134,37 @@ async def test_open_step_close_roundtrip() -> None:
 
 
 async def test_step_unknown_session_is_error() -> None:
+    """未知 sid → `[zero:unknown-session]`（T6·MCP graceful_step 据此降级重开）。
+
+    ⚠ 收紧记录：原先断的是 `"unknown-session" in text` 子串 + `"session_id" in text`。
+    前者对「令牌退回裸前缀」这种真 bug 恒绿（那正是 7632cc0 修掉的事故）；后者更糟——
+    工具入参名本身就叫 session_id，几乎不可能红，是一条不可证伪的断言。
+    要保留「文案指明是哪个 id」的语义，就改断**被回显的那个 id**。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_UNKNOWN_SESSION
+
     async with connect(build_server()) as client:
         await client.initialize()
         r = await client.call_tool(
             "zero.step", {"session_id": "does-not-exist", "stim": {"valence": 0.0, "arousal": 0.0}}
         )
         assert r.isError is True
-        assert "session_id" in r.content[0].text
-        assert "unknown-session" in r.content[0].text  # 机读标记（T6·MCP graceful_step 据此降级）
+        text = getattr(r.content[0], "text", "")
+        assert _wire_code(text) == ZERO_ERROR_CODE_UNKNOWN_SESSION
+        assert "does-not-exist" in text, "文案须回显是哪个 id 未知"
 
 
 async def test_step_bad_external_prior_is_error() -> None:
-    """精度 9.9 > cap 0.8 → expand_external_priors M3 fail-fast → ToolError → isError=true。"""
+    """精度 9.9 > cap 0.8 → M3 fail-fast → `[zero:external-prior-invalid]`。
+
+    这是 `external-prior-invalid` 在 wire 层的**唯一**覆盖点，且它压住 `build_server.step` 里
+    `except ExternalPriorError` / `except ValueError` 的分治——锁的是**归责语义**
+    （指向 client 传参 vs 指向会话配置组合），不是实现细节。
+    ⚠ 原先函数体只有 `assert r.isError is True`：载荷映射崩、会话没开、内核崩、归责错位
+    一律通过。日后若这条变红，说明归责口径变了，须回设计门确认，**不要靠放宽断言让它变绿**。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID
+
     async with connect(build_server()) as client:
         await client.initialize()
         sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
@@ -160,6 +179,8 @@ async def test_step_bad_external_prior_is_error() -> None:
             },
         )
         assert r.isError is True
+        code = _wire_code(getattr(r.content[0], "text", ""))
+        assert code == ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID, f"归责错位：实得 {code}"
 
 
 async def test_step_with_valid_external_prior_ok() -> None:
@@ -351,10 +372,28 @@ async def test_error_token_survives_fastmcp_wrapping() -> None:
             ("zero.open_session", {"session_id": "   "}),
             "payload-invalid",
         ),
+        (
+            # contagion_alpha 有 `Field(ge=0.0, le=0.3)` 且**不在** _MCP_GOVERNANCE_GATED_FLAGS
+            # （在名单里的字段会被 _build_session_config 静默丢弃，根本触发不了构造期校验）。
+            ("zero.open_session", {"config": {"contagion_alpha": 9.9}}),
+            "config-invalid",
+        ),
     ],
 )
 async def test_error_codes_are_extractable(call: tuple[str, dict], expected_code: str) -> None:
-    """各错误出口都带得上令牌，且码值取自登记表。"""
+    """各错误出口都带得上令牌、码值取自登记表，且令牌在 **wire 文本**上全文恰一次。
+
+    参数表只收「一次 `call_tool` 即可触发」的出口；需要先开会话、先 monkeypatch env、
+    先预置 registry 或先关连接的出口各自独立成例——塞进这个纯 `(call, expected_code)` 壳子
+    会把它变成带一堆可选 setup 钩子的怪物。验收按**出口**清点（wire 上 8 个可达出口），
+    **不是**按 8 个码：`payload-invalid` 有两个出口、`unknown-session` 也有两个。
+
+    与 `::test_every_registered_code_is_extractable_by_consumer_regex` **分工不同、别删其一**：
+    那条在**未加壳**文本上逐码断（表驱动，是 `timeout-step` 这类端到端够不着的码的唯一覆盖），
+    本条在 **wire** 文本上逐出口断（覆盖 FastMCP 加壳后的真实形态）。
+    ⚠ `count == 1` 只在该出口**回显含毒载荷**时才有判别力；本表三格都不回显，
+    这条的判别力由 `::test_wire_token_stays_exactly_once_with_poisoned_payload` 承担。
+    """
     from src.mcp_server.server import ZERO_ERROR_CODES
 
     name, args = call
@@ -362,7 +401,9 @@ async def test_error_codes_are_extractable(call: tuple[str, dict], expected_code
         await client.initialize()
         r = await client.call_tool(name, args)
         assert r.isError is True
-        code = _wire_code(getattr(r.content[0], "text", ""))
+        text = getattr(r.content[0], "text", "")
+        assert text.count("[zero:") == 1, f"wire 文本上令牌须全文恰一次，实得 {text!r}"
+        code = _wire_code(text)
         assert code == expected_code
         assert code in ZERO_ERROR_CODES
 
@@ -373,7 +414,9 @@ async def test_deploy_env_error_carries_its_own_code(monkeypatch: pytest.MonkeyP
     async with connect(build_server()) as client:
         await client.initialize()
         r = await client.call_tool("zero.open_session", {})
-        assert _wire_code(getattr(r.content[0], "text", "")) == "deploy-env-invalid"
+        text = getattr(r.content[0], "text", "")
+        assert text.count("[zero:") == 1, f"wire 文本上令牌须全文恰一次，实得 {text!r}"
+        assert _wire_code(text) == "deploy-env-invalid"
 
 
 def test_tool_error_rejects_unregistered_code() -> None:
@@ -392,33 +435,242 @@ def test_error_token_appears_exactly_once() -> None:
     assert text.count("[zero:") == 1
 
 
+def test_every_registered_code_is_extractable_by_consumer_regex() -> None:
+    """🛑 表驱动：`ZERO_ERROR_CODES` 里**每一个**码都必须能被消费方正则原样提取。
+
+    今天全仓没有任何用例遍历这张表——往表里加 `"Config-Invalid"` / `"config_invalid"`
+    这种大写/下划线码，1300+ 用例照样全绿，而消费方的 `re.search` 对它取不到，
+    或更坏：`"foo]bar"` 这种码 `search` 会成功但 `group(1)=="foo"`，
+    消费方拿**错的码**去查表比拿不到更坏。本条补的就是那条缝。
+
+    与 `::test_error_codes_are_extractable` **分工不同、不得删其一**：本条断的是
+    `str(_tool_error(...))` 的**未加壳**文本，是 `timeout-step` 这类「只登记不产出」、
+    端到端根本够不着的码的**唯一**可能覆盖；那条断 wire 上加壳后的真实形态、按出口清点。
+
+    三条形制约束：① 复用 `_wire_code`，不另抄一份正则（两处真源必然漂移）；
+    ② 断 `== code` 而非 `is not None`（防截断式假绿）；
+    ③ `sorted()` 不是可选——frozenset 迭代序随 PYTHONHASHSEED 变，失败信息不可复现。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODES, _tool_error
+
+    # helper 自证：防日后有人给 `_wire_code` 加 IGNORECASE / 放宽字符集，把本条 +
+    # ::test_error_token_survives_fastmcp_wrapping + ::test_error_codes_are_extractable +
+    # ::test_step_lock_timeout_yields_timeout_code 的判别力一次性悄悄抽走。
+    assert _wire_code("[zero:Foo] x") is None, "_wire_code 已放宽到接受大写码 → 判别力被抽走"
+    assert _wire_code("[zero:a_b] x") is None, "_wire_code 已放宽到接受下划线 → 判别力被抽走"
+
+    offenders: list[tuple[str, str | None, int]] = []
+    for code in sorted(ZERO_ERROR_CODES):
+        text = str(_tool_error(code, "占位文案"))
+        extracted = _wire_code(text)
+        token_count = text.count("[zero:")
+        if extracted != code or token_count != 1:
+            offenders.append((code, extracted, token_count))
+    assert not offenders, (
+        f"这些码经 _tool_error 产出后无法被消费方正则原样提取"
+        f"（码, 提取结果, 令牌数）：{offenders}；"
+        "码值须是 ASCII kebab-case（首字符小写字母、其后 [a-z0-9-]），且令牌全文恰出现一次"
+    )
+
+
+async def test_wire_token_stays_exactly_once_with_poisoned_payload() -> None:
+    """🛑 「wire 全文恰一次」的**可证伪性**由本条承担：真喂一个含 `[zero:` 的载荷。
+
+    含毒载荷确实会被回显：`mapping.stimulus_from_payload` 的缺键分支把 `sorted(stim)`
+    原样写进 ValueError 文案 ⇒ 若 `_tool_error` 不做净化，wire 上会出现**两个** `[zero:`，
+    消费方 `re.search` 会取到 client 自己伪造的那个、且不报歧义。
+    净化把回显里的 `[zero:` 换成 `(zero:`，故 wire 上仍恰一次。
+
+    ⚠ 别改用 `open_session(session_id="[zero:fake]")`：该值 `.strip()` 后非空、过得了校验、
+    根本不进 payload-invalid 出口——那条路上本用例会变成不可证伪的绿灯。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_PAYLOAD_INVALID
+
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        r = await client.call_tool("zero.step", {"session_id": sid, "stim": {"[zero:fake]": 1}})
+        assert r.isError is True
+        # 把「content[0] 就是全文」这个前提显式化：今天由 MCP SDK 的错误结果构造硬编码成
+        # 单元素列表保证，SDK 改成多段就红——那时 count 断言必须改成跨段清点。
+        assert len(r.content) == 1
+        text = getattr(r.content[0], "text", "")
+        # 先断契约、再断判别力自证：顺序反了的话，撤掉净化时报的会是「载荷未被回显」，
+        # 把「净化没了」误诊成「用例失效」。
+        assert text.count("[zero:") == 1, f"净化失效：wire 上出现了第二个令牌——{text!r}"
+        assert "(zero:fake" in text, "含毒载荷未被回显 → 本用例失去判别力，须换一条真回显的出口"
+        assert _wire_code(text) == ZERO_ERROR_CODE_PAYLOAD_INVALID
+
+
 # ── 结构性守卫 + 锁获取超时 ───────────────────────────────────────────────
 
 
-def test_no_toolerror_raised_outside_the_helper() -> None:
-    """🛑 AST 级：`server.py` 里**不得**有绕过 `_tool_error` 的 `raise ToolError(...)`。
+def _toolerror_bound_names(source: str) -> set[str]:
+    """解析出 `ToolError` 在这段源码里的**全部绑定名**（含 `as` 别名）。
+
+    `from ... import ToolError as TE` 之后 `raise TE(...)` 一样是裸构造——按字面量
+    `"ToolError"` 匹配的守卫会整条放过它。故绑定名必须从模块自身解析，不能写死。
+    """
+    import ast
+
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name == "ToolError"
+    }
+
+
+def _toolerror_sites(source: str, filename: str) -> list[int]:
+    """扫一段源码，返回**构造** `ToolError` 的行号（三处合法位除外）。
+
+    判据是**构造点**而非 `raise` 点：任何 `raise ToolError(...)` 也是一次构造，故严格覆盖
+    旧的 raise 点判据，同时堵住旧判据四个 `and` 各自漏掉的那种写法：
+      · `raise TE(...)`（别名，旧判据比的是 `func.id == "ToolError"`）；
+      · `raise exceptions.ToolError(...)`（旧判据要求 `func` 是 `ast.Name`，实为 `ast.Attribute`）；
+      · `err = ToolError(...); raise err`（旧判据要求 `node.exc` 是 `ast.Call`）；
+      · `raise _mk_err()`（构造点在别处，旧判据只看 raise 处）。
+
+    白名单**只三处**：`_tool_error` 的整个 FunctionDef 子树（一并覆盖 `-> ToolError` 注解与
+    `return ToolError(...)`，且**逐文件**判——别的模块里出现同名函数不该白拿豁免）；
+    `ast.ExceptHandler.type` 子树（`close_session` 的 `except ToolError:` 需要它，
+    🛑 只放 `type` 不放 handler body，否则 `except ToolError as e: raise ToolError(...)` 会溜走）；
+    import 语句本身（`ast.alias` 不产生 Name/Attribute 节点，天然不落网）。
+
+    ⚠ 动态构造（`getattr(exceptions, "ToolError")(...)` / `type(e)(...)`）**明确不堵**：
+    结构性测试打不过存心绕过的人，它的目标是无心之失。把边界写清楚比留半吊子检测更有价值，
+    也防后人「顺手加强」成一个自己都说不清覆盖面的东西。
+    """
+    import ast
+
+    bound = _toolerror_bound_names(source)
+    tree = ast.parse(source, filename=filename)
+    exempt: set[int] = set()
+    for node in ast.walk(tree):
+        subtree: ast.AST | None = None
+        if isinstance(node, ast.FunctionDef) and node.name == "_tool_error":
+            subtree = node if filename == "server.py" else None
+        elif isinstance(node, ast.ExceptHandler) and node.type is not None:
+            subtree = node.type
+        if subtree is not None:
+            exempt.update(id(n) for n in ast.walk(subtree))
+    return sorted(
+        {
+            node.lineno
+            for node in ast.walk(tree)
+            if id(node) not in exempt
+            and (
+                (isinstance(node, ast.Name) and node.id in bound)
+                or (isinstance(node, ast.Attribute) and node.attr == "ToolError")
+            )
+        }
+    )
+
+
+def test_toolerror_guard_catches_the_four_bypasses() -> None:
+    """守卫自身的判别力自证：喂合成源码，四种绕行必须全抓、三处合法位必须不抓。
+
+    这让判别力不依赖任何手工变异步骤——旧守卫的四个 `and` 各是一道缝，与这四种绕行一一对应。
+    """
+    bypasses = (
+        "from mcp.server.fastmcp.exceptions import ToolError\n"
+        "from mcp.server.fastmcp.exceptions import ToolError as TE\n"
+        "from mcp.server.fastmcp import exceptions\n"
+        "\n"
+        "def _mk_err():\n"
+        "    return ToolError('d')\n"
+        "\n"
+        "def a():\n"
+        "    raise TE('a')\n"
+        "\n"
+        "def b():\n"
+        "    raise exceptions.ToolError('b')\n"
+        "\n"
+        "def c():\n"
+        "    err = ToolError('c')\n"
+        "    raise err\n"
+        "\n"
+        "def d():\n"
+        "    raise _mk_err()\n"
+    )
+    lines = bypasses.splitlines()
+    caught = {lines[n - 1].strip() for n in _toolerror_sites(bypasses, "server.py")}
+    assert caught == {
+        "return ToolError('d')",  # ④ raise _mk_err() 的构造点
+        "raise TE('a')",  # ① 别名
+        "raise exceptions.ToolError('b')",  # ② 属性访问
+        "err = ToolError('c')",  # ③ 先构造后 raise
+    }, f"有绕行未被抓住，实得 {caught}"
+
+    legal = (
+        "from mcp.server.fastmcp.exceptions import ToolError\n"
+        "\n"
+        "def _tool_error(code: str, message: str) -> ToolError:\n"
+        "    return ToolError(f'[zero:{code}] {message}')\n"
+        "\n"
+        "def close():\n"
+        "    try:\n"
+        "        pass\n"
+        "    except ToolError:\n"
+        "        pass\n"
+    )
+    assert _toolerror_sites(legal, "server.py") == [], "三处合法位被误报"
+    # 豁免逐文件判：同一段源码换个文件名，`_tool_error` 不再被豁免（注解 + 构造两行）；
+    # 而 `except` 子句的 type 在任何文件里都合法。
+    assert _toolerror_sites(legal, "tools.py") == [3, 4], "_tool_error 豁免不该跨文件生效"
+    reraise = (
+        "from mcp.server.fastmcp.exceptions import ToolError\n"
+        "\n"
+        "def close():\n"
+        "    try:\n"
+        "        pass\n"
+        "    except ToolError as e:\n"
+        "        raise ToolError(str(e))\n"
+    )
+    assert _toolerror_sites(reraise, "server.py") == [7], (
+        "白名单放行了 handler body —— 只能放 handler.type"
+    )
+
+
+def test_toolerror_is_constructed_only_inside_the_helper() -> None:
+    """🛑 AST 级：`src/mcp_server/` 里**不得**有绕过 `_tool_error` 的 `ToolError(...)` 构造。
 
     配套项目 2026-07-29 指出：它按 `re.search` 取**首个**令牌，若某条 raise 绕过 `_tool_error`，
     ① 该错误没有码、② 回显载荷里的 `[zero:` 不会被净化 ⇒ 它会取到用户输入伪造的令牌而不报歧义。
-    我方原有的 `test_error_token_appears_exactly_once` 只覆盖 `_tool_error` **自身**，
-    挡不住「新增一处裸 raise」——本用例补的正是那条缝。
-    """
-    import ast
-    import inspect
+    `::test_error_token_appears_exactly_once` 只覆盖 `_tool_error` **自身**，挡不住新增的裸构造。
 
+    本条**替换**（而非并存于）旧的「raise 点」守卫：构造点判据严格覆盖旧断言，并存只会留下
+    两处要同步维护的匹配逻辑。判据本身的判别力由
+    `::test_toolerror_guard_catches_the_four_bypasses` 自证。
+
+    扫描面是整个 `src/mcp_server/`（非递归 glob，天然不碰 `__pycache__`）而非单个 `server.py`：
+    今天扩面抓不到新东西，收益 100% 在防未来漂移——`server.py` 已 700+ 行 5 个工具，拆出
+    `tools.py` 是可预期的；`mapping.py` 现抛裸 `ValueError` 且文案回显载荷，若被「就地升级」成
+    直接抛 ToolError，会同时丢掉机读码登记与 `[zero:` 净化，正是本守卫存在的全部理由。
+    """
     import src.mcp_server.server as srv
 
-    tree = ast.parse(inspect.getsource(srv))
-    offenders = [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Raise)
-        and isinstance(node.exc, ast.Call)
-        and isinstance(node.exc.func, ast.Name)
-        and node.exc.func.id == "ToolError"
-    ]
+    files = sorted(Path(srv.__file__).parent.glob("*.py"))
+    assert files, "扫描面为空 → 守卫恒真空绿，glob 写错了"
+    assert any(p.name == "server.py" for p in files), "server.py 不在扫描面内 → 守卫失去主要抓手"
+
+    # 自检：上游一改 import，offenders 恒空 ⇒ 永久真空绿（仓内「绿灯必须先证明能红」的同型）。
+    # 改成 `import ToolError as TE` 时 `alias.name` 仍是 ToolError，故本条仍绿、别名的构造点照抓。
+    assert _toolerror_bound_names(Path(srv.__file__).read_text(encoding="utf-8")), (
+        "server.py 已不再 from … import ToolError → 本守卫失去抓手，须重写而不是默认绿"
+    )
+
+    offenders: list[str] = []
+    for path in files:
+        # 🛑 必须显式 utf-8：本仓在 Windows 上默认 cp936，满是中文注释的文件会 UnicodeDecodeError，
+        # 表现为「测试报错」而非「报 offender」，极易被误判成守卫写坏而放弃扩面。
+        source = path.read_text(encoding="utf-8")
+        offenders += [f"{path.name}:{line}" for line in _toolerror_sites(source, path.name)]
     assert not offenders, (
-        f"server.py 第 {offenders} 行直接 raise 了 ToolError；请改用 _tool_error(code, msg)——"
+        f"这些位置直接构造了 ToolError：{offenders}；请改用 _tool_error(code, msg)——"
         "裸 ToolError 既无机读码、也不会净化回显载荷里的 [zero: 字面量"
     )
 
@@ -443,10 +695,17 @@ async def test_lock_timeout_does_not_leak_the_lock() -> None:
 
 
 async def test_step_lock_timeout_yields_timeout_code(monkeypatch: pytest.MonkeyPatch) -> None:
-    """锁被占住时，排队的 step 超时 → `[zero:timeout]`，且**未进入内核**。"""
+    """锁被占住时，排队的 step 超时 → `[zero:timeout-lock]`，且**未进入内核**。
+
+    ⚠ 码按**符号名** pin（`server.py` 机读错误码段注释的明文要求），不 pin 字面量。
+    阴性对照义务：本条的值 `0.05` 是合法值，必须仍报 `timeout-lock` 而**非**
+    `deploy-env-invalid` —— 它同时是 `::test_step_lock_timeout_rejects_non_positive_or_nonfinite`
+    没有误伤合法区间的证据。
+    """
     import asyncio
 
     from src.mcp_server.registry import SessionRegistry
+    from src.mcp_server.server import ZERO_ERROR_CODE_TIMEOUT_LOCK
 
     monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", "0.05")
     registry = SessionRegistry()
@@ -464,7 +723,8 @@ async def test_step_lock_timeout_yields_timeout_code(monkeypatch: pytest.MonkeyP
             )
             assert r.isError is True
             text = getattr(r.content[0], "text", "")
-            assert _wire_code(text) == "timeout-lock"
+            assert text.count("[zero:") == 1, f"wire 文本上令牌须全文恰一次，实得 {text!r}"
+            assert _wire_code(text) == ZERO_ERROR_CODE_TIMEOUT_LOCK
             assert "可原样重试" in text, "须告知调用方本轮未改动运行态"
         finally:
             lock.release()
@@ -478,7 +738,12 @@ async def test_step_lock_timeout_yields_timeout_code(monkeypatch: pytest.MonkeyP
 
 
 async def test_no_lock_timeout_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """未设 env = 无限等待 = 逐字旧行为（零回归）；空串同样回落无限等待。"""
+    """未设 env = 无限等待 = 逐字旧行为（零回归）；空串同样回落无限等待。
+
+    ⚠ 必须带 `positive_finite=True` 调用——那是 `_acquire_with_timeout` 的**生产调用形态**。
+    留着单参调用等于指着一个生产不再那样用的形态断言，绿灯从此没有意义
+    （仓内「锚点要绑生产调用点」的同型教训）。
+    """
     from src.mcp_server.server import _env_optional_float
 
     for value in (None, "", "  "):
@@ -486,7 +751,65 @@ async def test_no_lock_timeout_by_default(monkeypatch: pytest.MonkeyPatch) -> No
             monkeypatch.delenv("ZERO_MCP_STEP_LOCK_TIMEOUT", raising=False)
         else:
             monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", value)
-        assert _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT") is None
+        assert _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT", positive_finite=True) is None
+
+
+@pytest.mark.parametrize(
+    "bad_value", ["0", "-1", "-0.5", "nan", "NaN", "inf", "-inf", "Infinity", "1e400"]
+)
+async def test_step_lock_timeout_rejects_non_positive_or_nonfinite(
+    monkeypatch: pytest.MonkeyPatch, bad_value: str
+) -> None:
+    """`ZERO_MCP_STEP_LOCK_TIMEOUT` 的非正/非有限值必须**读取即拒**，且带部署端归责码。
+
+    为什么不能放过：`asyncio.wait_for(coro, timeout)` 在 `timeout <= 0` 时走快路径，
+    协程根本没机会执行 ⇒ **锁空闲时也照样超时**，即每一次 `zero.step` 都无条件返回
+    `timeout-lock`，而那条文案写的是「上一轮 step 仍在执行……可原样重试」——两句都是假的。
+    `nan` 效果等同 0（到期判据 `nan >= end_time` 恒 False）；`inf` 与未设等价，
+    多留一个常驻 TimerHandle，同样不该是一个有意配置。要「不设超时」请留空。
+
+    ⚠ 判据打在**解析后的 float** 上，故 `"Infinity"` / `"1e400"`（→inf）这类写法也必须被拒——
+    字符串黑名单挡不住它们。
+    ⚠ 用 `_wire_code` 而**不是**子串：裸子串对「令牌丢了但文案还在」的退化恒绿。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_DEPLOY_ENV_INVALID
+
+    monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", bad_value)
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        r = await client.call_tool(
+            "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
+        )
+        assert r.isError is True
+        text = getattr(r.content[0], "text", "")
+        assert _wire_code(text) == ZERO_ERROR_CODE_DEPLOY_ENV_INVALID, (
+            f"坏 env 未在 step 通路上转成带码 ToolError，wire 文本={text!r}"
+        )
+        assert "ZERO_MCP_STEP_LOCK_TIMEOUT" in text, "错误未指名是哪个 env"
+
+
+def test_step_lock_and_ignition_beta_have_different_legal_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 同一个函数、同一个输入 `"0"`、两种结论——把「值域校验不得误伤」固化成测试。
+
+    `_env_optional_float` 有两个使用者，合法域**不同**：
+      · `ZERO_MCP_IGNITION_BETA`：`0.0` 是语义合法的软门陡度（gate ≡ 0.5 均匀融合，
+        退化但可运行），与未设（硬门 `None`）语义不同；
+      · `ZERO_MCP_STEP_LOCK_TIMEOUT`：`0` 会让锁空闲时也无条件超时。
+    故值域判据必须 **opt-in**。若日后有人把它改成本函数的无条件行为，本条与
+    `::test_ignition_beta_env_seeding[0-0.0]` 会同时红。
+    """
+    from src.mcp_server.server import ServerEnvError, _env_optional_float
+
+    monkeypatch.setenv("ZERO_MCP_IGNITION_BETA", "0")
+    monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", "0")
+    assert _env_optional_float("ZERO_MCP_IGNITION_BETA") == 0.0
+    with pytest.raises(ServerEnvError, match="ZERO_MCP_STEP_LOCK_TIMEOUT"):
+        _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT", positive_finite=True)
 
 
 # ── 取消留下的半截运行态：检测与回显 ─────────────────────────────────────
@@ -665,8 +988,71 @@ async def test_queued_step_after_close_reports_unknown_session(
             "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
         )
         assert r.isError is True
-        code = _wire_code(getattr(r.content[0], "text", ""))
-        assert code == "unknown-session", f"归责错位：期望 unknown-session，实得 {code}"
+        text = getattr(r.content[0], "text", "")
+        assert text.count("[zero:") == 1, f"wire 文本上令牌须全文恰一次，实得 {text!r}"
+        from src.mcp_server.server import ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+        code = _wire_code(text)
+        assert code == ZERO_ERROR_CODE_UNKNOWN_SESSION, (
+            f"归责错位：期望 {ZERO_ERROR_CODE_UNKNOWN_SESSION}，实得 {code}"
+        )
+
+
+async def test_step_on_closed_connection_reports_config_incompatible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`config-incompatible` 在 wire 层的**唯一**覆盖：内核抛裸 `ValueError` 时的归责出口。
+
+    造法**不打桩**（判别力最高）：sqlite 后端开会话 → 直接 `await session.aclose()` 关掉
+    aiosqlite 连接，但**绝不** `reg.close(sid)` —— 会话仍在册，故 `zero.step` 过得了
+    「未知 sid」与拿锁后的 TOCTOU 复查，一路撞进 `session.step` 的
+    `ValueError("Connection closed")`，落进 `build_server.step` 的 `except ValueError` 分支。
+
+    🛑 三个前提缺一不可，动了任何一个本用例都会**照绿、没人发现**：
+      ① 会话必须**留在册**——顺手补一行 `reg.close(sid)`，码就滑成 `unknown-session`；
+      ② 后端必须是 sqlite——memory 后端的 `aclose` 是 no-op，step 会照常成功；
+      ③ `except ExternalPriorError` 必须排在 `except ValueError` **之前**（子类在前），
+         两支互换顺序码就滑成 `external-prior-invalid`。
+
+    ⚠ 废案备忘：`config={"hierarchical_coupling": 1.5}` → 每 step 崩在 `hierarchical_fuse`
+    的那条天然路径已失效——该字段现有 `Field(ge=0.0, le=1.0)`，越界被前移到构造期，出
+    `config-invalid`。别再照那条路重写本用例。
+    ⚠ 本条只补 wire 覆盖，**不动**该分治的归类口径（那是设计门定的语义）。
+    """
+    pytest.importorskip("aiosqlite")
+    from src.mcp_server.registry import SessionRegistry
+    from src.mcp_server.server import ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE
+
+    monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", "sqlite")
+    monkeypatch.setenv("ZERO_CHECKPOINT_DB", str(tmp_path / "closed-conn.sqlite3"))
+    reg = SessionRegistry()
+    async with connect(build_server(registry=reg)) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        # 🛑 必须先真跑一轮：`aiosqlite.connect()` 是**惰性**的，而 AsyncSqliteSaver.setup()
+        # 在 `not conn.is_alive()` 时会 `await self.conn` 重新起一条连接 ⇒ 若在从未 step 过的
+        # 会话上直接 aclose，下一次 step 会**若无其事地重连并成功**，本用例当场变成假绿
+        # （本轮实测踩过：isError=False，返回了完整 expression）。
+        warm = await client.call_tool(
+            "zero.step", {"session_id": sid, "stim": {"valence": 0.1, "arousal": 0.1}}
+        )
+        assert warm.isError is False, "预热轮就失败 → 后面测的不是「连接被关」这件事"
+
+        session, _ = await reg.acquire(sid)
+        assert session is not None
+        await session.aclose()  # 只关连接，**不**摘牌
+        assert await reg.get(sid) is not None, "会话必须留在册，否则测到的是 unknown-session"
+
+        r = await client.call_tool(
+            "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
+        )
+        assert r.isError is True
+        text = getattr(r.content[0], "text", "")
+        assert text.count("[zero:") == 1, f"wire 文本上令牌须全文恰一次，实得 {text!r}"
+        code = _wire_code(text)
+        assert code == ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE, f"归责错位：实得 {code}"
 
 
 @pytest.mark.parametrize(
@@ -862,7 +1248,9 @@ async def test_open_session_env_error_message_does_not_blame_client(
         # 会给 `mypy tests` 添 4 条 union-attr（本仓已有 28 处同款噪声，不再增量）。
         text = getattr(r.content[0], "text", "")
         assert "ZERO_EXTERNAL_PRIOR_PRECISION_CAP" in text, "错误未指名 env"
-        assert "非" in text and "client" in text, "错误未澄清归责方"
+        # ⚠ 原先是 `"非" in text and "client" in text`：单个「非」字在中文文案里几乎必然出现
+        # （「非法配置」也含它）⇒ 实际不可证伪。改断源码里那句归责原文的整段。
+        assert "非** client config 问题" in text, "错误未澄清归责方"
 
 
 def test_canonical_physiology_is_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1252,12 +1640,21 @@ async def test_open_session_honors_client_session_id() -> None:
 
 
 async def test_open_session_empty_session_id_is_error() -> None:
-    """传空/空白 session_id → 结构化 ToolError（非空字符串校验）。"""
+    """传空/空白 session_id → `[zero:payload-invalid]`（非空字符串校验）。
+
+    与 `::test_error_codes_are_extractable` 的空白格分工：那格按**出口**清点 wire 令牌形态，
+    本条钉的是 `.strip()` 判据本身——纯空串与纯空白**两者都**要被拒。
+    ⚠ 原先断的是 `"session_id" in text`：工具入参名本身就叫 session_id，几乎不可能红。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_PAYLOAD_INVALID
+
     async with connect(build_server()) as client:
         await client.initialize()
-        r = await client.call_tool("zero.open_session", {"session_id": "  "})
-        assert r.isError is True
-        assert "session_id" in r.content[0].text
+        for bad in ("", "  "):
+            r = await client.call_tool("zero.open_session", {"session_id": bad})
+            assert r.isError is True, f"session_id={bad!r} 未被拒"
+            code = _wire_code(getattr(r.content[0], "text", ""))
+            assert code == ZERO_ERROR_CODE_PAYLOAD_INVALID, f"session_id={bad!r} 实得码 {code}"
 
 
 async def test_resume_is_idempotent_for_active_session() -> None:
@@ -1297,7 +1694,13 @@ async def test_resume_preserves_governance_gate(monkeypatch: pytest.MonkeyPatch)
 async def test_close_session_aclose_no_error_both_backends(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    """close_session 幂等关会话（memory/sqlite 后端）；close 后同 id step 回 unknown-session。"""
+    """close_session 幂等关会话（memory/sqlite 后端）；close 后同 id step 回 unknown-session。
+
+    ⚠ 断言消息必须带 `backend`：两个后端跑在同一个循环里，不带就看不出是哪格红。
+    ⚠ 原先断的是 `"unknown-session" in text` 子串——对「令牌退回裸前缀」恒绿，已收成 `_wire_code`。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_UNKNOWN_SESSION
+
     for backend in ("memory", "sqlite"):
         if backend == "sqlite":
             pytest.importorskip("aiosqlite")
@@ -1305,15 +1708,17 @@ async def test_close_session_aclose_no_error_both_backends(
         monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", backend)
         async with connect(build_server()) as client:
             await client.initialize()
-            sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
-                "session_id"
-            ]
+            sid = json.loads(
+                getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+            )["session_id"]
             c = await client.call_tool("zero.close_session", {"session_id": sid})
-            assert json.loads(c.content[0].text) == {"ok": True}
+            assert json.loads(getattr(c.content[0], "text", "")) == {"ok": True}
             r = await client.call_tool(
                 "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
             )
-            assert r.isError is True and "unknown-session" in r.content[0].text
+            assert r.isError is True, f"backend={backend}：close 后 step 应报错"
+            code = _wire_code(getattr(r.content[0], "text", ""))
+            assert code == ZERO_ERROR_CODE_UNKNOWN_SESSION, f"backend={backend}：实得码 {code}"
 
 
 async def test_resume_persists_run_state_across_server_instances(

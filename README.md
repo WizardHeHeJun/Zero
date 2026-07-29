@@ -359,11 +359,13 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_MCP_WORKSPACE_ENABLED` | 开 | 会话默认开显著度门控工作空间（否则外部先验流被整段跳过） |
 | `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关 |
 | `ZERO_MCP_PRECISION_COMMENSURABLE` · `_IGNITION_GATE_FUSION` · `_EXCLUDE_PHYSIO_FUSION` | `false` · `true` · `true` | MCP 边界侧的精度齐次化 / 点燃门是否参与数值计算 / 生理流是否排除出数值计算；语义同下文「微调旋钮·全表」⑤组的同名无前缀变量。⚠ 后两项默认就是 `true`，方向与本表其它开关相反——`true` = 沿用旧算法 |
+| `ZERO_MCP_IGNITION_BETA` | —（未设 = 硬门） | 点燃软门的陡度 β。未设 = 硬阈值门（只有显著度过阈的流进数值计算）；设成任意浮点数（含 `0`）即切软门，全部并行流按 logistic 权重加权进入。与上两行同属只受 `ZERO_MCP_*` 治理的一组，client 在 `open_session` 的 config 里传同名字段被静默忽略 |
+| `ZERO_MCP_STEP_LOCK_TIMEOUT` | —（未设 = 无限等待） | `step` 等待**同会话串行锁**的超时秒数。⚠ 只对「等锁」计时，**不对「执行」计时**——超时的是排在后面的那次请求，正在跑的那一轮不受影响；因此超时的那一轮**根本没进内核、运行态未改动**，client 退避后**可原样重试**同一请求。取值须是**正的有限数**：`0`／负数／`nan` 会让锁空闲时也无条件超时（每次 `step` 必失败），`inf` 与不设等价，故这三类在读取时即被拒绝并在错误里点名该变量；要「不设超时」请**留空**，不要填 `0` |
 | `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数。<br>⚠ 这些精度是**独立校准完成前的保守占位**，不是「同等地位却意外弱势」——它们**有意**低于 `ZERO_TEXT_AFFECT_PRECISION=0.3` 以保持层级；且**不随 `ZERO_PRECISION_COMMENSURABLE` 齐次化**（该开关只作用于引擎内部的四条流）。即开启齐次化后外部流相对更弱，这是已知且被接受的现状。<br>⚠ 另注：`valence` 越出 `[-1,1]` 会在边界被拒（返回错误而非静默截断），`arousal` 越界则仍按幅度截断到 1.0——这个不对称是有意的：前者是恒等透传、越界即契约违反，后者是「幅度→强度」的语义映射、截断是映射的一部分。 |
 
-> **会话续接与安全**：默认内存后端下 server 重启即丢会话。要跨重启续会话，设 `ZERO_CHECKPOINT_BACKEND=sqlite`（+`ZERO_CHECKPOINT_DB`），client 用**同一个 `session_id`** 重新 `open_session` 即接上；session_id 失效时 `step` 返回带 `unknown-session:` 前缀的错误，client 可据此重开重试。⚠ session_id 等同于该会话运行态与记忆的**访问凭据**，多用户部署必须配鉴权。
+> **会话续接与安全**：默认内存后端下 server 重启即丢会话。要跨重启续会话，设 `ZERO_CHECKPOINT_BACKEND=sqlite`（+`ZERO_CHECKPOINT_DB`），client 用**同一个 `session_id`** 重新 `open_session` 即接上；session_id 失效时 `step` 返回的错误文案里含 `[zero:unknown-session]` 令牌（**位置不限、全文恰出现一次**，不是行首前缀），client 按 `re.search(r"\[zero:([a-z][a-z0-9-]*)\]")` 提取出该码即可据此重开重试。⚠ session_id 等同于该会话运行态与记忆的**访问凭据**，多用户部署必须配鉴权。
 >
-> 上表中 `ZERO_MCP_COPING_ENABLED` 起的两行是一组**只受 `ZERO_MCP_*` env 治理**的开关：client 在 `open_session` 的 config 里传入的同名字段一律被静默忽略，防越权开启。
+> 上表中 `ZERO_MCP_COPING_ENABLED` 起的三行是一组**只受 `ZERO_MCP_*` env 治理**的开关：client 在 `open_session` 的 config 里传入的同名字段一律被静默忽略，防越权开启。
 >
 > ⑤组的 `ZERO_PRECISION_COMMENSURABLE` / `ZERO_IGNITION_GATE_FUSION` / `ZERO_EXCLUDE_PHYSIO_FUSION`（无 `ZERO_MCP_` 前缀那三个）**对 MCP server 不生效**——MCP 面读的是上表带前缀的同名变量；要改服务端的融合语义，请设带前缀的那一份。
 >

@@ -889,13 +889,17 @@ def ignite(
       ≥0.359 即可在此路径下自行过阈——该边界目前是**对方的自律**，我方无结构约束。
     - 门关 + 软门（`soft_beta` 非 None）：**全部流含 physio 一律进 `fuse_terms`**（精度乘
       logistic gate），既无阈值筛除也无 D7 —— 这是**真实旁路**。默认 `IGNITION_BETA=None`
-      故生产未触发，但 MCP client 可经 `open_session(config={"ignition_beta": ...})` 打开
-      （`ignition_beta` 不在 `_MCP_GOVERNANCE_GATED_FLAGS` 内）。
+      故生产未触发。⚠ 旁路面**比早前记的小**：`ignition_beta` 现已在
+      `_MCP_GOVERNANCE_GATED_FLAGS` 内，client 经 `open_session(config={"ignition_beta": ...})`
+      传它会被**静默忽略**；今天只有部署端 env `ZERO_MCP_IGNITION_BETA` 能打开软门。
 
     **收口条件**（议会 design A4 要求记录时间窗，此前遗漏）：把前缀过滤提到 `if gate_fusion:`
-    之前、对三条路径同施。该改动会破 `tests/test_ignition_soft_gate.py` 的软门零回归，
-    属**行为变更须走议会门**，故本轮只做记录 + 特征化测试
-    （`tests/test_ignition_gate_fusion.py::test_scenario_matrix` 的 gate=True 分支）。
+    之前、对三条路径同施。属**行为变更须走议会门**，故本轮只做记录 + 特征化测试。
+    ⚠ 该改动**不会**破 `tests/test_ignition_soft_gate.py`（该文件不含任何 physio 前缀流名）；
+    实测会红的是 `tests/test_ignition_gate_fusion.py` 的 13 条：`::test_scenario_matrix` 的
+    12 条软门格（4 present × 3 n_external × soft_beta=20.0）+ 门关硬门路径上的
+    `::test_d7_gap_hard_gate_high_salience_physio`。两者都是**双向**断言，收口那天会红在
+    「缺口已被堵上」而非「缺口仍在」，照消息把 `_D7_GAP_OPEN` 翻成 False 即可。
     ⚠ 堵缺口当天须 ping Zero_MCP：其 `test_soft_gate_bypasses_physio_exclusion` 锚在
     `_select_fired` 函数体上，我方若只改 `ignite()`，其守卫**不会变红**而是静默失去刻画能力。
 
