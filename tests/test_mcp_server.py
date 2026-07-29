@@ -869,6 +869,85 @@ async def test_interrupted_at_detects_a_real_half_turn() -> None:
         await session.aclose()
 
 
+async def test_interrupt_probe_is_explicit_four_state() -> None:
+    """🛑 缺席不得承载多义：`interrupt_probe` **恒存在**且四态可区分。
+
+    旧口径把「未探测」「探测成功且干净」「探测失败」**都表示成 interrupted_at 缺席**，
+    消费方只能一律解释成「可以安全续跑」。要害（配套项目 2026-07-30 §5-1 指出）：
+    **「探测失败」与要防的半截态是故障相关的** —— 探测读的正是那份可能半写的 checkpoint
+    ⇒ 越是真出事的时候越可能探测失败 ⇒ **止血在最该生效时静默失效，且无可区分信号**。
+    """
+    async with connect(build_server()) as client:
+        await client.initialize()
+        fresh = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )
+        assert fresh["interrupt_probe"] == "not_probed", "新建会话未探测"
+
+        sid = fresh["session_id"]
+        active = json.loads(
+            getattr(
+                (await client.call_tool("zero.open_session", {"session_id": sid})).content[0],
+                "text",
+                "",
+            )
+        )
+        # 活跃幂等重开也是一条缺席路径——对方指出旧注释漏了它
+        assert active["interrupt_probe"] == "not_probed"
+        assert active["resumed"] is True
+
+
+async def test_probe_failure_is_distinguishable_from_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 本组判别力核心：探测**抛异常**时必须回 `probe_failed`，**不得**与 `clean` 同形。
+
+    造法：让 `interrupted_at()` 抛，再走 resume-不活跃分支。
+    若实现退回旧口径（宽 except 后什么都不标），这一格会与 clean 一样表现为「无 interrupted_at」
+    ⇒ 本用例即红。这正是「最该报警时不报警」那条缝。
+    """
+    from src.mcp_server.registry import SessionRegistry
+    from src.orchestration.runner import ConversationSession
+
+    async def _boom(self: object) -> None:
+        raise RuntimeError("checkpoint 半写，读不出来")
+
+    monkeypatch.setattr(ConversationSession, "interrupted_at", _boom)
+    registry = SessionRegistry()
+    async with connect(build_server(registry=registry)) as client:
+        await client.initialize()
+        # 直接用一个未在册的 id 走 resume 分支（不活跃 ⇒ 会探测）
+        r = json.loads(
+            getattr(
+                (await client.call_tool("zero.open_session", {"session_id": "resume-me"})).content[
+                    0
+                ],
+                "text",
+                "",
+            )
+        )
+        assert r["resumed"] is True
+        assert r["interrupt_probe"] == "probe_failed", (
+            "探测失败被当成了 clean —— 消费方会据此认为可以安全续跑"
+        )
+        assert "interrupted_at" not in r, "探测失败时不得伪造 interrupted_at"
+
+
+async def test_describe_config_version_bumped_with_contract_change() -> None:
+    """契约版本随本轮变化 bump —— 纪律覆盖值域/语义变化，不只增删键。"""
+    from src.mcp_server.server import DESCRIBE_CONFIG_VERSION
+
+    assert DESCRIBE_CONFIG_VERSION >= 2, (
+        "本轮 open_session 增了 interrupt_probe 且其取值集合是新契约，须 bump"
+    )
+    async with connect(build_server()) as client:
+        await client.initialize()
+        d = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        assert d["describe_config_version"] == DESCRIBE_CONFIG_VERSION
+
+
 async def test_open_session_reports_resumed_flag() -> None:
     """`open_session` 回显 `resumed`：新建 False、按 id 重开 True。
 

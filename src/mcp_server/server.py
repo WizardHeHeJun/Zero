@@ -127,9 +127,13 @@ ZERO_ERROR_CODES: frozenset[str] = frozenset(
 # 兼容别名：旧名仍导出，值不变（配套项目现有断言含 "unknown-session" 子串者不受影响）。
 _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
 
-# describe_config 的字段集版本：**增删任何键都要 bump**。
-# 没有它，消费方在字段集演进后会静默少读（对方 desktop 面踩过这个坑）。
-DESCRIBE_CONFIG_VERSION = 1
+# describe_config 的**契约**版本。
+# 🛑 bump 纪律覆盖三类变化，不止增删键（Zero_MCP 2026-07-30 §5-4 追问，我方明确）：
+#   ① 增删键；② 某键的**值域/取值集合**变化（如 interrupt_probe 加一个新态）；
+#   ③ 某键**语义**变化（同名同类型但含义变了 —— 这类最危险，消费方看不出来）。
+# 判据：凡消费方**照旧解析会得出错误结论**的变化，都要 bump。
+# 只加一个不影响既有键解释的新键，可以不 bump —— 但拿不准时 bump，代价只是对方多读一次。
+DESCRIBE_CONFIG_VERSION = 2
 
 
 async def _delete_thread(saver: Any, thread_id: str) -> bool:
@@ -555,7 +559,13 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 # ⚠ 本分支**不得**回显刚算出的 `cfg`（Zero_MCP R11 实现警告）：活跃会话的门控
                 # 构造时固定，回显 cfg = 回显「本可生效但实际未生效」的值，**比不回显更危险**
                 # （消费方会拿它当真、比对通过、实则语义已分叉）。要回显只能从 session 对象取。
-                return {"session_id": session_id, "resumed": True}
+                # ⚠ 本分支**不探测**（会话仍活跃、没有「上一轮已结束」这回事），
+                # 故 interrupt_probe 显式回 not_probed —— 对方指出旧注释漏了这条缺席路径。
+                return {
+                    "session_id": session_id,
+                    "resumed": True,
+                    "interrupt_probe": "not_probed",
+                }
             # resume：新建绑同 thread_id，持久后端 ainvoke 时自动从 checkpoint 恢复。
             sid = session_id
             resuming = True
@@ -576,13 +586,33 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         # LangGraph 每个 super-step 都已落盘 ⇒ 半截运行态跨重启保留。
         # 🛑 半截 checkpoint 存在本身不致命，**被当成有效状态续跑才致命** —— 此处至少让它可见。
         # ⚠ 只报告不回滚：回滚是对外可见的行为变更，须单独决策。
+        # 🛑 **显式多态，不用「键缺席」承载多义**（Zero_MCP 2026-07-30 §5-1，我方采纳）。
+        # 旧实现把「未探测」「探测成功且干净」「探测失败」三种情况**都表示成 interrupted_at 缺席**，
+        # 而消费方只能把缺席一律解释成「可以安全续跑」。要害在于：
+        # **「探测失败」与要防的半截态是故障相关的** —— 探测读的正是那份可能半写的 checkpoint
+        # ⇒ 越是真出事的时候越可能探测失败 ⇒ **止血在最该生效时静默失效，且无可区分信号**。
+        # 现改为回一个恒存在的 `interrupt_probe` 字段，取值是**显式四态**：
+        #   not_probed  —— 新建会话，或活跃幂等重开（提前 return，压根没走到这里）
+        #   clean       —— 探测成功且 next 为空：上一轮跑完整轮
+        #   interrupted —— 探测成功且 next 非空：停在 super-step 边界，另见 interrupted_at
+        #   probe_failed—— 探测本身抛了：**不可判**，消费方须按最坏情况处理，不得当 clean
         interrupted: tuple[str, ...] | None = None
+        probe = "not_probed"
         if resuming:
             try:
                 interrupted = await session.interrupted_at()
             except Exception:
-                # 探测失败不得挡住 resume 本身（宁可少一条观测量，也不把会话打不开）。
-                logger.exception("zero.open_session 中断探测失败 sid=%s", sid)
+                # 探测失败不得挡住 resume 本身（宁可少一条观测量，也不把会话打不开）；
+                # 但**必须让这条失败可被消费方区分**——这正是旧实现最危险的一格。
+                probe = "probe_failed"
+                logger.exception(
+                    "zero.open_session 中断探测失败 sid=%s：本次**无法判定**上一轮是否被中断。"
+                    "⚠ 探测读的就是那份可能半写的 checkpoint，故失败与半截态故障相关，"
+                    "消费方须按最坏情况处理，不得视同 clean",
+                    sid,
+                )
+            else:
+                probe = "interrupted" if interrupted is not None else "clean"
             if interrupted is not None:
                 logger.warning(
                     "zero.open_session resume 发现上一轮被中断 sid=%s 待执行节点=%s；"
@@ -598,8 +628,15 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             await registry.count(),
         )
         # 返回体**只增不改**：配套项目按「除 session_id 外容忍并收下额外键、缺键即回落」解析，
-        # 故新增键对现网零回归。`interrupted` 缺席 = 未探测（新建会话）或探测失败。
-        out: dict[str, Any] = {"session_id": sid, "resumed": resuming}
+        # 故新增键对现网零回归。
+        # ⚠ `interrupt_probe` **恒存在**（四态见上）；`interrupted_at` 仅在 probe=="interrupted"
+        # 时出现 —— 判「是否可安全续跑」请读 `interrupt_probe`，
+        # **不要靠 `interrupted_at` 是否缺席**：那正是旧口径把「探测失败」误当「干净」的成因。
+        out: dict[str, Any] = {
+            "session_id": sid,
+            "resumed": resuming,
+            "interrupt_probe": probe,
+        }
         if interrupted is not None:
             out["interrupted_at"] = list(interrupted)
         return out
@@ -678,6 +715,27 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 ) from e
         finally:
             lock.release()
+        # ── 轻量事后检查（Zero_MCP 2026-07-30 §5-2 征询，我方采纳）──
+        # 探测此前**只发生在 open_session 的 resume-不活跃分支** ⇒ 污染从第二帧起完全不可观测：
+        # 同一 session 一生只可能出现一次那条 ERROR，之后每一帧都在半截态上继续跑而无任何信号。
+        # 这里在**本轮结束后**看一眼：正常跑完的一轮 next 恒为空，非空即说明这一轮没跑完
+        # （例如本轮内部发生过取消，或上一轮的残留未被推进）。
+        # ⚠ 只记日志、**不改返回体、不拒绝本帧** —— step 是热路径，且「本轮已产出 expression」
+        # 是既成事实，此时拒绝只会让调用方丢掉一份已经算出来的结果。
+        # ⚠ 探测失败同样只吞进日志：它不能让一次成功的 step 变成失败。
+        try:
+            residual = await session.interrupted_at()
+        except Exception:
+            logger.debug("zero.step 事后中断检查失败 sid=%s（不影响本轮结果）", session_id)
+        else:
+            if residual is not None:
+                logger.warning(
+                    "zero.step 本轮结束后仍有待执行节点 sid=%s next=%s；"
+                    "该会话运行态停在 super-step 边界，后续轮次会在其上继续。"
+                    "双方按此日志定位污染起点",
+                    session_id,
+                    residual,
+                )
         expression = step_out.get("expression") or {}
         return expression
 
