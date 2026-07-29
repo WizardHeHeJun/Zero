@@ -65,6 +65,15 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
         # ⚠ 配套项目已确认其生产码从不传该字段，但那是**当前调用点的事实、不是结构保证**
         # （其 client 的 config 是无白名单透传），故我方按结构收紧、不依赖对方不传。
         "ignition_beta",
+        # canonical_physiology（2026-07-29 跨仓）：它决定 physiology 载荷的**量纲与键集**
+        # （legacy 归一 [0,1] + pupil_mm ↔ canonical μS[0,20] + temperature_c），
+        # 而消费侧据此选 skin_conductance_max_us=1.0 还是 20.0——选错即 20× 欠/过标度且不报错。
+        # 🛑 入白名单前它**不在**治理内，而配套项目 client 对 config 是无白名单透传
+        # ⇒ 两侧 env 全未设时，client 经 config 置真即可让载荷变成 canonical μS
+        # （对方实测 sc=16.0），消费侧却按 env 推断成 legacy。
+        # 收紧理由与 ignition_beta 逐字同型：它改的是**对外可见的载荷语义**，不容 client 单边翻转。
+        # base 里已由 ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER 播种，故入白名单是零额外接线。
+        "canonical_physiology",
     }
 )
 
@@ -87,9 +96,16 @@ ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID = "external-prior-invalid"
 ZERO_ERROR_CODE_PAYLOAD_INVALID = "payload-invalid"
 ZERO_ERROR_CODE_CONFIG_INVALID = "config-invalid"
 ZERO_ERROR_CODE_DEPLOY_ENV_INVALID = "deploy-env-invalid"
-# timeout：配套项目在 R12 契约提案里自己提的码。其异常族对未登记码是「落基类 + warning」，
-# 故我方单边先加不会炸它；是否正式列为码表第七项已在回执 §9 问出。
-ZERO_ERROR_CODE_TIMEOUT = "timeout"
+# ── 超时：**两个码，不是一个**（Zero_MCP 2026-07-29 建议，我方采纳）──
+# 二者**重试语义相反**，用同一个码等于把判别推回人读文案：
+#   · timeout-lock：等锁超时，本轮**未进入内核**、运行态未改动 ⇒ 可退避后原样重试；
+#   · timeout-step：内核执行超时，取消 ainvoke 会在 checkpointer 留**半截运行态**
+#     （已实证：LangGraph 每个 super-step 写一次 checkpoint，我方图线性 10 节点）
+#     ⇒ **不可原样重试**，重试会让已跑完的节点重跑、reducer 通道双重累加。
+# ⚠ timeout-step 目前**只登记不产出**——执行超时尚未实现（选型见跨仓件，倾向 shield 或节点内降级）。
+# 先登记是为了让消费方的分类表一次到位，不必等我方落地再改一轮。
+ZERO_ERROR_CODE_TIMEOUT_LOCK = "timeout-lock"
+ZERO_ERROR_CODE_TIMEOUT_STEP = "timeout-step"
 
 ZERO_ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -99,7 +115,8 @@ ZERO_ERROR_CODES: frozenset[str] = frozenset(
         ZERO_ERROR_CODE_PAYLOAD_INVALID,
         ZERO_ERROR_CODE_CONFIG_INVALID,
         ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
-        ZERO_ERROR_CODE_TIMEOUT,
+        ZERO_ERROR_CODE_TIMEOUT_LOCK,
+        ZERO_ERROR_CODE_TIMEOUT_STEP,
     }
 )
 
@@ -214,7 +231,7 @@ async def _acquire_with_timeout(lock: asyncio.Lock, session_id: str) -> None:
         await asyncio.wait_for(lock.acquire(), timeout)
     except TimeoutError as e:  # py3.11+ asyncio.TimeoutError 即 builtin TimeoutError
         raise _tool_error(
-            ZERO_ERROR_CODE_TIMEOUT,
+            ZERO_ERROR_CODE_TIMEOUT_LOCK,
             f"等待会话锁超时（{timeout}s）：sid={session_id!r} 上一轮 step 仍在执行。"
             "本轮未进入内核、运行态未改动，可原样重试",
         ) from e

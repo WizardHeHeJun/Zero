@@ -457,7 +457,7 @@ async def test_step_lock_timeout_yields_timeout_code(monkeypatch: pytest.MonkeyP
             )
             assert r.isError is True
             text = getattr(r.content[0], "text", "")
-            assert _wire_code(text) == "timeout"
+            assert _wire_code(text) == "timeout-lock"
             assert "可原样重试" in text, "须告知调用方本轮未改动运行态"
         finally:
             lock.release()
@@ -527,6 +527,72 @@ async def test_open_session_env_error_message_does_not_blame_client(
         text = getattr(r.content[0], "text", "")
         assert "ZERO_EXTERNAL_PRIOR_PRECISION_CAP" in text, "错误未指名 env"
         assert "非" in text and "client" in text, "错误未澄清归责方"
+
+
+def test_canonical_physiology_is_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`canonical_physiology` 入治理白名单：client 经 config 传它被静默忽略。
+
+    它决定 physiology 载荷的**量纲与键集**（legacy 归一 `[0,1]` + `pupil_mm` ↔
+    canonical μS`[0,20]` + `temperature_c`），消费侧据此选 `skin_conductance_max_us`
+    是 1.0 还是 20.0——选错即 **20× 欠/过标度且不报错**。
+    入白名单前配套项目实测：两侧 env 全未设时，client 经 config 置真即可让载荷变成
+    canonical μS（sc=16.0），而消费侧按 env 推断成 legacy。
+    """
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS, _build_session_config
+
+    monkeypatch.delenv("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", raising=False)
+    assert "canonical_physiology" in _MCP_GOVERNANCE_GATED_FLAGS
+    assert _build_session_config({"canonical_physiology": True}).canonical_physiology is False
+
+
+def test_canonical_physiology_env_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    """入白名单不得把它钉死——env 仍是唯一且有效的入口（成对要求）。"""
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", "true")
+    assert _build_session_config(None).canonical_physiology is True
+    assert _build_session_config({"canonical_physiology": False}).canonical_physiology is True
+
+
+def test_timeout_codes_are_split_by_retry_semantics() -> None:
+    """两个超时码必须分开：重试语义相反，一个码承载两种等于把判别推回人读文案。
+
+    · `timeout-lock`：本轮未进内核 ⇒ **可**退避重试；
+    · `timeout-step`：取消 ainvoke 会留半截运行态 ⇒ **不可**原样重试。
+    ⚠ `timeout-step` 目前只登记不产出（执行超时未实现），本用例同时钉住这个事实——
+    若它开始被产出而语义未定，这条会提醒补齐。
+    """
+    from src.mcp_server.server import (
+        ZERO_ERROR_CODE_TIMEOUT_LOCK,
+        ZERO_ERROR_CODE_TIMEOUT_STEP,
+        ZERO_ERROR_CODES,
+    )
+
+    assert ZERO_ERROR_CODE_TIMEOUT_LOCK != ZERO_ERROR_CODE_TIMEOUT_STEP
+    assert {ZERO_ERROR_CODE_TIMEOUT_LOCK, ZERO_ERROR_CODE_TIMEOUT_STEP} <= ZERO_ERROR_CODES
+    # 只登记不产出：AST 查所有 _tool_error(...) 调用点的第一个实参，不得有 TIMEOUT_STEP。
+    # （不能用字符串搜——登记表 ZERO_ERROR_CODES 自身就含这个名字，会假红。第一版就栽在这。）
+    import ast
+    import inspect
+
+    import src.mcp_server.server as srv
+
+    tree = ast.parse(inspect.getsource(srv))
+    emitted = {
+        node.args[0].id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_tool_error"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    }
+    assert "ZERO_ERROR_CODE_TIMEOUT_STEP" not in emitted, (
+        "timeout-step 已被产出，但执行超时的半截运行态语义尚未落地——请同批补齐"
+    )
+    assert "ZERO_ERROR_CODE_TIMEOUT_LOCK" in emitted, (
+        "timeout-lock 应当有产出点，否则本组没在测东西"
+    )
 
 
 def test_ignition_beta_is_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
