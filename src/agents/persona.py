@@ -6,8 +6,9 @@
 - **L1 人设卡** `card`：身份/背景/口吻/与用户关系，注入对话 system prompt（`OpenAILanguageModel`）。
 - **L2 气质底色** `setpoint/reactivity/recovery`：情感引擎的个体基线与反应性——慢变态度回归的锚
   （[[ATTITUDE_SETPOINT]] 注释预留的「人格阶段」）与快变情绪的反应/恢复速率。**只暴露旋钮、默认
-  中性**；「大五→PAD 的具体数值映射 / 预设人格库」是科学决策，须走 `/science-council` 设计门，
-  本模块不替算法拍板。
+  中性**；「大五→PAD 数值映射」已过设计门并落地（见 `big_five_to_pad`，Mehrabian 口径），
+  JSON 侧填 `big_five` 即自动推导 setpoint 与 va_coupling。**预设人格库**仍是科学决策、未落地，
+  本模块不替算法拍板具体性格参数。
 - **L3 预置关系** `initial_attitude/seed_memories`：首次接触时的初始态度 + 预灌的共同记忆，
   让数字人「一开始就认识/在意某人」，而非从零相处。
 

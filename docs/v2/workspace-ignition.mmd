@@ -4,14 +4,20 @@ flowchart LR
   sur["快生存流·低精度<br/>可单独点燃 (μ,π)"]:::stream
   moo["心境 mood 流 (μ,π)<br/>(--chat 下关闭)"]:::muted
   sem["文本语义流·低精度先验 (μ,π)"]:::stream
-  sal{"显著网络打分<br/>过阈？"}:::gate
-  gw["全局工作空间<br/>点燃广播 → 精度加权高斯融合"]:::engine
+  ext["外部多模态先验流·经 MCP 注入 (μ,π)<br/>视觉 / 韵律 / 生理 各一条低精度<br/>(最多 5 条·无需额外开关；生理流效价精度压到下限)"]:::stream
+  sal{"显著网络打分<br/>过阈？<br/>(默认：同时决定谁进融合 / 谁可报告)"}:::gate
+  gw["全局工作空间<br/>点燃广播 → 精度加权高斯融合 Σπμ/Σπ<br/>(π 可选齐次化为 1/σ²)"]:::engine
   loc["未过阈 → 留局部·不广播"]:::muted
+  rep["点燃标签 ignited_streams<br/>可解释性 · 随 episode 落记忆"]:::muted
+  bypass["⚙️ 可选架构 ZERO_IGNITION_GATE_FUSION=false<br/>数值通路 ⊥ 报告通路：阈下不点燃 ≠ 阈下零贡献<br/>全部流按各自原生精度进融合，阈值只留作报告标签<br/>(生理流经 ZERO_EXCLUDE_PHYSIO_FUSION 默认排除)"]:::muted
   estar(["后验读出 e*<br/>sample 采样(默认) / map 均值(稳)"]):::terminal
 
-  occ & val & sur & moo & sem --> sal
+  occ & val & sur & moo & sem & ext --> sal
   sal -->|"ignite"| gw --> estar
   sal -.-> loc
+  sal -.->|"报告通路"| rep
+  sal -.->|"设为 false 时改走"| bypass
+  bypass -.-> gw
 
   classDef stream fill:#F0F4FC,stroke:#5178C6,color:#1F2329
   classDef gate fill:#FEF1CE,stroke:#D4B45B,color:#1F2329

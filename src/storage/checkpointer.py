@@ -34,7 +34,8 @@ def build_checkpointer(
     backend 取 env `ZERO_CHECKPOINT_BACKEND`：`memory`（默认）/ `sqlite` / `postgres`。
     allowed_types：白名单从 checkpoint 反序列化的自定义类型 (module, qualname)，由编排层提供——
     `allowed_msgpack_modules` 正是 langgraph 反序列化告警建议的格式，勿改成纯模块名字符串列表。
-    sqlite/postgres 缺驱动时回退 InMemory（容器内装 `db` extra 后即生效）。
+    sqlite 缺驱动时告警回退 InMemory（容器内装 `db` extra 后即生效）；postgres **未接线**，
+    选中即构造期 `NotImplementedError` fail-fast，**不回退**（理由见 `_postgres_saver`）。
     """
     serde = (
         JsonPlusSerializer(allowed_msgpack_modules=list(allowed_types))

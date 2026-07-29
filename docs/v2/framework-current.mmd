@@ -9,10 +9,11 @@ flowchart LR
   memory[("🗄️ 记忆/持久<br/>注意力↔记忆桥：显著性写·三维召回·注入预算·时序遗忘<br/>图谱+语义·ConversationLog落盘")]:::memory
   output(["💬 最终表现"]):::terminal
 
+  coping["🧭 情感第三维 coping_potential(可选)<br/>由情境控制感 control_appraisal 驱动<br/>独立标量流·与核心(v,a)正交、不入融合<br/>负效价高唤醒象限区分 愤怒(有掌控)/恐惧(失控)"]:::experimental
   tom["🫂 对方情绪·共情 ToM<br/>interlocutor_affect 图外估计<br/>→传染/CARE/替代喜悦偏置"]:::experimental
   hpa["🧪 HPA 皮质醇慢回路<br/>应激后分-小时余震<br/>→抬arousal基线·放大态度率"]:::experimental
   hpc["🏛️ 层级预测编码<br/>hierarchical_fuse<br/>感觉层L0→核心情感层L1"]:::experimental
-  expnote["⚗️ 虚线 = 实验特性·默认关闭"]:::expnote
+  expnote["⚗️ 虚线 = 可选 / 实验特性·默认关闭"]:::expnote
 
   user -->|"感知输入"| appraise
   appraise -->|"刺激(v,a)"| engine
@@ -27,6 +28,9 @@ flowchart LR
   persona -->|"气质setpoint"| timescales
   persona -->|"预置关系种子"| memory
 
+  engine -.->|"应对潜能(可选)"| coping
+  coping -.->|"判别性 AU：愤怒AU23 / 恐惧AU01·02·20"| expression
+  coping -.->|"用词分野：愤怒 / 恐惧"| language
   tom -.->|"共情偏置(实验)"| engine
   hpa -.->|"arousal基线(实验)"| engine
   hpa -.->|"态度率(实验)"| timescales
