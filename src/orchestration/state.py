@@ -277,7 +277,7 @@ class AffectState(BaseModel):
     task_complete: bool = False
 
     # 外部多模态先验流注入口（议会 2026-07-15 M1–M6；PRP 外部多模态先验流注入口）。
-    # 每条 ExternalPrior = (name, (μv, μa), (Πv, Πa))，逐维精度与 affect_core.py:77
+    # 每条 ExternalPrior = (name, (μv, μa), (Πv, Πa))，逐维精度与 `affect_core` 里 streams 装配处
     # streams 类型原生一致，AffectCoreAgent 展开后直接 extend 进 streams 竞争融合。
     # ⚠ 无任何图节点写此字段——每轮经 state_overrides 注入（interlocutor_affect 先例）；
     # 进 Checkpointer 不入图谱；默认空列表=零回归（workspace_enabled 下才有意义）。
@@ -296,7 +296,8 @@ class AffectState(BaseModel):
     #   （gaussian_fuse 默认路径 / mood_enabled / workspace）全部逐字旧行为**；
     # True → 四条流的 Π 一律改写成 1/σ²、σ 表达在 [-1,1] 值域上（见 affect_math.py 齐次化节）。
     # ⚠ 与其它门控的关键区别：本门影响**每轮无条件执行**的 gaussian_fuse 默认路径
-    #   （affect_core.py:149），不是只影响默认关的 workspace 分支。
+    #   （`affect_core` 里 ignite/report_ignited 共享判据 dict 处），
+    #   不是只影响默认关的 workspace 分支。
     # ⚠ 只统一量纲，**不等于校准正确**——实证校准（从回归器残差估计 σ）是独立后续项目。
     # 经 SessionConfig.precision_commensurable → to_state_flags() → ainvoke 贯通。
     precision_commensurable: bool = False  # 默认关=零回归
@@ -313,7 +314,10 @@ class AffectState(BaseModel):
     # ── physio 流排除出数值通路（议会 D7·跨仓承诺；默认 True=排除）──
     # 配套项目 Zero_MCP 用 WESAD 真被试验证其 EDA arousal 与唤醒**系统性反号**，明确请求
     # 「宁可继续门掉——『暂时不参与融合』优于『以反号参与』」。由我方单边可控。
-    # 仅在 gate_fusion=False 时有意义（门关时 physio 本就受硬门管）。
+    # ⚠ **本字段只在 gate_fusion=False 分支生效**（过滤写在门开分支内，门关分支提前 return）。
+    #   旧注释「门关时 physio 本就受硬门管」**只对硬门成立、对软门不成立**：
+    #   门关 + soft_beta 非 None 时全部流含 physio 一律进 fuse_terms，D7 在该配置下完全不生效。
+    #   收口条件与跨仓影响见 affect_math.ignite 的 docstring。
     exclude_physio_fusion: bool = True
 
     # text_coping 独立标量流（议会 2026-07-16 B3；来源：PerceptionAgent 词典/回归产出）。
@@ -331,7 +335,8 @@ class AffectState(BaseModel):
     # True → 两路径解除硬弃/回退，fear 域激活可经正常门控产生（须 env 显式开）。
     # 语义边界：fear 专属门·anger confrontational 路径完全不受此门（仅 survival 域关）。
     # 边界·表情层正交（议会 2026-07-21 B-facs-fear·PASS）：本门仅治标签/符号层两路径；
-    #   表情层 fear-AU（affect_math.py:595-604·AU01/02/20·coping<0 驱动）由 facs_extended
+    #   表情层 fear-AU（`affect_math._decode_facs_extended` 的 fear-AU 段·
+    #   AU01/02/20·coping<0 驱动）由 facs_extended
     #   +coping_potential_enabled 双层容量门独立治理·与本门正交（面部运动 vs 情绪判定层解离·
     #   Rinn 1984 / Barrett 2019）。悬置 B-facs-fear-unlock：fear 域解锁时须重裁表情层是否加门。
     fear_domain_enabled: bool = False  # WARN-3 fear 专属门·默认关=零回归·B1 BLOCK 前置

@@ -7,7 +7,7 @@
 
 与 MCP `as_zero_streams()` 输出对齐（M1 逐维精度形状）：
   list[(name, (μv, μa), (Πv, Πa))]
-与 affect_core.py:77 的 streams 类型完全一致，可直接 extend。
+与 `affect_core` 里 streams 装配处的类型完全一致，可直接 extend。
 
 重要注意事项（议会 design.md M1–M6）：
   - physio 流（前缀 physio/eda/hrv/pupil/scr）：Πv 被 Zero 强制覆写 MIN_PRECISION（M2）；
@@ -33,7 +33,8 @@ class ExternalPriorError(ValueError):
     存在的理由是**归责可辨**（议会 2026-07-29 第五轮校验 §四-5）：边界层 `server.py` 原先
     用一个 `except ValueError` 包住**整个** `session.step()`（全图执行），把内核任何位置抛出的
     `ValueError` 一律贴成「external_priors 校验失败（指向 MCP 传参）」。后果是**误导性甩锅**：
-    client 照着改传参永远改不好，而活跃会话的 config 不可变（`server.py:230-234`）→ 无法自救，
+    client 照着改传参永远改不好，而活跃会话的 config 不可变
+    （`server.open_session` 的 resume(active) 幂等分支）→ 无法自救，
     表现为 open 成功、每 step 崩。
 
     继承 `ValueError` 以保持向后兼容（既有 `except ValueError` 仍能捕获），

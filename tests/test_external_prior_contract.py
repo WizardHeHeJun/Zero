@@ -61,8 +61,8 @@ _HUB_SHAPE_SCRIPT = r"""
 import sys
 import json
 
-zero_mcp_src = sys.argv[1]
-sys.path.insert(0, zero_mcp_src)
+zero_mcp_root = sys.argv[1]
+sys.path.insert(0, zero_mcp_root)
 
 try:
     from src.mcp.zero.perception import PerceptionHub
@@ -117,41 +117,22 @@ _SCHEMA_VERSION_SCRIPT = r"""
 import sys
 import json
 
-zero_mcp_src = sys.argv[1]
-zero_src = sys.argv[2]
-sys.path.insert(0, zero_mcp_src)
-sys.path.insert(0, zero_src)
+zero_mcp_root = sys.argv[1]
+sys.path.insert(0, zero_mcp_root)
 
-mcp_version = None
-zero_version = None
-
-# 尝试从 MCP 侧获取 schema version（若定义）
+# ⚠ 只把 MCP 仓根放进 sys.path：两仓都有顶层 `src` 包，同时插入会**撞名**——
+# 先命中的那个 `src` 决定 `src.mcp` 与 `src.orchestration` 谁 import 得到。
+# 故 Zero 侧的版本号不在本子进程里取，由测试进程自己读（它本就跑在 Zero 仓内）。
 try:
-    from src.mcp.zero.perception import PerceptionHub  # noqa: F401 确认可 import
-    # MCP 协议层可能不直接暴露 schema version；
-    # 若存在，从 protocols.py 或 __init__ 读取
-    try:
-        from src.mcp.zero import protocols as mcp_proto
-        mcp_version = getattr(mcp_proto, "EXTERNAL_PRIOR_SCHEMA_VERSION", None)
-    except ImportError:
-        mcp_version = None
+    from src.mcp.zero import external_priors as mcp_ep
 except ImportError as e:
-    print(json.dumps({"skip": True, "reason": f"import MCP 失败: {e}"}))
-    sys.exit(0)
-
-# 从 Zero 侧读 schema version
-try:
-    from src.orchestration.external_prior import EXTERNAL_PRIOR_SCHEMA_VERSION
-    zero_version = EXTERNAL_PRIOR_SCHEMA_VERSION
-except ImportError as e:
-    print(json.dumps({"skip": True, "reason": f"import Zero external_prior 失败: {e}"}))
+    print(json.dumps({"skip": True, "reason": f"import MCP external_priors 失败: {e}"}))
     sys.exit(0)
 
 print(json.dumps({
     "skip": False,
-    "zero_version": zero_version,
-    "mcp_version": mcp_version,
-    "mcp_version_defined": mcp_version is not None,
+    "mcp_version": getattr(mcp_ep, "EXTERNAL_PRIOR_SCHEMA_VERSION", None),
+    "mcp_version_defined": hasattr(mcp_ep, "EXTERNAL_PRIOR_SCHEMA_VERSION"),
 }))
 """
 
@@ -160,8 +141,8 @@ _HUB_EMPTY_SCRIPT = r"""
 import sys
 import json
 
-zero_mcp_src = sys.argv[1]
-sys.path.insert(0, zero_mcp_src)
+zero_mcp_root = sys.argv[1]
+sys.path.insert(0, zero_mcp_root)
 
 try:
     from src.mcp.zero.perception import PerceptionHub
@@ -186,8 +167,8 @@ import sys
 import json
 import asyncio
 
-zero_mcp_src = sys.argv[1]
-sys.path.insert(0, zero_mcp_src)
+zero_mcp_root = sys.argv[1]
+sys.path.insert(0, zero_mcp_root)
 
 try:
     from src.mcp.zero.perception import PerceptionHub, PerceptionChannel
@@ -246,7 +227,7 @@ except Exception as e:
 
 def _run_script(script: str, *extra_args: str) -> dict[str, Any]:
     """运行子进程脚本，返回 stdout JSON；失败/超时 → pytest.skip。"""
-    cmd = [sys.executable, "-c", script, str(_ZERO_MCP_SRC)]
+    cmd = [sys.executable, "-c", script, str(_ZERO_MCP_ROOT)]
     cmd.extend(extra_args)
     try:
         result = subprocess.run(
@@ -396,18 +377,28 @@ class TestExternalPriorSchemaVersion:
             f"Zero EXTERNAL_PRIOR_SCHEMA_VERSION={EXTERNAL_PRIOR_SCHEMA_VERSION}，期望 1"
         )
 
-    def test_mcp_schema_version_aligned_if_defined(self) -> None:
-        """若 MCP 侧也定义了 EXTERNAL_PRIOR_SCHEMA_VERSION，须与 Zero 侧一致（M5）。
+    def test_mcp_schema_version_aligned(self) -> None:
+        """MCP 侧的 EXTERNAL_PRIOR_SCHEMA_VERSION 必须与 Zero 侧一致（M5）。
 
-        MCP 当前仅在感知协议中使用 Zero schema，不一定重复定义版本号；
-        若未定义则 skip（不硬失败），若定义则必须对齐。
+        ⚠ 原实现有**两处**使它恒不生效，一并修掉（2026-07-29）：
+        ① 子进程实参传的是 `src/` 目录而非仓根 → 脚本里 `from src.mcp...` 恒 ImportError
+           → 整条 skip（实测全文件 8 passed / 10 skipped，跨仓校验从没真跑过）；
+        ② 版本常量读的是**不存在的** `src.mcp.zero.protocols`，取不到即
+           `mcp_version_defined=False` → 又 skip。即「对方删掉版本号」与「版本号变了」
+           两种情况**都是绿的**。
+        现改为硬断言：常量缺失即失败，不再 skip。
         """
-        data = _run_script(_SCHEMA_VERSION_SCRIPT, str(_ZERO_SRC))
-        if not data["mcp_version_defined"]:
-            pytest.skip("MCP 侧未定义 EXTERNAL_PRIOR_SCHEMA_VERSION，跳过版本对齐检查")
-        assert data["mcp_version"] == data["zero_version"], (
-            f"schema 版本不一致：MCP={data['mcp_version']}，Zero={data['zero_version']}；"
-            f"需同步更新（M5：跨仓协议由版本号兜底漂移）"
+        from src.orchestration.external_prior import EXTERNAL_PRIOR_SCHEMA_VERSION
+
+        data = _run_script(_SCHEMA_VERSION_SCRIPT)
+        assert data["mcp_version_defined"], (
+            "MCP 侧未定义 EXTERNAL_PRIOR_SCHEMA_VERSION——跨仓协议失去版本兜底。"
+            "该常量现位于其 src/mcp/zero/external_priors.py；若对方迁移了位置，"
+            "请同步更新 _SCHEMA_VERSION_SCRIPT 而不是把本断言放宽"
+        )
+        assert data["mcp_version"] == EXTERNAL_PRIOR_SCHEMA_VERSION, (
+            f"schema 版本不一致：MCP={data['mcp_version']}，"
+            f"Zero={EXTERNAL_PRIOR_SCHEMA_VERSION}；需同步更新（M5：跨仓协议由版本号兜底漂移）"
         )
 
 

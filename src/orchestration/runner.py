@@ -204,7 +204,7 @@ class SessionConfig(BaseModel):
         """BLOCK 2（议会第四轮 · 位置由第五轮改判到此）：新融合架构 × HPC 显式互斥。
 
         `gate_fusion=False`（全流精度加权）与 `hierarchical_layers≥2 且 coupling>0`（HPC）
-        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.py:419`
+        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.hierarchical_fuse`
         `pi_core = pi_l1e + w2 * pi_l0`），实测 coupling=0.3 时硬契约
         `|post_mu − ΣΠμ/ΣΠ|` 偏差 **0.0773**、arousal 符号翻转。本轮**不解**该数学，
         只做显式互斥——收缩的是两个独立开关的乘积空间，不是整个特性。

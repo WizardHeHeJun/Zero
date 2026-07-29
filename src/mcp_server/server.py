@@ -10,7 +10,8 @@
 **不进 affect 热路径**（映射是纯数据搬运）、secrets 走 env。`mcp` 走 optional-deps 不入 core。
 
 会话门控默认（`ZERO_MCP_*` env 可调）：`workspace_enabled=True`（否则 external_priors 被整段
-跳过，`affect_core.py:44,100-107`——external_priors 是 client 契约核心、独立低精度流已经完整
+跳过，见 `affect_core` 的 `if state.workspace_enabled:` 分支——external_priors 是 client
+契约核心、独立低精度流已经完整
 PRP + code-reviewer 批准，故默认开）；`coping_potential_enabled=False`（**与生产/chat 路径一致·
 零回归**——原默认 True 被议会四轮 2026-07-18 判为「生产关·MCP 开」治理旁路：anger 方向先验尚未
 经议会解锁，不得经 MCP 面静默生效。MCP 边界是否统一/anger 侧是否受同一弃权门约束=议会 B1 悬而
@@ -28,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -64,6 +66,18 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
 _UNKNOWN_SESSION_MARKER = "unknown-session"
 
 
+class ServerEnvError(RuntimeError):
+    """**部署端** env 值不合法（不是 client 传参问题）。
+
+    刻意**不继承** `ValueError`/`TypeError`：`open_session` 用
+    `except (ValueError, TypeError) -> ToolError("config 不合法")` 兜 SessionConfig 的构造校验，
+    若本类落进那一支，部署端把 `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` 写成 `"0.8x"` 这种错，
+    报出来会指向 **client 的 config** —— client 照着改 config 永远改不好。
+    ⚠ stdio 传输下 client 进程环境**就是** server 进程环境（其 `_build_subprocess_env` 全量拷贝
+    `os.environ`），所以这条归责错位真的会落到对方头上，不是理论风险。
+    """
+
+
 def _env_flag(name: str, default: bool) -> bool:
     """读布尔 env：真值集 → True，假值集 → False，**其余一律回落 `default`**。
 
@@ -91,11 +105,28 @@ def _env_flag(name: str, default: bool) -> bool:
     return default  # 未识别（含空串）→ 回落默认，**不再一律 False**
 
 
+def _env_number[T: (int, float)](name: str, default: str, caster: Callable[[str], T]) -> T:
+    """读数值 env；坏值抛 `ServerEnvError`（指名 env），**不**抛 ValueError。
+
+    与 `ZERO_MCP_HTTP_PORT` 的处理同口径。区别在于本函数用于 `_build_session_config`，
+    而后者被 `open_session` 的 `except (ValueError, TypeError)` 包着——裸 `float()` 的
+    ValueError 落进那一支就会被贴成「config 不合法」，把部署端的锅甩给 client。
+    """
+    raw = os.getenv(name, default)
+    try:
+        return caster(raw)
+    except (ValueError, TypeError) as e:
+        raise ServerEnvError(
+            f"{name} 须为 {caster.__name__}，当前值={raw!r}；这是**部署端 env** 的问题，"
+            "改 client 传的 config 无效"
+        ) from e
+
+
 def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     """从 env 装配 MCP 边界的会话默认门控；`overrides` 覆写 SessionConfig 已声明字段。
 
     覆写只挑 SessionConfig 已有字段（防注入未知键），并经 SessionConfig 构造**重新校验**
-    （如共情系数 L1 上界 `runner.py:131-140`），坏值 fail-fast → 上层转 ToolError。
+    （如共情系数 L1 上界 `SessionConfig._check_empathy_l1`），坏值 fail-fast → 上层转 ToolError。
 
     **议会解锁门（A5·A6·2026-07-21）**：`_MCP_GOVERNANCE_GATED_FLAGS` 中的字段
     （`text_coping_enabled`/`coping_potential_enabled`）**不受 overrides 覆写**，
@@ -121,6 +152,15 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # MCP 收窄前提（CS 席约束·design.md）：消费方须确认部署端已开此 env 才能依赖
         # canonical 键集（{hr,sc(μS),temperature_c}）；默认关=legacy 占位（含 pupil_mm）。
         "canonical_physiology": _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False),
+        # facs_extended：AU 扩展集合门控。**必须与 _maybe_expression_decoder 同读同一 env**——
+        # 该函数按此 env 决定 load_facs_decoder(extended=...)（13 键 vs 5 键），而 expression 节点
+        # 按 state.facs_extended 走。此前 base 漏了这一行：设 ZERO_FACS_EXTENDED=true 且给了
+        # ZERO_FACS_MODEL_PATH 时，decoder 载入 13 键真模型、state 却取字段默认 False
+        # → C2 residual 的 coping 分野（AU23/AU01/AU02/AU20）被静默跳过。同 canonical_physiology
+        # 的同源契约（composite.py 的键集对齐要求）。回归锁：
+        # tests/test_mcp_server.py::test_mcp_facs_extended_env_seeds_session_config
+        # （撤掉本行即红，已实证）。
+        "facs_extended": _env_flag("ZERO_FACS_EXTENDED", False),
         # 默认 False：与生产/chat 零回归一致（议会 2026-07-28 第四轮）——齐次化改的是每轮
         # 无条件执行的默认融合路径，MCP 面不得旁路生效；仅 ZERO_MCP_PRECISION_COMMENSURABLE
         # env 治理，client override 被 gated_flags 静默忽略。
@@ -131,10 +171,13 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         "gate_fusion": _env_flag("ZERO_MCP_IGNITION_GATE_FUSION", True),
         # physio 排除默认 True（D7 跨仓承诺·由我方单边可控）。
         "exclude_physio_fusion": _env_flag("ZERO_MCP_EXCLUDE_PHYSIO_FUSION", True),
-        "external_prior_precision_cap": float(
-            os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
+        # ⚠ 这两个走 _env_number：裸 float()/int() 抛的 ValueError 会被 open_session 的
+        # `except (ValueError, TypeError)` 贴成「config 不合法」——**部署端 env 写错却指向
+        # client 传参**（见 ServerEnvError 的说明）。
+        "external_prior_precision_cap": _env_number(
+            "ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8", float
         ),
-        "max_external_streams": int(os.getenv("ZERO_MAX_EXTERNAL_STREAMS", "5")),
+        "max_external_streams": _env_number("ZERO_MAX_EXTERNAL_STREAMS", "5", int),
     }
     if overrides:
         base.update(
@@ -226,7 +269,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     decoder = _maybe_expression_decoder()
     # HTTP 传输的监听配置（stdio 下无害·仅 streamable-http 生效）：host/port/path 走 env，
     # 便于给 MCP 侧稳定 endpoint（默认 127.0.0.1:8000/mcp，与 FastMCP 默认一致）。
-    # port 非法值 fail-fast 指向 env 名（与 _build_session_config 的 float/int 处理风格一致）。
+    # port 非法值 fail-fast 指向 env 名（与 _build_session_config 的 _env_number 同口径）。
     try:
         http_port = int(os.getenv("ZERO_MCP_HTTP_PORT", "8000"))
     except ValueError as e:
@@ -263,6 +306,10 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         """
         try:
             cfg = _build_session_config(config)
+        except ServerEnvError as e:
+            # 部署端 env 坏值：必须与下面的 client-config 分支分开报，否则 client 照着改
+            # config 永远改不好（同 zero.step 里 ExternalPriorError / ValueError 的分治理由）。
+            raise ToolError(f"服务端 env 配置不合法（**非** client config 问题）：{e}") from e
         except (ValueError, TypeError) as e:
             raise ToolError(f"config 不合法：{e}") from e
         if session_id is not None:

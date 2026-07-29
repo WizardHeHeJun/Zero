@@ -607,6 +607,18 @@ def test_scenario_matrix(present: list[Stream], n_external: int, soft_beta: floa
             assert not any(
                 n.lower().startswith(("physio", "eda", "hrv", "pupil", "scr")) for n in names
             )
+        else:
+            # 🛑 特征化（**已知缺口·非期望行为**·design.md D7 补记）：门关分支提前 return，
+            # 根本走不到 D7 过滤。此处**如实钉住当前行为**，而不是假装 D7 在门关下也生效：
+            #   · 硬门：physio 落选靠它自己的低 salience（0.7×0.088=0.0616 < 0.18），非 D7 之功；
+            #   · 软门：physio **全量进融合**（精度乘 logistic gate），D7 完全不生效 = 真实旁路。
+            # 堵缺口（把过滤提到 `if gate_fusion:` 之前）时本断言即红——届时改成「physio 不在
+            # names」，**不得靠放宽断言让它变绿**；且须先 ping Zero_MCP（其镜像守卫锚在
+            # `_select_fired`，我方只改 `ignite()` 的话它不会红、而是静默失去刻画能力）。
+            if soft_beta is None:
+                assert "eda_tonic" not in names, "硬门下 physio 应因低 salience 落选"
+            else:
+                assert "eda_tonic" in names, "软门下 physio 全量进融合（D7 在此不生效）——缺口仍在"
 
 
 def test_domain_sweep_gate_on_never_violates_hard_contract() -> None:

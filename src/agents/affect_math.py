@@ -195,7 +195,8 @@ def precision(
     `commensurable=True`（量纲齐次化，默认关）：与 `precision_da` 同一处理——sigmoid 输出
     是概率不是逆方差，重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]。
     ⚠ 本函数是**默认路径**（`affect_core.py` 的 `gaussian_fuse` 分支）的证据精度来源
-    （`value.py:22` → `state.precision`），故此门是三条融合分支里唯一每轮无条件生效的一处。
+    （`value.py` 的 `precision()` 调用 → `state.precision`），
+    故此门是三条融合分支里唯一每轮无条件生效的一处。
     """
     if commensurable:
         return MIN_PRECISION + (VALUE_PRECISION_CEILING - MIN_PRECISION) * sigmoid(
@@ -720,7 +721,7 @@ def _decode_facs_extended(
 
         # ── fear-AU 段与 WARN-3 fear 门正交（议会 2026-07-21 B-facs-fear·PASS）──
         # 表情层 fear-AU（AU01/02/20·coping<0 驱动）由 facs_extended+coping_potential_enabled
-        # 双层容量门独立治理；WARN-3 fear 专属门（fear_domain_enabled·state.py:291）治标签/符号层，
+        # 双层容量门独立治理；WARN-3 fear 专属门（`AffectState.fear_domain_enabled`）治标签/符号层，
         # 与本层正交、不在此叠门——表情忠实兑现 coping_potential 连续映射，不在运动解码层再做域归类。
         # 依据：面部运动系统（CN VII 锥体外路自发通路）与情绪判定层临床双向解离（Rinn 1984；
         # Gothard 2014）；防御行为输出≠情绪意识（LeDoux & Brown 2017）；AU 非情绪类别等价、
@@ -880,6 +881,24 @@ def ignite(
     神经席裁定：GNW ignition = 「什么内容变得**可报告**」，不是「谁计算数值」；
     **阈下不点燃 ≠ 阈下零影响**。
 
+    ── 🛑 `exclude_physio_fusion` 的作用域**只有 `gate_fusion=False` 分支**（D7 的已知缺口）──
+    本参数的过滤**只在门开分支执行**；门关（默认）分支调完 `_select_fired` 即提前 return，
+    根本走不到它。故 D7「physio 不进数值通路」这个跨仓承诺在门关路径下**并未由本开关兑现**：
+    - 门关 + 硬门（`soft_beta=None`，默认）：physio 进不来靠的是**它自己的低 Πa**
+      （Zero_MCP 线上载荷 salience 上界 0.088 < 阈值 0.18），不是 D7。对方把 Πa 抬到
+      ≥0.359 即可在此路径下自行过阈——该边界目前是**对方的自律**，我方无结构约束。
+    - 门关 + 软门（`soft_beta` 非 None）：**全部流含 physio 一律进 `fuse_terms`**（精度乘
+      logistic gate），既无阈值筛除也无 D7 —— 这是**真实旁路**。默认 `IGNITION_BETA=None`
+      故生产未触发，但 MCP client 可经 `open_session(config={"ignition_beta": ...})` 打开
+      （`ignition_beta` 不在 `_MCP_GOVERNANCE_GATED_FLAGS` 内）。
+
+    **收口条件**（议会 design A4 要求记录时间窗，此前遗漏）：把前缀过滤提到 `if gate_fusion:`
+    之前、对三条路径同施。该改动会破 `tests/test_ignition_soft_gate.py` 的软门零回归，
+    属**行为变更须走议会门**，故本轮只做记录 + 特征化测试
+    （`tests/test_ignition_gate_fusion.py::test_scenario_matrix` 的 gate=True 分支）。
+    ⚠ 堵缺口当天须 ping Zero_MCP：其 `test_soft_gate_bypasses_physio_exclusion` 锚在
+    `_select_fired` 函数体上，我方若只改 `ignite()`，其守卫**不会变红**而是静默失去刻画能力。
+
     ⚠ **本函数的两个返回值恒对齐**（同一次筛选产出、一一对应）——调用方可安全
     `zip(..., strict=True)`。这是 BLOCK 1 的实质保证；不需要第三个返回值，见 design D13。
 
@@ -897,9 +916,17 @@ def ignite(
     # 门开：全流原生 (μ, Π) 进融合，不乘任何 gate/D 因子。
     fusion = [(name, mu, prec) for name, mu, prec, _ in scored]
     if exclude_physio_fusion:
-        # D7 跨仓承诺（默认排除）：配套项目 Zero_MCP 用 WESAD 真被试验证其 EDA arousal
-        # 与唤醒**系统性反号**，明确请求「宁可继续门掉——『暂时不参与融合』优于『以反号参与』」。
-        # 由我方单边可控，其度量重设计完成后再解除。
+        # D7 跨仓承诺（默认排除）。⚠ **依据按前缀分三档，不是一条证据覆盖五个前缀**
+        # （Zero_MCP 2026-07-29 明确要求记账时别把无证据的前缀计为「有证据支持的排除」）：
+        #   · eda_*  —— WESAD 真被试实测其 arousal 与唤醒**系统性反号**（v1，正确率 1/5）。
+        #              其 v2 已改口径（判别力 10/10、无反号），但 v2 **仅在其未合并分支上**，
+        #              其 main 仍跑已证伪的 v1 → 解除以「v2 合入其 main」为触发点。
+        #   · hrv_*  —— **从无支持排除它的独立证据**，是被瞄准 EDA 反号的一刀切前缀规则顺带
+        #              扫进来的。其审计：判别 4/5、无符号反转，问题是**读数吵**（漂移中位数
+        #              0.72）不是方向错 → 正确表达是低精度而非排除，解除排期早于 eda_*。
+        #   · pupil_* / scr_* —— **零载荷、零实测依据**：scr_amplitude 随其 EDA v1 一并删除，
+        #              瞳孔通道从未实现。留着不碍事，但**不构成有证据支持的排除**。
+        # 由我方单边可控。⚠ 本过滤只在门开分支执行，门关路径下 D7 不生效——见 ignite docstring。
         fusion = [t for t in fusion if not t[0].lower().startswith(_PHYSIO_PREFIXES)]
     if streams and not fusion:
         # D12：违反前置条件（传入的流**全是**被排除流）。生产路径不可达——`affect_core` 恒装配
@@ -1196,7 +1223,8 @@ def expand_external_priors(
     依据：EDA/HRV/瞳孔只编码交感唤醒输出、对效价盲（Kreibig 2010）；
     给 valence 精度 = 主动注入偏差（design.md §二·生物席强制·收敛 a）。
 
-    返回与 affect_core.py:77 streams 类型完全一致的列表，可直接 extend（M1）。
+    返回与 `affect_core` 里 streams 装配处（`if state.workspace_enabled:` 分支内）
+    类型完全一致的列表，可直接 extend（M1）。
     不进 occ_prior/survival 入口（design.md 受约束方案 c）。
 
     引文：Kreibig S.D. (2010). Biol. Psychol. 84(3):394-421.
@@ -1247,6 +1275,22 @@ def expand_external_priors(
         # 不因 MCP 误传超 cap / 非正 Πv 而在 M3 处误报——覆写后 Πv=MIN_PRECISION∈(0,cap]。
         if name.lower().startswith(_PHYSIO_PREFIXES):
             pi_v = MIN_PRECISION
+
+        # M3′：精度有限性校验（NaN/±inf）。**必须先于**下面两条比较——NaN 与任何数比较恒 False，
+        # 故 `pi_v <= 0.0` 与 `pi_v > precision_cap` 对 NaN **双双放行**，NaN 精度会一路进
+        # fuse_terms 产出 NaN 后验且全程无报错（±inf 反而会被下面两条接住，真正的洞只有 NaN）。
+        # μ 侧不需要本条：M7 的 `-1.0 <= mu <= 1.0` 对 NaN 恒 False，上面已 raise。
+        # 置于 M2 之后（同 M3 的理由）：physio 的 Πv 已被无条件覆写为 MIN_PRECISION，
+        # 不因 MCP 误传 NaN Πv 而在此误报。
+        # 跨仓背景：Zero_MCP 已在其 client 侧单边兜住（`479b887`），但那保护不了 chat 面与
+        # 测试夹具——`mapping.py` 的 `float(prec[0])` 会把字符串 "nan" 原样转成 NaN 送进来。
+        # 回归锁：tests/test_external_priors.py::TestExpandExternalPriorsM3 的 nan/inf 四例
+        # （撤掉本块即红），另附 `test_old_comparisons_would_have_passed_nan` 自证判别力。
+        if not (math.isfinite(pi_v) and math.isfinite(pi_a)):
+            raise ExternalPriorError(
+                f"external_priors[{i}] ({name!r}) 精度须为有限数，"
+                f"实际 Πv={pi_v}, Πa={pi_a}；请检查 MCP 传参"
+            )
 
         # M3：精度正值校验（physio Πv 已被 M2 覆写为 MIN_PRECISION>0；Πa 恒校验）
         if pi_v <= 0.0 or pi_a <= 0.0:

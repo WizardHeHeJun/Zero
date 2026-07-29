@@ -20,8 +20,11 @@
   5. ⚠ 点燃门可达性特征化（议会 2026-07-28）
      - 用 design.md §五 **推荐默认精度**（非夸大值）驱动 ignite，锁定当前已知缺陷行为：
        physio 结构性不可点燃、face/audio 真实最强样本仍亚阈、单维饱和三模态均不可达
-     - 公式修复（按轴加权马氏距离 + θ'=0.28）落地时本组应变红，届时按新式更新断言，
-       **不得靠放宽断言让它变绿**
+     - 🛑 **该「应变红」预告已作废（2026-07-29）**：按轴加权马氏距离 + θ'=0.28 那套方案
+       **从未落地**（全仓 grep `theta_prime`/`mahalanobis` 在 `src/` 零命中，
+       `SALIENCE_THRESHOLD` 仍是 0.18）。PR #46 落的是另外两个方案——线 A（硬门从数值通路
+       摘出，`ZERO_IGNITION_GATE_FUSION`）+ 线 B（精度量纲齐次化），二者默认关。
+       故本组**不会**因该修复变红；真正会动它的是「翻默认」或「改 SALIENCE_THRESHOLD」
   6. AffectState 默认值断言
      - external_prior_precision_cap==0.8、max_external_streams==5、external_priors==[]
   7. _PHYSIO_PREFIXES 派生的前缀覆盖抽样
@@ -197,6 +200,60 @@ class TestExpandExternalPriorsM3:
             expand_external_priors(
                 [("x", (0.1, 0.2), (-0.1, 0.5))], precision_cap=0.8, max_streams=5
             )
+
+    def test_pi_a_nan_raises(self) -> None:
+        """Πa=NaN → raise。
+
+        **修复前双侧漏检**：NaN 与任何数比较恒 False，故 `pi_a <= 0.0` 与
+        `pi_a > precision_cap` 都放行 → NaN 一路进 fuse_terms 产出 NaN 后验且无报错。
+        撤掉 `expand_external_priors` 里的 M3′ 有限性校验，本用例即红。
+        """
+        with pytest.raises(ValueError, match="精度须为有限数"):
+            expand_external_priors(
+                [("x", (0.1, 0.2), (0.5, float("nan")))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_pi_v_nan_raises(self) -> None:
+        """Πv=NaN（非 physio 名，M2 不覆写）→ raise。"""
+        with pytest.raises(ValueError, match="精度须为有限数"):
+            expand_external_priors(
+                [("x", (0.1, 0.2), (float("nan"), 0.5))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_old_comparisons_would_have_passed_nan(self) -> None:
+        """判别力自证：NaN **确实**穿得过原来那两条判据——否则上面两条用例是零判别力的摆设。"""
+        nan = float("nan")
+        assert not (nan <= 0.0), "NaN 未被正值判据拦下（这正是漏检成因）"
+        assert not (nan > 0.8), "NaN 未被上界判据拦下（这正是漏检成因）"
+
+    def test_physio_nan_pi_v_is_overwritten_not_raised(self) -> None:
+        """顺序契约：physio 流的 NaN Πv 先被 M2 覆写为 MIN_PRECISION，**不**触发有限性报错。
+
+        锁住 M2 在 M3′ 之前这一顺序（与 M3 同理由）：physio 的 Πv 无条件覆写，
+        不因 MCP 误传而误报。若把 M3′ 提到 M2 之前，本用例即红。
+        """
+        out = expand_external_priors(
+            [("physio", (0.0, 0.5), (float("nan"), 0.175))], precision_cap=0.8, max_streams=5
+        )
+        assert out[0][2][0] == MIN_PRECISION
+
+    def test_pi_inf_raises(self) -> None:
+        """Πa=+inf → raise（inf 本就会被上界判据接住，本条只是把报错口径统一到有限性）。"""
+        with pytest.raises(ValueError, match="精度须为有限数"):
+            expand_external_priors(
+                [("x", (0.1, 0.2), (0.5, float("inf")))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_nan_string_through_mcp_mapping_raises(self) -> None:
+        """端到端：MCP 载荷里的字符串 "nan" 经 `float()` 变成 NaN 送进内核 → 被拦。
+
+        这是对方 client 侧守卫**保护不到**的入口（chat 面与测试夹具同理）。
+        """
+        from src.mcp_server.mapping import external_priors_from_payload
+
+        priors = external_priors_from_payload([["x", [0.1, 0.2], [0.5, "nan"]]])
+        with pytest.raises(ValueError, match="精度须为有限数"):
+            expand_external_priors(priors, precision_cap=0.8, max_streams=5)
 
     def test_pi_v_exceeds_cap_raises(self) -> None:
         """Πv > precision_cap → raise ValueError。"""
@@ -548,9 +605,12 @@ class TestIgnitionReachabilityAtRecommendedPrecision:
       audio mean(Π)=0.1750 → 需 |μ|≥1.0286（>1.0，单维不可达）
       physio mean(Π)=0.0905 → 需 |μ|≥1.9890 > √2 → **数学上恒不可点燃**
 
-    ⚠ 修复（按轴加权马氏距离 D=sqrt(Πv·μv²+Πa·μa²) + θ'=0.28）落地时本类应当变红，
-    那正是预期信号——届时按新公式更新断言，**不得靠放宽断言让它变绿**。
-    见 notes/2026-07-28-ignition-gate-external-priors-council.md。
+    🛑 **原「应变红」预告已作废（2026-07-29）**：按轴加权马氏距离 + θ'=0.28 那套方案
+    **从未落地**，`stream_salience` 与 `SALIENCE_THRESHOLD=0.18` 逐字未动。
+    PR #46 落的是线 A（硬门摘出数值通路）+ 线 B（精度齐次化），**二者默认关**，
+    故本类在默认配置下逐值不变。留着旧预告等于挂一个**永远不会响的警报**——
+    与我方在跨仓件里批评对方的是同一族问题（见 2026-07-29 回执 §R8 的自曝）。
+    本类真正会红的时机：翻默认（`ZERO_IGNITION_GATE_FUSION=false`）或改 `SALIENCE_THRESHOLD`。
     """
 
     # design.md §五 推荐默认（physio Πv 由 M2 强制覆写为 MIN_PRECISION）

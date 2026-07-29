@@ -245,6 +245,117 @@ async def test_real_facs_decoder_13au_path(monkeypatch: pytest.MonkeyPatch) -> N
         assert all(0.0 <= v <= 1.0 for v in spontaneous["facs_au"].values())  # 值域守界 [0,1]
 
 
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [("true", True), ("1", True), ("false", False), (None, False)],
+)
+def test_mcp_facs_extended_env_seeds_session_config(
+    monkeypatch: pytest.MonkeyPatch, env_value: str | None, expected: bool
+) -> None:
+    """ZERO_FACS_EXTENDED 必须同时播种 state.facs_extended，而不只喂 decoder。
+
+    缺口（本用例即为其回归锁）：`_build_session_config` 的 base 曾漏掉这一键，而
+    `_maybe_expression_decoder` 读了它 → 同设 ZERO_FACS_EXTENDED=true 与 ZERO_FACS_MODEL_PATH 时，
+    decoder 载入 13 键真模型、state 却取字段默认 False，C2 residual 的 coping 分野
+    （AU23/AU01/AU02/AU20）被静默跳过。修复前 env_value="true" 这格返回 False → 本用例变红。
+    """
+    from src.mcp_server.server import _build_session_config
+
+    if env_value is None:
+        monkeypatch.delenv("ZERO_FACS_EXTENDED", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_FACS_EXTENDED", env_value)
+    assert _build_session_config(None).facs_extended is expected
+
+
+def test_mcp_facs_extended_same_env_as_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同源契约：session config 与 decoder 构造读的是**同一个** env 名。
+
+    不比对字面量（那只会锁住注释），而是改 env 后断言两侧**一起翻**——任一侧改读别的 env 即红。
+    """
+    pytest.importorskip("torch")  # _maybe_expression_decoder 的 facs 分支延迟 import models 层
+    import src.agents.models.facs_decoder as facs_mod
+    import src.mcp_server.server as srv
+
+    captured: dict[str, bool] = {}
+
+    def _fake_load(path: str, extended: bool) -> object:
+        captured["extended"] = extended
+        return object()
+
+    monkeypatch.setattr(facs_mod, "load_facs_decoder", _fake_load)
+    monkeypatch.setenv("ZERO_FACS_MODEL_PATH", "dummy.pt")
+    monkeypatch.delenv("ZERO_PROSODY_MODEL_PATH", raising=False)
+    monkeypatch.delenv("ZERO_PHYSIOLOGY_MODEL_PATH", raising=False)
+    for value, expected in (("true", True), ("false", False)):
+        captured.clear()
+        monkeypatch.setenv("ZERO_FACS_EXTENDED", value)
+        srv._maybe_expression_decoder()
+        assert captured["extended"] is expected, "decoder 侧未跟随 env"
+        assert srv._build_session_config(None).facs_extended is expected, "state 侧未跟随 env"
+
+
+def test_server_env_error_is_not_valueerror() -> None:
+    """判别力自证：`ServerEnvError` **不得**继承 ValueError/TypeError。
+
+    整个归责修复就靠这一点——一旦它落进 `open_session` 的
+    `except (ValueError, TypeError)`，部署端 env 写错又会被贴成「config 不合法」，
+    修复静默失效而所有用例照样绿。若日后有人改继承链，本用例即红。
+    """
+    from src.mcp_server.server import ServerEnvError
+
+    assert not issubclass(ServerEnvError, (ValueError, TypeError))
+
+
+@pytest.mark.parametrize(
+    ("env_name", "bad_value"),
+    [("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8x"), ("ZERO_MAX_EXTERNAL_STREAMS", "many")],
+)
+def test_numeric_env_bad_value_points_at_env(
+    monkeypatch: pytest.MonkeyPatch, env_name: str, bad_value: str
+) -> None:
+    """部署端数值 env 写坏 → `ServerEnvError` 且消息指名 env（不是 client 的 config）。"""
+    from src.mcp_server.server import ServerEnvError, _build_session_config
+
+    monkeypatch.setenv(env_name, bad_value)
+    with pytest.raises(ServerEnvError, match=env_name):
+        _build_session_config(None)
+
+
+async def test_open_session_env_error_message_does_not_blame_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """端到端：坏 env 经 zero.open_session 返回的错误文案须点明「非 client config 问题」。
+
+    修复前该错误被贴成「config 不合法」——而 stdio 下 client 进程环境就是 server 进程环境，
+    对方会照着改自己传的 config，永远改不好。
+    """
+    monkeypatch.setenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8x")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.open_session", {})
+        assert r.isError is True
+        # getattr 而非 `.text`：content 是 TextContent|ImageContent|… 联合类型，直接取 .text
+        # 会给 `mypy tests` 添 4 条 union-attr（本仓已有 28 处同款噪声，不再增量）。
+        text = getattr(r.content[0], "text", "")
+        assert "ZERO_EXTERNAL_PRIOR_PRECISION_CAP" in text, "错误未指名 env"
+        assert "非" in text and "client" in text, "错误未澄清归责方"
+
+
+def test_mcp_facs_extended_not_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """特征化（**非**期望行为）：facs_extended 不在治理白名单，client 可经 config 单边覆写。
+
+    已在 2026-07-29 跨仓回执 §4.1 向 Zero_MCP 声明「治理保证只覆盖 6 项、不含本字段」。
+    若日后把它纳入 `_MCP_GOVERNANCE_GATED_FLAGS`（须先确认不摘除对方已用能力），本用例应变红，
+    届时改成断言 override 被忽略——**不要靠放宽断言让它变绿**。
+    """
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS, _build_session_config
+
+    monkeypatch.delenv("ZERO_FACS_EXTENDED", raising=False)
+    assert "facs_extended" not in _MCP_GOVERNANCE_GATED_FLAGS
+    assert _build_session_config({"facs_extended": True}).facs_extended is True
+
+
 def test_maybe_expression_decoder_wires_prosody(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
