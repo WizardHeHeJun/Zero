@@ -295,6 +295,96 @@ def test_mcp_facs_extended_same_env_as_decoder(monkeypatch: pytest.MonkeyPatch) 
         assert srv._build_session_config(None).facs_extended is expected, "state 侧未跟随 env"
 
 
+# ── 机读错误码：位置不敏感令牌 [zero:<code>] ─────────────────────────────
+
+
+def _wire_code(text: str) -> str | None:
+    """按**配套项目实际用的**正则从 wire 文本里提取码——不用我方内部知识取巧。"""
+    import re
+
+    m = re.search(r"\[zero:([a-z][a-z0-9-]*)\]", text)
+    return m.group(1) if m else None
+
+
+async def test_error_token_survives_fastmcp_wrapping() -> None:
+    """🛑 本组的核心判别力：令牌必须在 **FastMCP 加壳后**仍可被提取。
+
+    2026-07-29 两侧实证：FastMCP 把 ToolError 加壳成
+    `Error executing tool <name>: <原文>` ⇒ **位置 0 的裸前缀在 wire 上永远不在位置 0**。
+    旧实现 `_UNKNOWN_SESSION_MARKER` 正是裸前缀，配套项目按 `startswith` 判定 ⇒ 恒 False，
+    其 resume 重试通路是**生产死码**；而两侧旧用例都用子串/未加壳夹具，故长期全绿。
+
+    本用例**刻意同时断言两件事**：① 加壳确实发生（否则本用例没在测东西）；
+    ② `startswith` 确实不成立——把这条钉死，防日后有人「顺手」改回裸前缀。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool(
+            "zero.step", {"session_id": "nope", "stim": {"valence": 0.0, "arousal": 0.0}}
+        )
+        assert r.isError is True
+        text = getattr(r.content[0], "text", "")
+        assert text.startswith("Error executing tool"), "FastMCP 未加壳 → 本用例失去判别力，须重写"
+        assert not text.lstrip().startswith(ZERO_ERROR_CODE_UNKNOWN_SESSION), (
+            "裸前缀在 wire 上不可能成立；若这条通过，说明有人改回了位置敏感格式"
+        )
+        assert _wire_code(text) == ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+
+@pytest.mark.parametrize(
+    ("call", "expected_code"),
+    [
+        (
+            ("zero.step", {"session_id": "nope", "stim": {"valence": 0.0, "arousal": 0.0}}),
+            "unknown-session",
+        ),
+        (
+            ("zero.open_session", {"session_id": "   "}),
+            "payload-invalid",
+        ),
+    ],
+)
+async def test_error_codes_are_extractable(call: tuple[str, dict], expected_code: str) -> None:
+    """各错误出口都带得上令牌，且码值取自登记表。"""
+    from src.mcp_server.server import ZERO_ERROR_CODES
+
+    name, args = call
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool(name, args)
+        assert r.isError is True
+        code = _wire_code(getattr(r.content[0], "text", ""))
+        assert code == expected_code
+        assert code in ZERO_ERROR_CODES
+
+
+async def test_deploy_env_error_carries_its_own_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """部署端 env 坏值的码与 client-config 坏值**必须不同**——归责靠它区分。"""
+    monkeypatch.setenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8x")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.open_session", {})
+        assert _wire_code(getattr(r.content[0], "text", "")) == "deploy-env-invalid"
+
+
+def test_tool_error_rejects_unregistered_code() -> None:
+    """未登记的码构造即抛——防手抖引入消费方查不到的码。"""
+    from src.mcp_server.server import _tool_error
+
+    with pytest.raises(ValueError, match="未登记的错误码"):
+        _tool_error("made-up-code", "x")
+
+
+def test_error_token_appears_exactly_once() -> None:
+    """契约要求「全文恰出现一次」——多于一次会让消费方的 search 取到歧义结果。"""
+    from src.mcp_server.server import ZERO_ERROR_CODE_CONFIG_INVALID, _tool_error
+
+    text = str(_tool_error(ZERO_ERROR_CODE_CONFIG_INVALID, "内含 [zero:] 字样的用户输入"))
+    assert text.count("[zero:") == 1
+
+
 def test_server_env_error_is_not_valueerror() -> None:
     """判别力自证：`ServerEnvError` **不得**继承 ValueError/TypeError。
 

@@ -61,9 +61,53 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
     }
 )
 
-# step 未知/过期 session_id 的机读错误前缀（zero-link T6）：MCP graceful_step 按此前缀判定 →
-# 用同 id resume 重开重试（区别于其它 ToolError）。消息仍含 "session_id" 子串保既有断言。
-_UNKNOWN_SESSION_MARKER = "unknown-session"
+# ── 机读错误码（zero-link 跨仓契约）────────────────────────────────────────
+# 🛑 **必须是位置不敏感的方括号令牌，不能用位置 0 的裸前缀**。
+# 原因（2026-07-29 两侧实证）：FastMCP 在工具层把 ToolError 加壳成
+#   "Error executing tool <tool_name>: <原文>"
+# ⇒ 任何写在位置 0 的前缀，在 wire 上**永远不在位置 0**。
+# 旧实现 `_UNKNOWN_SESSION_MARKER = "unknown-session"` 正是裸前缀：配套项目按
+# `text.lstrip().startswith(...)` 判定 ⇒ 对真 server 文本**恒 False**，
+# T6·④ 的 resume 重试通路是**生产死码**；而两侧单测都用子串/未加壳夹具，故长期全绿。
+# 典型「检查比消费方宽松 ⇒ 绿灯从没能红」。
+#
+# 现格式：`[zero:<code>]`，ASCII kebab-case，**全文恰出现一次**，位置不限。
+# 消费方按 `re.search(r"\[zero:([a-z][a-z0-9-]*)\]")` 提取查表，无需与 SDK 抢位置。
+# ⚠ 码值请按**符号名** pin（下面的常量），不要 pin 字面量。
+ZERO_ERROR_CODE_UNKNOWN_SESSION = "unknown-session"
+ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE = "config-incompatible"
+ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID = "external-prior-invalid"
+ZERO_ERROR_CODE_PAYLOAD_INVALID = "payload-invalid"
+ZERO_ERROR_CODE_CONFIG_INVALID = "config-invalid"
+ZERO_ERROR_CODE_DEPLOY_ENV_INVALID = "deploy-env-invalid"
+
+ZERO_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        ZERO_ERROR_CODE_UNKNOWN_SESSION,
+        ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE,
+        ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID,
+        ZERO_ERROR_CODE_PAYLOAD_INVALID,
+        ZERO_ERROR_CODE_CONFIG_INVALID,
+        ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+    }
+)
+
+# 兼容别名：旧名仍导出，值不变（配套项目现有断言含 "unknown-session" 子串者不受影响）。
+_UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+
+def _tool_error(code: str, message: str) -> ToolError:
+    """构造带机读令牌的 `ToolError`：`[zero:<code>] <人读文案>`。
+
+    令牌前置只为人读顺眼；消费方按 `search` 匹配，**不依赖位置**——
+    FastMCP 加壳后它会落在文案中部，这正是本设计要容忍的。
+    """
+    if code not in ZERO_ERROR_CODES:  # 防手抖引入未登记码，消费方查表会漏
+        raise ValueError(f"未登记的错误码 {code!r}；请先加进 ZERO_ERROR_CODES")
+    # 净化人读文案里的同形字面量：坏载荷会被回显进文案（如 session_id={...!r}），
+    # 若其中含 "[zero:" 就会出现第二个令牌，破坏「全文恰一次」契约、让消费方取到歧义结果。
+    # 换开括号即可——保留可读性，且不引入零宽字符这类看不见的处理。
+    return ToolError(f"[zero:{code}] {message.replace('[zero:', '(zero:')}")
 
 
 class ServerEnvError(RuntimeError):
@@ -309,12 +353,18 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         except ServerEnvError as e:
             # 部署端 env 坏值：必须与下面的 client-config 分支分开报，否则 client 照着改
             # config 永远改不好（同 zero.step 里 ExternalPriorError / ValueError 的分治理由）。
-            raise ToolError(f"服务端 env 配置不合法（**非** client config 问题）：{e}") from e
+            raise _tool_error(
+                ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+                f"服务端 env 配置不合法（**非** client config 问题）：{e}",
+            ) from e
         except (ValueError, TypeError) as e:
-            raise ToolError(f"config 不合法：{e}") from e
+            raise _tool_error(ZERO_ERROR_CODE_CONFIG_INVALID, f"config 不合法：{e}") from e
         if session_id is not None:
             if not isinstance(session_id, str) or not session_id.strip():
-                raise ToolError(f"session_id 须为非空字符串，实际为 {session_id!r}")
+                raise _tool_error(
+                    ZERO_ERROR_CODE_PAYLOAD_INVALID,
+                    f"session_id 须为非空字符串，实际为 {session_id!r}",
+                )
             if await registry.get(session_id) is not None:
                 # 同进程内仍活跃：幂等返回（不重建·不重开 aiosqlite 连接·不覆盖在飞运行态）。
                 # 会话门控构造时固定、贯穿整会话，故此处不重应用 cfg：client 对活跃会话传的新
@@ -358,15 +408,18 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     ) -> dict[str, Any]:
         session, lock = await registry.acquire(session_id)
         if session is None or lock is None:
-            raise ToolError(
-                f"{_UNKNOWN_SESSION_MARKER}: 未知 session_id={session_id!r}；"
-                "请先调 zero.open_session（可用同 id resume 续会话）"
+            raise _tool_error(
+                ZERO_ERROR_CODE_UNKNOWN_SESSION,
+                f"未知 session_id={session_id!r}；"
+                "请先调 zero.open_session（可用同 id resume 续会话）",
             )
         try:
             stimulus = stimulus_from_payload(stim)
             priors = external_priors_from_payload(external_priors)
         except (ValueError, TypeError) as e:
-            raise ToolError(f"stim/external_priors 载荷不合法：{e}") from e
+            raise _tool_error(
+                ZERO_ERROR_CODE_PAYLOAD_INVALID, f"stim/external_priors 载荷不合法：{e}"
+            ) from e
         # 同会话串行化：LangGraph checkpointer 读-改-写非原子，并发 ainvoke(同 thread_id) 会竞态
         # （http 传输下 client 可能并发）；stdio 顺序则此锁无争用、零成本。
         async with lock:
@@ -375,7 +428,10 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             except ExternalPriorError as e:
                 # expand_external_priors 的 M3/M6/M7 fail-fast（精度>0/≤cap、流数≤max、
                 # 形状良构、μ∈[-1,1]）——**确实**指向 client 传参，改传参就能好。
-                raise ToolError(f"external_priors 校验失败（指向 MCP 传参）：{e}") from e
+                raise _tool_error(
+                    ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID,
+                    f"external_priors 校验失败（指向 MCP 传参）：{e}",
+                ) from e
             except ValueError as e:
                 # 内核其它位置抛的 ValueError（如 HPC coupling 越界、未来的配置互斥 fail-fast）。
                 # ⚠ 这里**必须**与上一分支分开报（议会 2026-07-29 第五轮校验 §四-5）：
@@ -384,9 +440,10 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 # 传参永远改不好，而活跃会话的 config 不可变（见 open_session 的 config 语义）
                 # → 无法自救，表现为 open 成功、**每 step 崩**。
                 logger.exception("zero.step 内核执行失败 sid=%s", session_id)
-                raise ToolError(
+                raise _tool_error(
+                    ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE,
                     f"内核执行失败（**非** external_priors 传参问题，改传参无效）：{e}；"
-                    "多为会话级配置组合不兼容，须以新配置重开会话"
+                    "多为会话级配置组合不兼容，须以新配置重开会话",
                 ) from e
         expression = step_out.get("expression") or {}
         return expression
