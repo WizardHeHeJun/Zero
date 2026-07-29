@@ -432,6 +432,51 @@ async def test_open_session_env_error_message_does_not_blame_client(
         assert "非" in text and "client" in text, "错误未澄清归责方"
 
 
+def test_ignition_beta_is_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ignition_beta` 入治理白名单：client 经 config 传它被静默忽略。
+
+    为什么它必须入白名单：非 None 即走**软门**分支，而软门下全部流（含 physio）一律进
+    `fuse_terms`、无阈值筛除、也不施 D7 排除 ⇒ client 传它即可单边解除 D7 跨仓承诺。
+    ⚠ 配套项目已确认其生产码从不传该字段，但那是「当前调用点的事实、不是结构保证」，
+    故我方按结构收紧、**不依赖对方不传**。
+    """
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS, _build_session_config
+
+    monkeypatch.delenv("ZERO_MCP_IGNITION_BETA", raising=False)
+    assert "ignition_beta" in _MCP_GOVERNANCE_GATED_FLAGS
+    assert _build_session_config({"ignition_beta": 20.0}).ignition_beta is None
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [(None, None), ("", None), ("   ", None), ("20", 20.0), ("0", 0.0)],
+)
+def test_ignition_beta_env_seeding(
+    monkeypatch: pytest.MonkeyPatch, env_value: str | None, expected: float | None
+) -> None:
+    """成对要求：进白名单**必须**同时给 env 入口，否则该字段在 MCP 路径永久取默认值（None）。
+
+    撤掉 base 里那一行 ⇒ `"20"` 那格返回 None，本用例即红。
+    ⚠ `"0"` 与未设**语义不同**（0.0 是软门、None 是硬门），故空串回落 None 而非 0.0。
+    """
+    from src.mcp_server.server import _build_session_config
+
+    if env_value is None:
+        monkeypatch.delenv("ZERO_MCP_IGNITION_BETA", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_MCP_IGNITION_BETA", env_value)
+    assert _build_session_config(None).ignition_beta == expected
+
+
+def test_ignition_beta_bad_env_points_at_deploy_side(monkeypatch: pytest.MonkeyPatch) -> None:
+    """坏值走 `ServerEnvError`（部署端归责），不被贴成「config 不合法」。"""
+    from src.mcp_server.server import ServerEnvError, _build_session_config
+
+    monkeypatch.setenv("ZERO_MCP_IGNITION_BETA", "soft")
+    with pytest.raises(ServerEnvError, match="ZERO_MCP_IGNITION_BETA"):
+        _build_session_config(None)
+
+
 def test_mcp_facs_extended_not_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     """特征化（**非**期望行为）：facs_extended 不在治理白名单，client 可经 config 单边覆写。
 

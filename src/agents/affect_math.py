@@ -1275,6 +1275,17 @@ def expand_external_priors(
         # 不因 MCP 误传超 cap / 非正 Πv 而在 M3 处误报——覆写后 Πv=MIN_PRECISION∈(0,cap]。
         if name.lower().startswith(_PHYSIO_PREFIXES):
             pi_v = MIN_PRECISION
+            # μv 一并归零（2026-07-29 跨仓议定·两侧各封一半）。此前 M2 只覆写 Πv、**从不碰 μ**，
+            # 而配套项目把「physio 的 μv 恒 0」误归因给「Zero M2」并据此推出其自律上界 0.359
+            # —— 一条**假的跨仓依据**比数值本身危险。
+            # 为什么归零是 M2 的自洽性补完而非新增约束：M2 的宪章是「生理对效价盲」，
+            # 今天只对 Πv 兑现、对 μv 不兑现；而 salience = hypot(μ)·mean(Π) ⇒ 非零 μv 能在
+            # **不换取任何后验影响力**的前提下（Πv=MIN_PRECISION 已把效价贡献压到可忽略）
+            # 单买点燃资格——与越界 μ「买到本不该有的点燃资格」是同一失效模式换了个入口。
+            # 数值后果：不归零时 hypot(μ) 最大到 √2，真实自点燃上界从 0.359 收紧到
+            # `2*SALIENCE_THRESHOLD/√2 − MIN_PRECISION`（**现算，禁止手抄常量**）。
+            # ⚠ 归零发生在 M7 之后：越域 μv 仍先被 M7 拒绝，不是「静默接受再抹掉」。
+            mu = (0.0, mu[1])
 
         # M3′：精度有限性校验（NaN/±inf）。**必须先于**下面两条比较——NaN 与任何数比较恒 False，
         # 故 `pi_v <= 0.0` 与 `pi_v > precision_cap` 对 NaN **双双放行**，NaN 精度会一路进

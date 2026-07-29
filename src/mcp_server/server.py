@@ -58,6 +58,12 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
         # 比上面几个门更深；且 physio 排除是对 Zero_MCP 的跨仓承诺，不容 client 单边解除。
         "gate_fusion",
         "exclude_physio_fusion",
+        # ignition_beta（2026-07-29 跨仓）：非 None 即走**软门**分支，而软门下全部流（含 physio）
+        # 一律进 fuse_terms、无阈值筛除、也不施 D7 排除 ⇒ client 经 config 传它即可让 physio
+        # 进入数值后验，等于单边解除对 Zero_MCP 的 D7 承诺。深度等同 gate_fusion，故入白名单。
+        # ⚠ 配套项目已确认其生产码从不传该字段，但那是**当前调用点的事实、不是结构保证**
+        # （其 client 的 config 是无白名单透传），故我方按结构收紧、不依赖对方不传。
+        "ignition_beta",
     }
 )
 
@@ -166,6 +172,24 @@ def _env_number[T: (int, float)](name: str, default: str, caster: Callable[[str]
         ) from e
 
 
+def _env_optional_float(name: str) -> float | None:
+    """读「可选 float」env：未设 / 空串 → `None`（保留「未设即关」语义）；坏值抛 `ServerEnvError`。
+
+    不能用 `_env_number`：那个必须给字符串默认值，而 `ignition_beta` 的 `None` 与任何浮点数
+    语义不同（`None` = 硬 step 门，任何 float = 软门，含 `0.0`）。
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise ServerEnvError(
+            f"{name} 须为浮点数或留空，当前值={raw!r}；这是**部署端 env** 的问题，"
+            "改 client 传的 config 无效"
+        ) from e
+
+
 def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     """从 env 装配 MCP 边界的会话默认门控；`overrides` 覆写 SessionConfig 已声明字段。
 
@@ -215,6 +239,9 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         "gate_fusion": _env_flag("ZERO_MCP_IGNITION_GATE_FUSION", True),
         # physio 排除默认 True（D7 跨仓承诺·由我方单边可控）。
         "exclude_physio_fusion": _env_flag("ZERO_MCP_EXCLUDE_PHYSIO_FUSION", True),
+        # ⚠ **成对要求**：进了 _MCP_GOVERNANCE_GATED_FLAGS 就必须在 base 里给 env 入口，
+        # 否则该字段在 MCP 路径**永久取默认值**（对 ignition_beta 即永久 None）——design D6 的教训。
+        "ignition_beta": _env_optional_float("ZERO_MCP_IGNITION_BETA"),
         # ⚠ 这两个走 _env_number：裸 float()/int() 抛的 ValueError 会被 open_session 的
         # `except (ValueError, TypeError)` 贴成「config 不合法」——**部署端 env 写错却指向
         # client 传参**（见 ServerEnvError 的说明）。

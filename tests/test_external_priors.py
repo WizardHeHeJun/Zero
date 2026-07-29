@@ -38,8 +38,10 @@ from src.agents.affect_core import AffectCoreAgent
 from src.agents.affect_math import (
     _PHYSIO_PREFIXES,
     MIN_PRECISION,
+    SALIENCE_THRESHOLD,
     expand_external_priors,
     hierarchical_fuse,
+    stream_salience,
 )
 from src.orchestration.external_prior import ExternalPriorError
 from src.orchestration.state import AffectState, Stimulus
@@ -175,6 +177,59 @@ class TestExpandExternalPriorsM2Physio:
             assert result[0][2][0] == pytest.approx(MIN_PRECISION), (
                 f"前缀 '{prefix}' 应触发 M2 强制，实际 Πv={result[0][2][0]}"
             )
+
+
+class TestExpandExternalPriorsM2MuValenceZeroing:
+    """M2 补完（2026-07-29 跨仓议定）：physio 流的 μv **一并归零**，不只覆写 Πv。
+
+    背景：此前 M2 只覆写 Πv、从不碰 μ，而配套项目把「physio 的 μv 恒 0」误归因给「Zero M2」
+    并据此推出其自律上界 0.359。归零后该归因才成为真的。
+    """
+
+    @pytest.mark.parametrize("name", ["physio", "eda_tonic", "hrv_rmssd", "pupil_d", "scr_amp"])
+    def test_physio_mu_valence_forced_to_zero(self, name: str) -> None:
+        """五个前缀的 μv 一律归零；μa **原样透传**（只对效价盲，不动唤醒）。"""
+        out = expand_external_priors(
+            [(name, (0.9, 0.6), (0.5, 0.5))], precision_cap=0.8, max_streams=5
+        )
+        assert out[0][1] == (0.0, 0.6), "μv 应归零、μa 应透传"
+
+    @pytest.mark.parametrize("name", ["face", "audio", "text"])
+    def test_non_physio_mu_untouched(self, name: str) -> None:
+        """非生理流的 μ 一个字节都不动——归零只是 M2 的作用域，不是全局。"""
+        out = expand_external_priors(
+            [(name, (0.9, 0.6), (0.5, 0.5))], precision_cap=0.8, max_streams=5
+        )
+        assert out[0][1] == (0.9, 0.6)
+
+    def test_zeroing_happens_after_m7_not_instead_of_it(self) -> None:
+        """越域 μv 仍被 M7 **拒绝**，不是「静默接受再抹掉」。
+
+        顺序契约：M7（校验 client 发的东西）→ M2（归一化）。若把归零提到 M7 之前，
+        越域载荷会被静默洗白，本用例即红。
+        """
+        with pytest.raises(ValueError, match="μ 须在"):
+            expand_external_priors(
+                [("physio", (1.5, 0.6), (0.5, 0.5))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_self_ignite_bound_is_computed_not_hardcoded(self) -> None:
+        """归零把 physio 的自点燃上界从「√2 保守界」收回到 |μa|≤1 那一档。
+
+        两个界都**现算**（禁止手抄）：不归零时 hypot(μ) 可达 √2 ⇒ 界 = 2T/√2 − MIN_PRECISION；
+        归零后 hypot(μ)=|μa| ≤ 1 ⇒ 界 = 2T − MIN_PRECISION。前者更紧，正是我方此前告知对方的那个数。
+        """
+        import math
+
+        loose = 2 * SALIENCE_THRESHOLD - MIN_PRECISION  # 归零后（|μa|≤1）
+        tight = 2 * SALIENCE_THRESHOLD / math.sqrt(2) - MIN_PRECISION  # 不归零（hypot≤√2）
+        assert tight < loose, "√2 那一档必须更紧，否则本用例的前提说反了"
+        # 归零已生效 ⇒ 一条 μv=0.9 的 physio 流的 salience 只由 μa 决定
+        out = expand_external_priors(
+            [("physio", (0.9, 1.0), (0.5, loose))], precision_cap=0.8, max_streams=5
+        )
+        name, mu, prec = out[0]
+        assert stream_salience(mu, prec) == pytest.approx(SALIENCE_THRESHOLD, abs=1e-9)
 
 
 class TestExpandExternalPriorsM3:
