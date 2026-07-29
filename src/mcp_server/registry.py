@@ -55,7 +55,8 @@ class SessionRegistry:
     async def close(self, session_id: str) -> bool:
         """释放会话 + 其锁；返回是否确有其会话（未知 id 幂等返回 False，不报错）。
 
-        ConversationSession 无需显式关闭（图/checkpointer 随对象回收）；从表中弹出即释放引用。
+        本方法只负责从表中弹出引用；会话自身的运行态连接（aiosqlite 等）由调用方在此之前
+        `await session.aclose()` 关闭（见 `server.close_session`），别依赖对象回收。
         """
         async with self.lock:
             self.locks.pop(session_id, None)

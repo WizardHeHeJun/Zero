@@ -1,0 +1,21 @@
+flowchart LR
+  stim["负效价 · 高唤醒 (v&lt;0, a&gt;0)<br/>二维到此为止：愤怒与恐惧同一坐标"]:::stream
+  ctrl["情境控制感 control_appraisal<br/>外部输入 / 文本方向头"]:::stream
+  cop{"第三维 coping_potential<br/>独立标量流 · 与核心 (v,a) 正交"}:::gate
+  anger["😠 愤怒<br/>有掌控 · 对抗"]:::engine
+  fear["😨 恐惧<br/>失控 · 回避"]:::engine
+  auA["表情 AU23 唇紧<br/>对抗准备"]:::expression
+  auF["表情 AU01 / AU02 扬眉<br/>+ AU20 唇横拉"]:::expression
+  note["⚙️ 默认关闭：不开启则行为不变<br/>核心 (v,a) 表征始终不受影响<br/>表情兑现另需 13-AU 扩展集"]:::note
+
+  stim --> cop
+  ctrl -->|"应对潜能评价"| cop
+  cop -->|"coping &gt; 0"| anger --> auA
+  cop -->|"coping &lt; 0"| fear --> auF
+  cop -.- note
+
+  classDef stream fill:#F0F4FC,stroke:#5178C6,color:#1F2329
+  classDef gate fill:#FEF1CE,stroke:#D4B45B,color:#1F2329
+  classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
+  classDef expression fill:#F1F3F5,stroke:#868E96,color:#1F2329
+  classDef note fill:#FFF9E6,stroke:#D4B45B,color:#8A6D1B,stroke-dasharray:5 5

@@ -4,7 +4,7 @@ flowchart LR
     actuate["📤 执行操控 client<br/>Live2D 形象 / 情感 TTS / 对外动作<br/>← 情绪状态 + 通道值驱动"]:::client
   end
 
-  mcp{{"🔌 MCP 协议 · zero-link<br/>zero.open_session / zero.step / zero.close_session<br/>stdio(本地) · streamable-http(远程·Bearer 鉴权)"}}:::proto
+  mcp{{"🔌 MCP 协议 · zero-link<br/>zero.open_session / zero.step / zero.close_session<br/>stdio 本地 / http 远程(Bearer)"}}:::proto
 
   subgraph core["🧠 Zero 情感引擎内核（内建 MCP server）"]
     session["ConversationSession<br/>建图/checkpointer 一次 · 逐轮 step · 跨重启 resume"]:::engine
@@ -19,7 +19,7 @@ flowchart LR
   mcp -->|"情绪化输出外化"| actuate
   mcp -.->|"close 关会话 / 同 id resume 续会话"| session
 
-  note["⚙️ 边界适配层（三层之外）：不反向依赖内核内部 · 不进 affect 热路径<br/>议会解锁门(coping/text_coping/fear)只受 ZERO_MCP_* env 治理 · client override 静默忽略"]:::note
+  note["⚙️ 边界适配层（三层之外）：不反向依赖内核内部 · 不进 affect 热路径<br/>解锁门(coping / text_coping / fear / 融合门 等)只受 ZERO_MCP_* env 治理 · client override 静默忽略"]:::note
 
   classDef client fill:#F0F4FC,stroke:#5178C6,color:#1F2329
   classDef proto fill:#FEF1CE,stroke:#D4B45B,color:#1F2329

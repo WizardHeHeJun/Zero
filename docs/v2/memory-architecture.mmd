@@ -7,6 +7,7 @@ flowchart LR
   llm(["🗣️ 喂 LLM converse"]):::terminal
   disposition[("📊 长期倾向 disposition·确定性图谱<br/>user作用域·时序失效(新使旧失效)·活跃集恒最新")]:::memory
   bias["🧭 偏置当下评价<br/>长期态度偏置 appraisal 先验<br/>(持续被冒犯，初见反应都变冷)"]:::engine
+  consol["🌙 巩固与遗忘·可选(ZERO_CONSOLIDATION_ENABLED 默认关)<br/>会话结束离线触发：睡眠巩固 SESSION→USER(显著度阈+强化次数双准则)<br/>Ebbinghaus 分层幂律遗忘(SESSION 快衰 / USER 慢衰)·高巩固度优先留存<br/>ACT-R 频率激活可替换召回排序的新近项"]:::muted
 
   turn -->|"每轮(任务完成节点)"| write
   write -->|"强编码"| episodes
@@ -16,9 +17,12 @@ flowchart LR
   inject -->|"进prompt"| llm
   disposition -->|"标量"| bias
   bias -.->|"偏置下一轮评价"| turn
+  episodes -.->|"会话结束·离线"| consol
+  consol -.->|"影响留存与召回排序"| recall
 
   classDef terminal fill:#F1F3F5,stroke:#868E96,color:#1F2329
   classDef appraise fill:#F0F4FC,stroke:#5178C6,color:#1F2329
   classDef engine fill:#FEE3E2,stroke:#D25D5A,color:#1F2329
   classDef timescale fill:#EAE2FE,stroke:#8569CB,color:#1F2329
   classDef memory fill:#DFF5E5,stroke:#509863,color:#1F2329
+  classDef muted fill:#F8F9FA,stroke:#868E96,stroke-dasharray:5 5,color:#5C6370

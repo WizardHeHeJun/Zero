@@ -1,5 +1,8 @@
-# 情感表达多 Agent 系统 — 编排（postgres 运行态 + neo4j 长期记忆 + app）。
+# 情感表达多 Agent 系统 — 编排（app + neo4j 长期记忆；postgres 服务预留）。
 # 本机无 Docker，仅作部署脚手架；在装有 Docker 的服务器上 `docker compose up`。
+# ⚠ 运行态后端用 sqlite：postgres 尚未接线（异步图需 AsyncPostgresSaver，须在异步入口
+#    await 构造 + await setup()），选中即在会话构造时抛 NotImplementedError、不回退。
+#    下方 postgres 服务与 ZERO_PG_DSN 作为接线后的预留，暂不生效。
 services:
   app:
     build: .
@@ -7,8 +10,10 @@ services:
       - postgres
       - neo4j
     environment:
-      ZERO_CHECKPOINT_BACKEND: postgres
-      ZERO_PG_DSN: postgresql://postgres:postgres@postgres:5432/zero
+      ZERO_CHECKPOINT_BACKEND: sqlite
+      ZERO_CHECKPOINT_DB: /app/data/checkpoints.sqlite3
+      # postgres 接线后改回 ZERO_CHECKPOINT_BACKEND: postgres 并取消下行注释
+      # ZERO_PG_DSN: postgresql://postgres:postgres@postgres:5432/zero
       # 长期记忆走 Neo4j（裸 Cypher 适配器，保时序失效语义）；连接参数对齐下方 neo4j 服务
       ZERO_MEMORY_BACKEND: neo4j
       ZERO_NEO4J_URI: bolt://neo4j:7687

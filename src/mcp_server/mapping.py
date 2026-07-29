@@ -42,7 +42,8 @@ def stimulus_from_payload(
       钳制是映射的一部分，不是防御。
     - `valence` 越域 → `Stimulus` 的 `Field(ge=-1, le=1)` **拒绝**（`state.py:27-33`）。
       因为这里是恒等透传，越域即 client 违反 `AffectStimulus` 契约，与 M3/M6/M7
-      同一处置（fail-fast 指向 MCP 传参）。`server.py:288-292` 转 ToolError，不裸崩。
+      同一处置（fail-fast 指向 MCP 传参）。`server.step` 的 `stimulus_from_payload` 外层
+      `except (ValueError, TypeError)` 转 ToolError，不裸崩。
     改动此不对称须与配套项目 Zero_MCP 协调（对外契约）。
 
     coping 是否真正生效由会话侧 `coping_potential_enabled` 门控决定；生效时走 B3 四分支融合

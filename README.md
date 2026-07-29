@@ -42,12 +42,14 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 - **价值流** — 在线的 TD 奖赏预测误差与精度（对惊喜、对确定性的敏感）；
 - **生存流** — 快速、低精度的亚符号信号（突如其来的巨响先于"这是什么"就拉高唤醒）；
 - **语义流** — 文本/语义读出的情绪作为一条**独立、低精度**的高阶先验汇入（语言是高阶皮层的 top-down 预测，与评价、感官流并列竞争而非互相覆盖）；
-- **显著度门控点燃** — 各流各出一个 `(均值, 精度)`，由显著网络打分，只有**过阈的流被"点燃"广播**进全局工作空间（全局工作空间理论的 ignition），其余停留局部、不空播；
-- **精度加权融合 + 后验采样** — 点燃的流按精度加权融合，采样出此刻的**瞬时情绪 e\***（随机性让同一刺激也有细微波动）；读出也可切**稳定模式**（取后验均值而非单次采样），让情绪只跟刺激走、不被单样本噪声带得逐轮乱跳（见配置 `ZERO_AFFECT_READOUT`）。
+- **显著度门控点燃** — 各流各出一个 `(均值, 精度)`，由显著网络打分，只有**过阈的流被"点燃"广播**进全局工作空间（全局工作空间理论的 ignition），其余停留局部、不空播。这是**默认**行为：同一个阈值同时决定「谁值得被报告」与「谁参与算数」。设 `ZERO_IGNITION_GATE_FUSION=false` 可把二者分开——阈值只留作可解释性标签，后验改由**全部流按各自精度加权**得到（阈下不显著 ≠ 对当前状态零贡献），同时去掉快生存流唤醒的常数底；⚠ 该旋钮默认 `true` 即**不**启用这套新行为，方向与其它开关相反，见配置全表；
+- **精度加权融合 + 后验采样** — 参与计算的流按精度加权融合（默认=点燃的那几条；开了上面那套新行为后=全部流），采样出此刻的**瞬时情绪 e\***（随机性让同一刺激也有细微波动）；读出也可切**稳定模式**（取后验均值而非单次采样），让情绪只跟刺激走、不被单样本噪声带得逐轮乱跳（见配置 `ZERO_AFFECT_READOUT`）。
 
 <img src="docs/v2/workspace-ignition.png" alt="工作空间点燃：并行流竞争 → 过阈广播 → 精度加权融合出 e*" width="680">
 
 > **可选的第三维「应对潜能」（coping potential）**：效价-唤醒二维分不开「愤怒」与「恐惧」——两者都是负效价、高唤醒。引擎另设一条**独立标量流** coping_potential，由输入的**情境控制感**（control appraisal，源自 Scherer / Lazarus 评价理论）驱动，在这一象限里把「有掌控、对抗」的**愤怒**与「失控、回避」的**恐惧**分开，并可下传到表情等表达通道兑现差异。它**与核心 (v,a) 表征正交、默认关闭**（`ZERO_COPING_POTENTIAL_ENABLED`），不开启即行为不变。
+
+<img src="docs/v2/coping-third-dimension.png" alt="第三维分岔：同一个负效价高唤醒坐标，按情境控制感分成愤怒与恐惧，并下传到判别性表情 AU" width="620">
 
 ### 3. 三时间尺度：情绪会退、态度会沉淀
 
@@ -57,7 +59,7 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 - **快变 `emotion`** — 短时情绪，被 e\* 冲击后**几轮内向基线衰退**（怒火飙起后会回落；衰退太慢反而是病理性的情绪惯性）。对外表达取的是它；
 - **慢变 `attitude`** — 对**特定对象**的长期态度，按情绪缓慢累积、多轮才成形，是快变情绪衰退回归的基线。**持续**被冒犯才会真的变冷，偶尔被呛一下会过去。**只有态度被持久化**，重启后情绪归于态度基线。
 - **稳态回弹** — 情绪与态度都带一份**回到平静的拉力**（向个体中性基线弱回归）：再热烈或再低落，只要没有持续刺激就会慢慢回稳，不会"越聊越上头"或陷在某个极端里出不来（affective homeostasis；情绪基线本身也是态度与中性的混合，不随态度无限上漂）。
-- **唤醒双向 · 习惯化 · 分寸** — 唤醒（arousal）也是**双极**的：平淡对话会主动**降到静息**（不只是不涨）、重复互动会**习惯化**（新鲜感递减）、对刚认识的人有**分寸感**（不因聊久了就无端亲密）——从根上防「与内容无关地越聊越暧昧」（基于 seeking 吸引盆动力学；默认关、按需开旋钮，见配置全表）。
+- **唤醒双向 · 习惯化 · 分寸** — 唤醒（arousal）也是**双极**的：平淡对话会主动**降到静息**（不只是不涨）、重复互动会**习惯化**（新鲜感递减）、对刚认识的人有**分寸感**（不因聊久了就无端亲密）——从根上防「与内容无关地越聊越暧昧」（基于 seeking 吸引盆动力学；**代码内置默认是关**，而 `.env.example` 已按推荐值直接赋值——复制模板起步即为开启，注释掉对应行即回内置默认，见配置全表）。
 
 ![三时间尺度冲击-响应：单次冲击不记恨 / 反复刺激才沉淀（affect_math 真方程轨迹）](docs/v2/timescales-dynamics.png)
 
@@ -90,6 +92,8 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 
 ![记忆架构：注意力↔记忆桥（显著性写 · 三维召回 · 注入预算 · 时序遗忘）](docs/v2/memory-architecture.png)
 
+![巩固与遗忘：短期快衰 vs 长期慢衰的分层遗忘曲线，以及反复被强化后升为长期记忆的那一刻](docs/v2/consolidation-forgetting.png)
+
 ### 7. 指定人格：不必从零认识一个人
 
 **性格该预置，关系才靠相处长**——可以给数字人指定一份**人格**，免去每次从一张白纸开始：
@@ -115,11 +119,11 @@ Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调�
 | 接口 / 节点 | 作用 |
 | --- | --- |
 | `ConversationModel.appraise_text(text) → (v,a)` | **评价桥 · LLM 输入接点**：把你的话读成情绪坐标，作为刺激喂给引擎 |
-| `ConversationModel.converse(history, affect, *, retrieved, push)` | **自然对话 · LLM 输出接点**：按当前情绪 + 召回背景生成回应，情绪经用词倾向自然漏进措辞 |
+| `ConversationModel.converse(history, affect, retrieved="", *, push, relationship_hint)` | **自然对话 · LLM 输出接点**：按当前情绪 + 召回背景生成回应，情绪经用词倾向自然漏进措辞；`relationship_hint` 注入关系距离软提示（对应 `ZERO_RELATIONSHIP_STAGE_HINT`） |
 | `LanguageModel.generate → LanguageDraft` | 图内 `language` 节点协议：研究模式的 affect↔language 双向收敛回路（`python main.py --llm`） |
 | `ChannelDecoder`（鸭子类型注入） | 表达通道解码器：`(v,a)` → 韵律 / 生理 / 表情，可换成训练好的网络，编排层不依赖 torch |
 | `MemoryClient`：`write_episode` / `recall` · `write` / `query` | 记忆读写 API：语义情景记忆（显著性写入 / 选择性召回）+ 确定性长期倾向（图谱·时序失效）；**上层不直连图谱**、写入只在任务完成节点（节流） |
-| 图节点链 `perception → appraisal → value → affect_core → mood → expression → supervisor`（+ `memory_recall`） | 情感引擎各环：感知 → 评价先验(含长期态度/召回偏置) → 价值学习 → 显著度门控融合采样 `e*` → 慢心境 → 多通道表达 → 任务完成节流写记忆 |
+| 图节点链 `memory_recall → perception → appraisal → value → affect_core → mood →（条件边）language ⇄ regulation/expression → supervisor` | 情感引擎各环：召回回灌 → 感知 → 评价先验(含长期态度/召回偏置) → 价值学习 → 显著度门控融合采样 `e*` → 慢心境 →（语言双向回路 / 掩饰）→ 多通道表达 → 任务完成节流写记忆；其中 `memory_recall` / `mood` / `language` 各由开关门控，关闭即为 no-op |
 | 入口 `build_graph` · `runner.ConversationSession` · `main.py` | 装配并编译图 · 多轮会话基元（mood/价值/记忆跨轮持久）· `main.py` 是**临时验证路径**（单跑内核用，非最终对外接口——多模态输入/操控走配套 MCP） |
 
 > 各接口均**协议化、可注入**（真 LLM / 占位模板 / steering 后端、真网络解码器、记忆后端都按协议替换），编排层不绑定具体 SDK——这是"先把对话做扎实、再逐步接多模态"而不动内核契约的底座。
@@ -157,7 +161,8 @@ Zero/
 │   │   ├── supervisor.py    #   协调 + 任务完成节流写记忆 + first_contact 首因标记
 │   │   ├── memory_recall.py #   长期倾向回灌先验 + 召回三维重排（新近×相关×重要，Hill 归一）
 │   │   ├── chat_driver.py   #   交互对话核心：两时间尺度情绪 + U形注意力窗 + 高显著召回注入
-│   │   └── runner.py        #   跑刺激序列 + 多轮对话会话（ConversationSession）
+│   │   ├── runner.py        #   跑刺激序列 + 多轮对话会话（ConversationSession）
+│   │   └── external_prior.py #   外部多模态先验流协议 schema：与 MCP 边界对齐的 (name,(μv,μa),(Πv,Πa)) 契约 + 版本号
 │   ├── agents/              # 各 Worker（节点契约 (state) -> dict 只回增量）
 │   │   ├── affect_math.py   #   数学内核：OCC/TD/精度/高斯融合·工作空间·三时间尺度
 │   │   ├── perception.py · appraisal.py · value.py
@@ -171,6 +176,7 @@ Zero/
 │   │   ├── models/          #   可训练 torch 解码器（expression/prosody/physiology/facs〔13-AU 扩展集〕/text/direction_head〔coping 方向头〕 + composite 复合）
 │   │   └── datasets/        #   DataLoader：synthetic / ravdess / wesad / emobank(+st 句向量版) / facs
 │   ├── memory/              # 记忆层：读写 API（显式 scope、任务完成节流、后端失败隔离 + Fact.sim）
+│   │   ├── client.py · types.py          # MemoryClient 读写 API（write/query · write_episode/recall）+ Scope/Fact 类型
 │   │   └── consolidation.py · utils.py   # 记忆巩固与遗忘（Ebbinghaus 分层幂律 / 睡眠巩固 / ACT-R，离线批处理，确定性无 LLM）
 │   ├── storage/             # 存储层（最底层）：运行态 + 长期记忆，env 选后端
 │   │   ├── checkpointer.py  #   memory / sqlite(异步 AsyncSqliteSaver) / postgres(待异步接线)
@@ -180,15 +186,16 @@ Zero/
 │   ├── observability/       # 横切：统一日志 setup_logging + 对话人读日志 setup_conversation_log（每启动落 logs/、级别可配）
 │   └── mcp_server/          # zero-link：情感引擎会话包成 MCP open/step/close 三工具（边界适配层·三层之外，stdio/streamable-http + Bearer 鉴权）
 ├── tests/                   # 单测 + 行为/记忆回归
-├── scripts/                 # 训练 train_*.py + 运行入口（cli_modes 承接 main.py 三模式 / run_pipeline 端到端）+ 验证 verify_*.py（含 verify_text_input 文本输入）
-├── tools/                   # 运维/文档工具（reset_db.py 清库 · plot_timescales.py 生成动力学曲线图）
-├── docs/                    # 对外架构图（框架 / 运作流程 / 记忆架构 / 人格注入，v1/v2 谱系，详见 docs/README.md）
+├── scripts/                 # 训练 train_*.py + 运行入口（cli_modes 承接 main.py 三模式 / run_pipeline 端到端）+ 验证 verify_*.py（含 verify_text_input 文本输入）+ 数据构建 build_*.py + 泛化/门控评测（*_direction_ood.py · gate_*.py 等，研究用）
+├── tools/                   # 运维/文档工具（reset_db.py 清库 · plot_timescales.py / plot_consolidation.py 生成曲线图）
+├── docs/                    # 对外架构图 11 张（框架 / 运作流程 / 记忆架构 / 人格注入 / 三层架构 / 工作空间点燃 / 数据落点 / MCP 边界 / 第三维分岔 + 三时间尺度·巩固遗忘两条曲线，v1·v2 谱系，详见 docs/README.md）
 ├── notes/                   # 研究笔记 / 设计决策 / 工程实践（本地维护、不入库）
 ├── DATASETS.md              # 真网络化数据集获取指南（RAVDESS / WESAD / EmoBank / FACS）
+├── WEIGHTS.md               # 现成权重清单：sha256 校验值 / 网络结构 / 训练配方与实测指标
 ├── .env.example                                     # 配置模板（cp 为 .env 启用）
 ├── personas/                                        # --chat 人格卡目录：*.example.json 模板随仓库共享 / 个人 *.json 走 gitignore；放多份 persona 改 ZERO_PERSONA_FILE 即切换
 ├── Dockerfile · docker-compose.yml                  # 容器化部署
-└── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti 按需）
+└── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti / mcp / data 按需）
 ```
 
 ---
@@ -230,7 +237,7 @@ python main.py --llm      # 四情绪场景的文本输出情绪验证（批处�
 
 ```powershell
 pip install -e ".[ml]"
-python -m scripts.train_prosody --root data/ravdess --epochs 300   # 权重存 artifacts/，再注入管线
+python -m scripts.train_prosody --root data/ravdess                # 权重存 artifacts/，再注入管线；默认按平台判据自动停（--max-epochs 封顶），要跑固定轮数加 --stop fixed --epochs 300
 python -m scripts.run_pipeline                                    # 端到端：合成训练 → 注入 → 跑（无需外部数据）
 ```
 
@@ -257,6 +264,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 - **可选旋钮**（底部，分两类）：**数字人对话 / 记忆组**已直接给出推荐赋值——复制即数字人推荐配置，注释掉某行 = 回内置默认；**研究级组**（workspace 精度 / HPA / ToM / 层级融合等）保持**注释** = 默认关 = 行为不变，取消注释才覆盖。最小推荐仍是两个：`ZERO_PERSONA_FILE`（治"上来就编造关系"）+ `ZERO_AFFECT_READOUT=map`（治情绪标签逐轮翻号）；`ZERO_APPRAISE_CALIBRATE` 视模型可选（强模型如 deepseek 本就把敌意读得够负、可不开）。
 
 > **同一个 KEY 只写一行**——重复声明时后者覆盖前者。切换后端请直接改那一行的值，不要再加一行。
+>
+> **布尔类旋钮一律写 `1` / `0`**——各模块对 `on` / `off` / `yes` / `no` 这类写法的识别并不完全一致，个别变量遇到认不出的值会按「开」处理。下面各表标「`1` 开启」的就照写 `1`，要关就写 `0` 或整行注释掉。
 
 ### 运行后端
 
@@ -268,9 +277,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `ZERO_CHECKPOINT_BACKEND` | `memory` | 运行态后端：`memory` / `sqlite` / `postgres`（postgres 暂未接线、预留） |
+| `ZERO_CHECKPOINT_BACKEND` | `memory` | 运行态后端：`memory` / `sqlite`；`postgres` **尚未接线，设了会在会话构造时直接报错**（不是静默回退到内存），部署 PG 需先在异步入口接上 `AsyncPostgresSaver` |
 | `ZERO_CHECKPOINT_DB` | `data/checkpoints.sqlite3` | sqlite 后端的库文件路径 |
-| `ZERO_PG_DSN` | — | postgres 后端 DSN（随 postgres 后端预留，暂未接线） |
 | `ZERO_MEMORY_BACKEND` | `memory` | 长期记忆图谱（确定性 `(scope,key)` 失效）：`memory` / `sqlite`（落盘）/ `neo4j`（需 `db` extra） |
 | `ZERO_GRAPH_DB` | `data/graph.sqlite3` | sqlite 图谱的库文件路径 |
 | `ZERO_NEO4J_URI` · `_USER` · `_PASSWORD` | `bolt://localhost:7687` · `neo4j` · `password` | neo4j 连接（`ZERO_MEMORY_BACKEND=neo4j` 或 Graphiti 用 neo4j 图库时生效） |
@@ -284,6 +292,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_OPENAI_API_KEY` | — | 必填 |
 | `ZERO_OPENAI_MODEL` | —（无代码默认） | **必填**，须是 key 有权限的真实模型 id（`limited` 等权限标签不是模型名、会 400；可用 `/v1/models` 列出，如 `qwen-flash` / `deepseek-v4-flash` / `gpt-5.5`） |
 | `ZERO_OPENAI_BASE_URL` | `https://api.openai.com/v1` | 可指向 OpenAI / 本地 vLLM / Ollama / 第三方网关，留空用 SDK 默认 |
+
+> 环境里已有标准的 `OPENAI_API_KEY` / `OPENAI_BASE_URL` 时，未设 `ZERO_` 前缀版本会自动沿用；两者同时存在以 `ZERO_` 版本优先。
 
 ### 语义记忆侧信道（默认关）
 
@@ -299,13 +309,11 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 > **自查脚本**：`python -m scripts.verify_graphiti_local`——语义记忆闭环 smoke（写 episode → 语义召回 → `recalled_context` 非空即通）。**两种后端都支持**：`sqlite_vec` 只需 LLM key（无需图库服务、推荐先跑这条）；`graphiti` 另需 `graphiti` extra + 图库服务（`ZERO_GRAPHITI_DB` 默认 `neo4j`）。
 
-> **文本情感回归**（输入侧，默认走词典 / LLM 评价桥）：置 `ZERO_TEXT_AFFECT_BACKEND=st` 改用训练好的回归头，须同时给 `ZERO_TEXT_AFFECT_MODEL_PATH`（如 `artifacts/text_affect_regressor_st.pt`）。
-
 ### 进阶能力：真通道权重 · 情感第三维 · MCP server · 记忆巩固（默认全关，按需开启）
 
 以下四组能力**默认关闭、不设即行为不变**，按需逐项开启即可把内核接得更"实"。
 
-**① 真多模态通道解码器**（把确定性占位换成训练好的网络；须装 `ml` extra + 对应权重）
+**① 真多模态通道解码器**（把确定性占位换成训练好的网络；须装 `ml` extra + 对应权重，输入侧的句向量文本回归头另需 `nlp` extra）
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
@@ -317,10 +325,14 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_PROSODY_MODEL_PATH` | —（占位·倍率口径） | 韵律通道真权重（RAVDESS）；设了后韵律值由倍率翻归一 [0,1]，供情感 TTS 消费 |
 | `ZERO_PHYSIOLOGY_MODEL_PATH` | —（占位） | 生理通道真权重（WESAD）；出真实量纲 心率[50,120] / 皮电 μS[0,20] / 体温 °C[30,40] |
 | `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER` | 关 | 无真模型时把生理占位切成与真解码器同量纲的 canonical 口径；只影响「没有真权重时」的占位公式，设了真权重则以真权重为准 |
+| `ZERO_TEXT_AFFECT_BACKEND` | —（走词典 / LLM 评价桥） | **输入侧**文本情感回归：设 `st` 改用训练好的句向量回归头把话读成 `(v,a)`；未设或值不是 `st` 都回退默认路径 |
+| `ZERO_TEXT_AFFECT_MODEL_PATH` | — | 句向量回归头的权重路径（如 `artifacts/text_affect_regressor_st.pt`）；设了 `BACKEND=st` 却缺这项会告警并回退默认路径 |
 
-> **三通道各自独立**，可只开其一（如只接真韵律、表情仍走占位）。权重须由对应 `scripts/train_*` 以默认架构训练；形状不符或文件不可读会在**启动时直接报错**并指出是哪个变量，不会静默退化。
+> **输出侧三通道各自独立**，可只开其一（如只接真韵律、表情仍走占位）。权重须由对应 `scripts/train_*` 以默认架构训练；形状不符或文件不可读会在**启动时直接报错**并指出是哪个变量，不会静默退化。输入侧的文本回归头相反——加载失败只告警、回退默认评价路径，不中断运行。
 >
 > **生理两套占位输出的字段并不相同**——关（默认）为 心率[70,110] / 皮电[0,1] 无量纲 / 瞳孔 mm[3,5]；开为 心率[50,120] / 皮电 μS[0,20] / 体温 °C[33,36]。对接 MCP 生理映射前请确认服务端开关状态，客户端不要假定两种输出字段一致。另注意 canonical 占位与真解码器虽同量纲但**中立态基线不同**（占位皮电从 0 μS 起、真模型中立约 10 μS），两条路径只宜各自内部相对比较，不要跨路径比绝对值或共用阈值。
+>
+> **文本回归的自查**：`python -m scripts.verify_text_input`——不设 `ZERO_TEXT_AFFECT_BACKEND` 时演示默认路径，设了即验证「句向量回归头 → 完整管线 → `e*` + 情绪词标签」整条闭环。
 
 **② 情感第三维 coping_potential**（负效价高唤醒象限区分愤怒 / 恐惧）
 
@@ -345,10 +357,15 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_MCP_HTTP_HOST` · `_PORT` · `_PATH` | `127.0.0.1` · `8000` · `/mcp` | HTTP 传输监听地址 / 端口 / 路径（client endpoint = host:port + path） |
 | `ZERO_MCP_HTTP_TOKEN` | —（本机免鉴权） | streamable-http 的 Bearer 共享密钥；本机(loopback) 未设=免鉴权，**对外(非 loopback) 未设 token 则启动即拒绝**（不开无鉴权裸端口）。缺失或错误的 token 返回 401；client 侧需配置同一个 token 值（两端变量名不同） |
 | `ZERO_MCP_WORKSPACE_ENABLED` | 开 | 会话默认开显著度门控工作空间（否则外部先验流被整段跳过） |
-| `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关；只受这些 env 治理，client 传入的同名字段被忽略（防越权开启） |
+| `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关 |
+| `ZERO_MCP_PRECISION_COMMENSURABLE` · `_IGNITION_GATE_FUSION` · `_EXCLUDE_PHYSIO_FUSION` | `false` · `true` · `true` | MCP 边界侧的精度齐次化 / 点燃门是否参与数值计算 / 生理流是否排除出数值计算；语义同下文「微调旋钮·全表」⑤组的同名无前缀变量。⚠ 后两项默认就是 `true`，方向与本表其它开关相反——`true` = 沿用旧算法 |
 | `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数。<br>⚠ 这些精度是**独立校准完成前的保守占位**，不是「同等地位却意外弱势」——它们**有意**低于 `ZERO_TEXT_AFFECT_PRECISION=0.3` 以保持层级；且**不随 `ZERO_PRECISION_COMMENSURABLE` 齐次化**（该开关只作用于引擎内部的四条流）。即开启齐次化后外部流相对更弱，这是已知且被接受的现状。<br>⚠ 另注：`valence` 越出 `[-1,1]` 会在边界被拒（返回错误而非静默截断），`arousal` 越界则仍按幅度截断到 1.0——这个不对称是有意的：前者是恒等透传、越界即契约违反，后者是「幅度→强度」的语义映射、截断是映射的一部分。 |
 
 > **会话续接与安全**：默认内存后端下 server 重启即丢会话。要跨重启续会话，设 `ZERO_CHECKPOINT_BACKEND=sqlite`（+`ZERO_CHECKPOINT_DB`），client 用**同一个 `session_id`** 重新 `open_session` 即接上；session_id 失效时 `step` 返回带 `unknown-session:` 前缀的错误，client 可据此重开重试。⚠ session_id 等同于该会话运行态与记忆的**访问凭据**，多用户部署必须配鉴权。
+>
+> 上表中 `ZERO_MCP_COPING_ENABLED` 起的两行是一组**只受 `ZERO_MCP_*` env 治理**的开关：client 在 `open_session` 的 config 里传入的同名字段一律被静默忽略，防越权开启。
+>
+> ⑤组的 `ZERO_PRECISION_COMMENSURABLE` / `ZERO_IGNITION_GATE_FUSION` / `ZERO_EXCLUDE_PHYSIO_FUSION`（无 `ZERO_MCP_` 前缀那三个）**对 MCP server 不生效**——MCP 面读的是上表带前缀的同名变量；要改服务端的融合语义，请设带前缀的那一份。
 >
 > ①组的通道权重旋钮与运行态后端设置对 MCP server 同样生效。
 
@@ -359,6 +376,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 | 视觉面部 | 0.20 / 0.12 | 面部对效价的判别力强于唤醒，故效价精度略高 |
 | 语音韵律 | 0.10 / 0.25 | 基频 / 能量对唤醒可靠、对效价正负难分；整体低于文本语义流以保先验层级 |
 | 生理 | 0.001 / 0.18 | 皮电 / 心率变异 / 瞳孔对效价方向不敏感（效价精度恒被压到下限），只对唤醒有可靠贡献 |
+
+> ⚠ **生理先验的当前状态**：默认（点燃门）架构下它按显著度正常参与竞争；一旦设 `ZERO_IGNITION_GATE_FUSION=false` 改走全流精度加权，生理流会被 `ZERO_EXCLUDE_PHYSIO_FUSION`（默认开）整条排除出数值通路、只保留可报告——公开被试数据上 EDA 的唤醒读数与真实唤醒方向不一致，宁可先不参与计算。client 照上表配了精度也不会在这种配置下生效。
 
 **④ 记忆巩固与遗忘**（会话结束离线触发；机制见上文「遗忘是特性」）
 
@@ -471,10 +490,10 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_HABITUATION_SENSITIZATION_GAIN`<br>`ZERO_SENSITIZATION_THRESHOLD` | 0·0.5 | 习惯化+敏化双过程：强刺激（\|arousal\|>阈）叠加敏化增益；gain `0`=纯习惯化 |
 | `ZERO_STANDARD_COMPLIANCE` | 关（恒 0） | 确定性词典桥从用户话读社会规范违反/遵从 ∈[-1,1]，通电 OCC 分支 B（pride/shame/reproach 等）；词表初版、语义待细化；`1` 开启 |
 | `ZERO_PANKSEPP_DISTINGUISH_FEAR` | 关 | `(-v,+a)` 象限按 arousal 阈值分 fear/rage；**⚠ 纯 arousal 阈值不足以区分 RAGE/FEAR、缺乏神经生理依据，建议保持关闭**——区分愤怒 / 恐惧的正式方案是上文「进阶能力②」的第三维 `coping_potential`（按情境控制感分野），此旧旋钮已被取代 |
-| `ZERO_MOOD_PRECISION` | 内置常量 | mood 流精度加权（介于主评价流与 `SURVIVAL_PRECISION=0.4` 之间）；调小=降低心境流投票权 |
-| `ZERO_TEXT_AFFECT_PRECISION` | 内置常量 | 文本语义流精度（固定低值，Friston 2009 初始固定精度）；调小=进一步压制文本流权重 |
-| `ZERO_IGNITION_GATE_FUSION` | **开**（⚠ 默认值是 `true`，与本表其它开关相反）| **把「哪些流值得报告」与「哪些流参与算数」分开**。并行流竞争时原先由一个显著度阈值同时决定二者——一条流没跨过阈值，就既不被报告、**也完全不参与后验计算**。这在建模上说不通：阈下不显著 ≠ 对当前状态零贡献；且低精度流一旦单独跨阈，会把高精度流整条挤出计算。设为 `false` 后，后验改由**全部流按各自精度加权**得到（精度=该流的可信度，本就是它该起的作用），显著度阈值只保留为可解释性标签。<br>同一开关一并去掉快生存流唤醒的 `0.5` 常数底：零强度输入下它原先仍断言「中等唤醒」，等于把「没有信号」编码成「确定的中等激活」。<br>⚠ **与层级预测编码互斥**：设 `false` 时若同时开 `ZERO_HPC_LAYERS≥2` 且 `ZERO_HPC_COUPLING>0`，会在**启动时**明确报错——两者的联合语义尚未定义，宁可拒绝也不静默产出未经验证的数值。 |
-| `ZERO_EXCLUDE_PHYSIO_FUSION` | **开** | 生理通道（EDA/HRV/瞳孔等）的外部先验**不参与**后验计算，仅可被报告。当前生理唤醒读数在公开被试数据上与真实唤醒方向不一致，参与计算会引入系统性偏差；待其度量方式重做后再放开。仅在 `ZERO_IGNITION_GATE_FUSION=false` 时有意义。 |
+| `ZERO_MOOD_PRECISION` | 0.8 | mood 流精度加权（介于主评价流与 `SURVIVAL_PRECISION=0.4` 之间）；调小=降低心境流投票权。⚠ 开 `ZERO_PRECISION_COMMENSURABLE` 时须留默认值，改过会在启动时直接报错 |
+| `ZERO_TEXT_AFFECT_PRECISION` | 0.3 | 文本语义流精度（固定低值，Friston 2009 初始固定精度）；调小=进一步压制文本流权重。⚠ 开 `ZERO_PRECISION_COMMENSURABLE` 时须留默认值，改过会在启动时直接报错 |
+| `ZERO_IGNITION_GATE_FUSION` | `true`（⚠ 与本表其它开关相反：`true` = **沿用旧算法**、门仍参与计算；设 `false` 才启用右侧新行为） | **把「哪些流值得报告」与「哪些流参与算数」分开**。并行流竞争时原先由一个显著度阈值同时决定二者——一条流没跨过阈值，就既不被报告、**也完全不参与后验计算**。这在建模上说不通：阈下不显著 ≠ 对当前状态零贡献；且低精度流一旦单独跨阈，会把高精度流整条挤出计算。设为 `false` 后，后验改由**全部流按各自精度加权**得到（精度=该流的可信度，本就是它该起的作用），显著度阈值只保留为可解释性标签。<br>同一开关一并去掉快生存流唤醒的 `0.5` 常数底：零强度输入下它原先仍断言「中等唤醒」，等于把「没有信号」编码成「确定的中等激活」。<br>⚠ **与层级预测编码互斥**：设 `false` 时若同时开 `ZERO_HPC_LAYERS≥2` 且 `ZERO_HPC_COUPLING>0`，会在**启动时**明确报错——两者的联合语义尚未定义，宁可拒绝也不静默产出未经验证的数值。 |
+| `ZERO_EXCLUDE_PHYSIO_FUSION` | `true`（= 排除生效；仅当 `ZERO_IGNITION_GATE_FUSION=false` 时才有实际影响） | 生理通道（EDA/HRV/瞳孔等）的外部先验**不参与**后验计算，仅可被报告。当前生理唤醒读数在公开被试数据上与真实唤醒方向不一致，参与计算会引入系统性偏差；待其度量方式重做后再放开。仅在 `ZERO_IGNITION_GATE_FUSION=false` 时有意义。 |
 | `ZERO_PRECISION_COMMENSURABLE` | 关 | **把各并行流的精度放到同一把尺子上**。精度加权融合（`Σπμ/Σπ`）要求各流的 π 都是**逆方差**，即比值尺度（Stevens 1946）；但快生存流 / 心境流 / 文本流的 π 原是人工设定的常数、价值流的 π 原是 sigmoid **概率**，它们只保证了「谁比谁大」的次序，反解成标准差得 1.0~1.8——比 `[-1,1]` 值域的半宽还大。开启后四条流一律改写成 `1/σ²`、σ 表达在同一值域上，σ 的取值各有推导来源（如心境流取自其自身动力学的吸引盆半宽）。<br>实测效果：主评价流的权重占比均值从 92.7% 降到 70.0%，有效流数（Kish `N_eff`）从 1.18 升到 2.12，唤醒维的后验符号翻转率从 0.77% 降到 **0**。<br>**⚠ 这只统一了量纲，不等于校准正确**——从模型残差实证估计 σ 是独立的后续工作。<br>**⚠ 开启时 `ZERO_MOOD_PRECISION` / `ZERO_TEXT_AFFECT_PRECISION` 须留默认值**，否则新旧两套标度混用，启动时会直接报错而非静默生效。 |
 
 **⑥ 日志**
@@ -484,6 +503,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_LOG_DIR` | `logs` | 日志目录（应用日志与人读对话日志共用） |
 | `ZERO_LOG_LEVEL` | `INFO` | 文件与项目 logger 级别；排障设 `DEBUG` 看每轮 `e*`、记忆读写、LLM 请求详情 |
 | `ZERO_CONVERSATION_LOG` | 开 | 每轮对话落人读日志 `logs/conversation-<时间戳>-<pid>.log`（user/Zero 原文 + 引擎 trace）；设 `0` 关且不落任何对话内容 |
+| `ZERO_LOG_CONSOLE` | 开 | 是否同时往控制台（stderr）打日志；设 `0` 只落文件、不刷屏 |
+| `ZERO_LOG_CONSOLE_PLAIN` | 开 | 控制台用极简格式（只打正文）；设 `0` 改用与文件相同的完整格式（时间戳 + 级别 + 模块名） |
 
 > **其它进阶变量**（`.env.example` 未列）：`ZERO_CHAT_THREAD` 切对话线程 id，隔离不同会话的历史/态度/记忆 scope、防串味；`ZERO_PUSH_LOGIT_BIAS` 让 push 通路叠加 OpenAI `logit_bias`（需兼容 tokenizer，缺则优雅退回纯 prompt 用词倾向）。
 > 想还原更早的行为逐项设回旧值即可（如窗口设回 `20`、`ZERO_EMOTION_BASELINE_ATTITUDE_W=1`）。
@@ -492,6 +513,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 ## 文档
 
-- **[docs/](docs/README.md)** — 对外框架图 + 运作流程图（whiteboard-cli 渲染）
+- **[docs/](docs/README.md)** — 架构图集（11 张）：框架总览 / 运作流程 / 记忆架构 / 人格注入 / MCP 边界 / 三层依赖 / 工作空间点燃 / 数据落点 / 第三维分岔 / 三时间尺度曲线 / 巩固遗忘曲线
 - **[DATASETS.md](DATASETS.md)** — 真网络化所需数据集清单（获取方式 / 许可）
+- **[WEIGHTS.md](WEIGHTS.md)** — 现成权重清单：sha256 校验值 / 网络结构 / 训练配方与实测指标
 - **`notes/`** — 研究笔记：情感数学、文本输出情绪、并行脑路与工作空间、数字人路线图（本地维护、不随仓库分发）
