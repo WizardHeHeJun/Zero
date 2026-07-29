@@ -75,8 +75,13 @@ class SessionConfig(BaseModel):
     # layers=2, coupling∈(0,1] → 启用 2 层 HPC（L0=survival+mood / L1=其余）；
     # coupling>1 → affect_math.hierarchical_fuse raise ValueError（硬拒不 clamp）。
     # 由 ZERO_HPC_LAYERS / ZERO_HPC_COUPLING env → chat_driver → ConversationSession 透传。
-    hierarchical_layers: int = 1
-    hierarchical_coupling: float = 0.0
+    # ⚠ 构造期约束（2026-07-29 补）：此前两者**均无 Field 约束**，`coupling>1` 能构造成功
+    # ⇒ `open_session` 通过、**每一步 step 崩**在 hierarchical_fuse 的运行期 raise 上，
+    # 而活跃会话的 config 不可变 ⇒ client 无法自救，且错误被贴成「内核执行失败」而非「配置越界」。
+    # 语义边界见上方注释：layers≥1；coupling∈[0,1]（>1 由 hierarchical_fuse 硬拒、不 clamp）。
+    # 把失败点从**每步运行期**前移到**构造期**，归责随之从 config-incompatible 变成 config-invalid。
+    hierarchical_layers: int = Field(default=1, ge=1)
+    hierarchical_coupling: float = Field(default=0.0, ge=0.0, le=1.0)
     # ── P3 1-B · HPA 皮质醇慢回路旋钮（默认全关=零回归；config-only-via-env）──
     # cortisol_enabled=False 总门 → 现路径逐字不变。
     # cortisol_arousal_gate/attitude_gate：各作用子门（默认关=零回归）。
