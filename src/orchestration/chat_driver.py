@@ -828,6 +828,33 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         "on",
     )
     text_coping_precision = float(os.getenv("ZERO_TEXT_COPING_PRECISION", "0.08"))
+    # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）。
+    # ⚠ 唯一影响**默认融合路径**（gaussian_fuse，每轮无条件执行）的门控，开前先读
+    # PRP/精度量纲齐次化/prp.md 的零回归清单。只统一量纲，不等于校准正确。
+    precision_commensurable = os.getenv("ZERO_PRECISION_COMMENSURABLE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    # gate_fusion：硬门摘出数值通路（议会第三轮 D1）。
+    # ⚠ **方向与其它旋钮相反**：默认 **True = 门关 = 逐字旧行为**；
+    # 显式设 false/0/no/off 才开新架构。
+    # 不能沿用其它旗标那种「in ('1','true',...)」写法——那会把「未设 env」判成 False（=门开），
+    # 恰好把默认反过来。故此处判的是**假值集**。
+    gate_fusion = os.getenv("ZERO_IGNITION_GATE_FUSION", "").lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    # physio 排除出数值通路（D7 跨仓承诺）：同样默认 True=排除，判假值集。
+    exclude_physio_fusion = os.getenv("ZERO_EXCLUDE_PHYSIO_FUSION", "").lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
     # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21·A1；默认关=零回归）。
     # False → 任何路径不产 fear 域激活（两泄漏路径均硬弃/回退）；True 须 env 显式开。
     # anger confrontational 路径完全不受此门。
@@ -946,6 +973,11 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         # text_coping 接线旋钮（议会 2026-07-16 B3；默认关=零回归）。
         text_coping_enabled=text_coping_enabled,
         text_coping_precision=text_coping_precision,
+        # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+        precision_commensurable=precision_commensurable,
+        # gate_fusion / exclude_physio_fusion（议会第三轮 D1/D7）⚠ 二者默认均 True
+        gate_fusion=gate_fusion,
+        exclude_physio_fusion=exclude_physio_fusion,
         # fear_domain_enabled：WARN-3 fear 专属门（B1 BLOCK 前置·议会 2026-07-21；默认关=零回归）。
         fear_domain_enabled=fear_domain_enabled,
         # facs_extended：AU 扩展集合门控（默认关=零回归）。

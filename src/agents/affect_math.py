@@ -11,6 +11,11 @@ import math
 import random
 from typing import TYPE_CHECKING, Any
 
+# 运行期 import（不是仅注解）：`expand_external_priors` 真的要抛它。
+# 同层导入（`project-root.md`：`src/agents/` 与 `src/orchestration/` 同属编排层），
+# 且 external_prior 是零依赖叶子协议模块——不破坏本模块「纯函数、无 I/O、无副作用」。
+from src.orchestration.external_prior import ExternalPriorError
+
 if TYPE_CHECKING:
     # 仅注解用（PEP 563 惰性注解下不产生运行时 import）——external_prior 是编排层叶子协议
     # 类型（无任何 import），置于 TYPE_CHECKING 顶部消 code-reviewer W1 的末尾延迟 import 味道。
@@ -37,6 +42,32 @@ SURVIVAL_PRECISION = 0.4  # 快生存流（上丘-枕-杏仁核捷径）：低�
 TEXT_AFFECT_PRECISION = 0.3  # 文本语义流精度（固定低值，显式低于 occ_prior 动态精度）
 # 初版固定：类比 SURVIVAL_PRECISION 的工程近似（Friston 2005 允许初始固定精度）；
 # 未来可从回归器残差动态估计（议会悬而未决 #1）。
+
+# ── 精度量纲齐次化（议会 2026-07-28 第四轮；PRP/精度量纲齐次化/）─────────────
+# 问题：上面几个常量与 occ_prior 的 arousal_gain/σ² **不是同一物理量**。把它们当 1/σ²
+# 反解得 σ_survival=1.58 / σ_mood=1.12 / σ_text=1.83——全部宽于 [-1,1] 值域的一半，
+# 说得通的唯一方式是「这些流几乎什么都不知道」，那 Π 就该趋近 MIN_PRECISION。
+# 它们从来不是按方差倒数设计的，只验证过**序**（ordinal, Stevens 1946），
+# 而加权平均需要**比值尺度**（ratio-scale）。
+# 本节把各流改写成同一把尺子（都是 1/σ²，σ 表达在 [-1,1] 值域上），
+# **仅统一量纲、不等于校准正确**——实证校准（从回归器残差估计 σ）是独立后续项目。
+# 全部经 state.precision_commensurable 门控，默认关 = 逐字旧行为。
+SURVIVAL_CONF_BASE = 0.1  # 快生存流置信度截距（远低于 occ_prior 的 0.3）
+SURVIVAL_CONF_GAIN = 0.1  # 置信度随 |intensity| 的斜率（远低于 occ_prior 的 0.5）
+SURVIVAL_CONF_CAP = 0.5  # 置信度上限：保证 σ_survival ≥ 0.25，天然弱于 appraisal
+# σ_mood = 1.0：mood_step 的双稳吸引子实测落在 clamp 边界 ±1（非内部不动点——
+# f(m)=inertia·m+self_gain·tanh(self_k·m)−m 在 (0,1] 上恒 >0，一路推到边界），
+# 不稳定不动点在 0 → **盆半宽 = 1.0**。心境作为「当前瞬时情感」的先验，
+# 其不确定性就是它能漂多远，故 σ_mood 取盆半宽。（现常数 0.8 反解 σ=1.118，量级吻合。）
+SIGMA_MOOD = 1.0
+# σ_text = 0.5：代码原注释自陈「显式低于 occ_prior 动态精度」，occ_prior 的 σ∈[0.10,0.35]，
+# 故 σ_text 须 >0.35；又应强于 mood（针对当前输入而非跨轮基调），故 <1.0。
+# 取 0.5（≈ occ 最宽 0.35 与 mood 1.0 的中段）。**保守占位，待实证校准**。
+SIGMA_TEXT = 0.5
+# value 流：precision_da 的 sigmoid(α|δ|)∈[0.5,1) 是概率不是逆方差，把它当 Π 反解得
+# σ∈[1.00,1.41]（宽于整个值域）。重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]，
+# 上限取与 survival 同量级（同属快速粗略通路），使二者可比。
+VALUE_PRECISION_CEILING = 6.25
 SALIENCE_THRESHOLD = 0.18  # ignition 阈值：salience 低于此的流不点燃（停留局部）
 AROUSAL_GAIN = 1.0  # NE/唤醒对评价·价值流精度的增益系数（唤醒越高投票权越大）
 # ignite 软门控陡度（议会 2026-07-02 Item 2）：None=硬 step 零回归（默认）；
@@ -152,21 +183,80 @@ def td_update(
 
 
 def precision(
-    delta: float, value_estimate: float, *, alpha: float = 1.0, beta: float = 0.5
+    delta: float,
+    value_estimate: float,
+    *,
+    alpha: float = 1.0,
+    beta: float = 0.5,
+    commensurable: bool = False,
 ) -> float:
-    """精度 π = σ(α·|δ| + β·V)：RPE 强度与价值确定性共同决定证据权重。"""
+    """精度 π = σ(α·|δ| + β·V)：RPE 强度与价值确定性共同决定证据权重。
+
+    `commensurable=True`（量纲齐次化，默认关）：与 `precision_da` 同一处理——sigmoid 输出
+    是概率不是逆方差，重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]。
+    ⚠ 本函数是**默认路径**（`affect_core.py` 的 `gaussian_fuse` 分支）的证据精度来源
+    （`value.py:22` → `state.precision`），故此门是三条融合分支里唯一每轮无条件生效的一处。
+    """
+    if commensurable:
+        return MIN_PRECISION + (VALUE_PRECISION_CEILING - MIN_PRECISION) * sigmoid(
+            alpha * abs(delta) + beta * value_estimate
+        )
     return max(MIN_PRECISION, sigmoid(alpha * abs(delta) + beta * value_estimate))
 
 
-def precision_da(delta: float, *, alpha: float = 1.0) -> float:
+def precision_da(delta: float, *, alpha: float = 1.0, commensurable: bool = False) -> float:
     """DA 路径精度 π_DA = σ(α·|δ|)：消去 β·V，仅由 RPE 幅度决定证据权重。
 
     议会裁决 A-P1-A（神经席 M5 + 数学席 M6）：`precision(δ, V)` 原式 σ(α|δ|+β·V) 把
     DA 精度与价值混同，β·V 无神经依据。此函数只保留 DA 通路真正编码的信号——预测误差
     幅度 |δ|；value_estimate 项移除。精度下界与 `precision` 保持一致（MIN_PRECISION 钳制）。
     纯函数、无 I/O、无 env（守热路径红线）。
+
+    `commensurable=True`（第四轮议会量纲齐次化，默认关）：`sigmoid()` 输出是 **概率**
+    不是 **逆方差**，直接当 Π 送进 `fuse_terms` 会反解出 σ∈[1.00,1.41]——宽于整个
+    [-1,1] 值域，语义上等于「这条流什么都不知道」，与它实际占的权重矛盾。
+    重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]，保持单调性与「RPE 越大权重越高」
+    的原语义不变，只换尺度。
     """
+    if commensurable:
+        return MIN_PRECISION + (VALUE_PRECISION_CEILING - MIN_PRECISION) * sigmoid(
+            alpha * abs(delta)
+        )
     return max(MIN_PRECISION, sigmoid(alpha * abs(delta)))
+
+
+def effective_stream_count(
+    terms: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> tuple[float, float]:
+    """Kish 有效样本量 `N_eff = (ΣΠ)²/ΣΠ²`，逐维返回。**纯观测量，不参与任何计算。**
+
+    读数：`N_eff → 1` = 后验实际上只由一条流决定（其余流的权重被碾压）；
+    `N_eff → N` = N 条流均衡贡献。齐次化前实测均值 1.175（几乎恒为单流独裁），
+    齐次化后 2.117。
+
+    ⚠ **不得据此下硬断言**——`N_eff → 1` 在**合法**校准下也会发生（Ernst & Banks 2002：
+    某模态噪声趋零时它的权重本就该趋 1）。它回答的是「有几条流在说话」，
+    不回答「这样对不对」。写进 trace 供观测/排障，不做门。
+
+    Kish, L. (1965). *Survey Sampling*. Wiley. —— 加权估计量的有效样本量定义。
+    """
+    out = []
+    for d in (0, 1):
+        ps = [max(MIN_PRECISION, prec[d]) for _, prec in terms]
+        s1 = sum(ps)
+        s2 = sum(p * p for p in ps)
+        out.append(s1 * s1 / s2 if s2 > 0.0 else 0.0)
+    return (out[0], out[1])
+
+
+def mood_precision(*, commensurable: bool = False) -> float:
+    """心境流精度。门开时 = 1/σ_mood²（σ_mood = mood_step 吸引盆半宽，见 SIGMA_MOOD）。"""
+    return 1.0 / SIGMA_MOOD**2 if commensurable else MOOD_PRECISION
+
+
+def text_affect_precision(*, commensurable: bool = False) -> float:
+    """文本语义流精度。门开时 = 1/σ_text²（σ_text 见 SIGMA_TEXT，保守占位待实证校准）。"""
+    return 1.0 / SIGMA_TEXT**2 if commensurable else TEXT_AFFECT_PRECISION
 
 
 def evidence_from_value(reward: float, delta: float) -> tuple[float, float]:
@@ -206,7 +296,16 @@ def fuse_terms(
 
     每项 = (mu, precision)（逐维精度）；后验精度 = 各项精度之和。
     仅含「先验 + 证据」两项时与 gaussian_fuse 数值一致（见 test）。
+
+    空输入 → `ValueError`（design D12）。此前是 `den=0` 一路走到 `num/den` 抛
+    **无信息的 `ZeroDivisionError`**；本函数是全仓融合的公共入口，值得一句指名道姓的报错。
+    **非空输入逐位不变**——纯错误信息改善，非行为变更。
     """
+    if not terms:
+        raise ValueError(
+            "fuse_terms 收到空的 terms：至少需要一项 (μ, Π) 才能定义后验。"
+            "调用方应保证流列表非空（如 ignite 的 fusion_terms 前置条件）"
+        )
     post_mu: list[float] = []
     post_sigma: list[float] = []
     for d in range(2):
@@ -653,6 +752,9 @@ def _decode_facs_extended(
 
 def fast_survival_prior(
     features: list[float],
+    *,
+    commensurable: bool = False,
+    arousal_floor_fix: bool = False,
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """快生存流（快速皮层下/防御回路，仿 LeDoux 生存回路思路）：从原始特征出粗 (μ, Π)。
 
@@ -662,11 +764,33 @@ def fast_survival_prior(
     注（议会 B-1/M2）：具体解剖通路（上丘→丘脑枕→杏仁核"捷径"）在人类证据仍有争议
     （Pessoa & Adolphs 2010, NRN 11:773；LeDoux & Brown 2017），此处仅作快速显著性评估的
     工程近似，不承诺特定解剖底物。
+
+    `commensurable=True`（第四轮议会量纲齐次化，默认关）：把常数 0.4 换成与 `occ_prior`
+    同构的 `conf → σ → 1/σ²` 链路，但截距/斜率/上限都远低于慢评价流
+    （0.1/0.1/0.5 vs 0.3/0.5/1.0），使「粗快=不确定」这一设计意图**在同一把尺子上**
+    成立——Π_survival∈[4.94, 6.25]，恒弱于 Π_appraisal∈[8.16, 200]。
+
+    `arousal_floor_fix=True`（议会 D5「失真必改」，默认关=逐字旧行为）：去掉 arousal 的
+    **0.5 地板**。`I=0` 时仍给 0.5 = 把「没有证据」编码成「确定的中等唤醒」——对无信号撒谎。
+    亚皮层通路响应幅度随刺激分级（McFadyen 2019），无威胁时应趋于基线。
+    与 valence 项 `clamp(0.6*goal, -1, 1)`（本就无常数底数）内部一致。
+    ⚠ 须与 `gate_fusion` **共用同一 default-off 门控**，杜绝「只修地板不改架构」这种未评审的中间态。
+    ⚠ 这是**装配阶段**的 μ 污染：`(streams → post)` 形状的锚点按构造抓不到它（会从已污染的
+    流列表重新推导参照），故另有流级锚点 C 专门承接。
     """
     goal = features[0] if features else 0.0
     intensity = features[3] if len(features) > 3 else 1.0
     valence = clamp(0.6 * goal, -1.0, 1.0)  # 粗：只取目标符号
-    arousal = clamp(0.5 + 0.5 * abs(intensity), 0.0, 1.0)  # 威胁/显著 → 高唤醒
+    if arousal_floor_fix:
+        arousal = clamp(0.5 * abs(intensity), 0.0, 1.0)  # 无信号 → 趋基线，不撒谎
+    else:
+        arousal = clamp(0.5 + 0.5 * abs(intensity), 0.0, 1.0)  # 威胁/显著 → 高唤醒（旧·带地板）
+    if commensurable:
+        conf = clamp(
+            SURVIVAL_CONF_BASE + SURVIVAL_CONF_GAIN * abs(intensity), 0.0, SURVIVAL_CONF_CAP
+        )
+        prec = 1.0 / max(MIN_SIGMA, 0.5 * (1.0 - conf)) ** 2
+        return (valence, arousal), (prec, prec)
     return (valence, arousal), (SURVIVAL_PRECISION, SURVIVAL_PRECISION)
 
 
@@ -680,12 +804,54 @@ def stream_salience(mu: tuple[float, float], precision: tuple[float, float]) -> 
     return deviation * mean_precision
 
 
+def _score_streams(
+    streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
+) -> list[tuple[str, tuple[float, float], tuple[float, float], float]]:
+    """给每条流打 salience 分，返回 (name, μ, Π, salience)。"""
+    return [(name, mu, prec, stream_salience(mu, prec)) for name, mu, prec in streams]
+
+
+def _select_fired(
+    scored: list[tuple[str, tuple[float, float], tuple[float, float], float]],
+    *,
+    threshold: float,
+    survival_fallback: bool,
+    soft_beta: float | None,
+) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
+    """今天 `ignite()` 的筛选逻辑，原样抽出供数值通路与报告通路**共用**。
+
+    抽成 helper 而非各写一遍，是为了保证 `gate_fusion=True` 时 `ignite()` 与
+    `report_ignited()` 的输出**逐值相等**（零回归的必要条件，design D13）——
+    两处独立实现同一套兜底分支迟早会分叉。
+    """
+    if soft_beta is not None:
+        # 软门控分支：所有流参与，精度按 logistic gate 调制
+        out: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
+        for name, mu, prec, sal in scored:
+            gate = sigmoid(soft_beta * (sal - threshold))
+            out.append((name, mu, (prec[0] * gate, prec[1] * gate)))
+        return out
+
+    # 硬 step 分支（soft_beta=None）
+    fired = [(name, mu, prec) for name, mu, prec, s in scored if s >= threshold]
+    if fired:
+        return fired
+    if survival_fallback:
+        surv = next(((n, m, p) for n, m, p, _ in scored if n == "survival"), None)
+        if surv is not None:
+            return [surv]
+    top = max(scored, key=lambda item: item[3])
+    return [(top[0], top[1], top[2])]
+
+
 def ignite(
     streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
     *,
     threshold: float = SALIENCE_THRESHOLD,
     survival_fallback: bool = False,
     soft_beta: float | None = IGNITION_BETA,
+    gate_fusion: bool = True,
+    exclude_physio_fusion: bool = True,
 ) -> tuple[list[tuple[tuple[float, float], tuple[float, float]]], list[str]]:
     """GNW ignition：salience ≥ threshold 的流点燃进入全局广播，亚阈流停留局部。
 
@@ -707,41 +873,70 @@ def ignite(
     β<1 无意义（gate 趋 0.5 成均匀融合），推荐区间 [20,50]（神经/数学席交集）。
     复用本模块既有 `sigmoid`。
 
-    streams = [(name, μ, Π), ...]；返回 (点燃流的 [(μ, Π)] 供 fuse_terms, 点燃流名列表)。
+    ── `gate_fusion`（议会第三轮 D1，默认 True=门关，逐字旧行为）──
+    `True`：硬门同时决定「谁进 fuse_terms」与「谁可报告」——即今天的行为。
+    `False`：**硬门从数值通路上摘下来，只留报告通路**。`fusion_terms` 收全部流的原生 (μ, Π)，
+    不乘任何 gate/D 因子；「哪些流点燃」改由 `report_ignited()` 单独回答。
+    神经席裁定：GNW ignition = 「什么内容变得**可报告**」，不是「谁计算数值」；
+    **阈下不点燃 ≠ 阈下零影响**。
+
+    ⚠ **本函数的两个返回值恒对齐**（同一次筛选产出、一一对应）——调用方可安全
+    `zip(..., strict=True)`。这是 BLOCK 1 的实质保证；不需要第三个返回值，见 design D13。
+
+    streams = [(name, μ, Π), ...]；返回 (供 fuse_terms 的 [(μ, Π)], **与之对齐的**流名列表)。
     纯函数、无副作用。
     """
-    scored = [(name, mu, prec, stream_salience(mu, prec)) for name, mu, prec in streams]
+    scored = _score_streams(streams)
+    if gate_fusion:
+        # 门关（默认）：逐字旧行为——硬门/软门的产物同时充当融合项与报告项。
+        selected = _select_fired(
+            scored, threshold=threshold, survival_fallback=survival_fallback, soft_beta=soft_beta
+        )
+        return [(mu, prec) for _, mu, prec in selected], [name for name, _, _ in selected]
 
-    if soft_beta is not None:
-        # 软门控分支：所有流参与融合，精度按 logistic gate 调制
-        terms = []
-        names = []
-        for name, mu, prec, sal in scored:
-            gate = sigmoid(soft_beta * (sal - threshold))
-            pi_eff: tuple[float, float] = (prec[0] * gate, prec[1] * gate)
-            terms.append((mu, pi_eff))
-            names.append(name)
-        return terms, names
+    # 门开：全流原生 (μ, Π) 进融合，不乘任何 gate/D 因子。
+    fusion = [(name, mu, prec) for name, mu, prec, _ in scored]
+    if exclude_physio_fusion:
+        # D7 跨仓承诺（默认排除）：配套项目 Zero_MCP 用 WESAD 真被试验证其 EDA arousal
+        # 与唤醒**系统性反号**，明确请求「宁可继续门掉——『暂时不参与融合』优于『以反号参与』」。
+        # 由我方单边可控，其度量重设计完成后再解除。
+        fusion = [t for t in fusion if not t[0].lower().startswith(_PHYSIO_PREFIXES)]
+    if streams and not fusion:
+        # D12：违反前置条件（传入的流**全是**被排除流）。生产路径不可达——`affect_core` 恒装配
+        # survival/appraisal/value 三条核心流。此处给指名道姓的报错，替掉调用方 fuse_terms
+        # 里那个无信息的 ZeroDivisionError。**不做「回退全流」**——那会让被排除的 physio
+        # 无声重新参与融合，直接违背对 Zero_MCP 的承诺。
+        raise ValueError(
+            "ignite(gate_fusion=False) 的 fusion_terms 为空：传入的 "
+            f"{len(streams)} 条流全部命中 physio 排除前缀 {_PHYSIO_PREFIXES}。"
+            "至少需要一条非 physio 流；若确要让 physio 参与融合，显式传 exclude_physio_fusion=False"
+        )
+    return [(mu, prec) for _, mu, prec in fusion], [name for name, _, _ in fusion]
 
-    # 硬 step 分支（soft_beta=None）：逐字旧行为，零回归
-    fired = [(name, mu, prec) for name, mu, prec, s in scored if s >= threshold]
-    if not fired:
-        if survival_fallback:
-            surv = next(
-                ((name, mu, prec) for name, mu, prec, _ in scored if name == "survival"),
-                None,
-            )
-            if surv is not None:
-                fired = [surv]
-            else:
-                top = max(scored, key=lambda item: item[3])
-                fired = [(top[0], top[1], top[2])]
-        else:
-            top = max(scored, key=lambda item: item[3])
-            fired = [(top[0], top[1], top[2])]
-    terms = [(mu, prec) for _, mu, prec in fired]
-    names = [name for name, _, _ in fired]
-    return terms, names
+
+def report_ignited(
+    streams: list[tuple[str, tuple[float, float], tuple[float, float]]],
+    *,
+    threshold: float = SALIENCE_THRESHOLD,
+    survival_fallback: bool = False,
+    soft_beta: float | None = IGNITION_BETA,
+) -> list[str]:
+    """**报告通路**：哪些流「变得可报告/可内省」（GNW ignition 的正确语义归属，神经席 D4）。
+
+    与 `ignite()` 的数值通路彻底分离——本函数的输出**不影响任何数值**，只作可解释性标签
+    （`AffectState.ignited_streams`）。判据与今天逐字相同（含软门全流、硬门兜底两条分支），
+    故 `gate_fusion=True` 时它与 `ignite()` 返回的流名列表**逐值相等** → 零回归。
+
+    ⚠ 该列表**不是纯标注**：经 `supervisor.py` 落进 **USER 作用域 episode**，
+    再由 `memory_recall` → `chat_driver` 注入 LLM system 上下文。改它的语义要当外部可见行为对待。
+    """
+    selected = _select_fired(
+        _score_streams(streams),
+        threshold=threshold,
+        survival_fallback=survival_fallback,
+        soft_beta=soft_beta,
+    )
+    return [name for name, _, _ in selected]
 
 
 def attitude_step(
@@ -979,7 +1174,12 @@ def expand_external_priors(
 ) -> list[tuple[str, tuple[float, float], tuple[float, float]]]:
     """外部多模态先验流展开 + 防御性校验，返回可直接 extend 进 streams 的列表。
 
-    M6（数学席·流数上界）：len(external_priors) > max_streams → raise ValueError。
+    M6（数学席·流数上界）：len(external_priors) > max_streams → raise ExternalPriorError。
+
+    ⚠ 本函数的所有校验失败一律抛 **`ExternalPriorError`**（`ValueError` 子类，向后兼容），
+    **不是**裸 `ValueError`。理由是归责可辨：边界层 `server.py` 据此把「真的是 client 传参
+    不对」与「内核自己出错了」分开报——后者若被贴成前者，client 照着改传参永远改不好
+    （议会 2026-07-29 第五轮校验 §四-5）。新增校验请沿用该类型。
     校验精度来自 MCP payload，Zero 只校验+防御——不硬编码各模态精度。
 
     形状良构校验（澄清 2）：每条须 (str, (float, float), (float, float))；
@@ -1005,7 +1205,7 @@ def expand_external_priors(
     """
     # M6：流数上界
     if len(external_priors) > max_streams:
-        raise ValueError(
+        raise ExternalPriorError(
             f"external_priors 条数 {len(external_priors)} 超过 max_external_streams={max_streams}；"
             f"请检查 MCP 传参（ZERO_MAX_EXTERNAL_STREAMS 调大或减少注入流数）"
         )
@@ -1022,7 +1222,7 @@ def expand_external_priors(
             or not all(isinstance(x, (int, float)) for x in prior[1])
             or not all(isinstance(x, (int, float)) for x in prior[2])
         ):
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] 形状不合法：须为 (str, (float,float), (float,float))，"
                 f"实际为 {prior!r}；请检查 MCP as_zero_streams() 输出格式"
             )
@@ -1037,7 +1237,7 @@ def expand_external_priors(
         # 买到本不该有的点燃资格（实测注入 μ=(0,2.0) 可越过 SALIENCE_THRESHOLD）。
         # 纯边界收紧：合法输入行为逐字不变（零回归）。NaN 亦由此条拦下。
         if not (-1.0 <= mu[0] <= 1.0 and -1.0 <= mu[1] <= 1.0):
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] ({name!r}) 的 μ 须在 [-1, 1] 内，"
                 f"实际 μv={mu[0]}, μa={mu[1]}；请检查 MCP ModalityPrior 输出"
             )
@@ -1050,13 +1250,13 @@ def expand_external_priors(
 
         # M3：精度正值校验（physio Πv 已被 M2 覆写为 MIN_PRECISION>0；Πa 恒校验）
         if pi_v <= 0.0 or pi_a <= 0.0:
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] ({name!r}) 精度须 >0，"
                 f"实际 Πv={pi_v}, Πa={pi_a}；请检查 MCP 传参"
             )
         # M3：精度上界校验（physio Πv=MIN_PRECISION<<cap 必过；Πa 恒校验）
         if pi_v > precision_cap or pi_a > precision_cap:
-            raise ValueError(
+            raise ExternalPriorError(
                 f"external_priors[{i}] ({name!r}) 精度超过上界 {precision_cap}，"
                 f"实际 Πv={pi_v}, Πa={pi_a}；请降低 MCP 精度或调高 "
                 f"ZERO_EXTERNAL_PRIOR_PRECISION_CAP"

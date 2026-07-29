@@ -132,6 +132,21 @@ class SessionConfig(BaseModel):
     external_prior_precision_cap: float = Field(default=0.8, gt=0.0)
     max_external_streams: int = Field(default=5, ge=0)
 
+    # ── precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）──
+    # False → survival/mood/text/value 四流沿用裸常数/裸 sigmoid，三条融合分支逐字旧行为；
+    # True → 四流 Π 改写成 1/σ²、σ 表达在 [-1,1] 值域上（affect_math.py 齐次化节）。
+    # ⚠ 唯一影响**默认路径**（gaussian_fuse，每轮无条件执行）的门控——其它旋钮都只碰默认关的分支。
+    # 经 ZERO_PRECISION_COMMENSURABLE → chat_driver → SessionConfig → to_state_flags。
+    precision_commensurable: bool = False
+
+    # ── gate_fusion：硬门摘出数值通路（议会第三轮 D1；默认 True=门关=逐字旧行为）──
+    # ⚠ **方向与其它旋钮相反**：True 是「关」。漏传/漏接会使其永久 True，
+    #   新架构在该路径**永远开不出来**（不是永远开着）。双向用例须按此写，否则会写反。
+    gate_fusion: bool = True
+    # ── exclude_physio_fusion：physio 排除出数值通路（D7 跨仓承诺；默认 True=排除）──
+    # Zero_MCP 的 EDA arousal 经 WESAD 真被试验证与唤醒系统性反号，其明确请求继续门掉。
+    exclude_physio_fusion: bool = True
+
     # ── P3 1-C · ToM / 社会情绪共情旋钮（默认全 0/0.3 = 零回归；config-only-via-env）──
     # interlocutor_affect 是每轮可变标量（依赖 user_text），不在此收口；
     # 此处只存会话级固定系数（contagion/care/vicarious alpha + threshold）。
@@ -153,6 +168,68 @@ class SessionConfig(BaseModel):
             raise ValueError(
                 f"共情系数 L1 和 {l1:.3f} >0.6（contagion+care+vicarious）；"
                 f"数学席证会破 mood 双稳/attitude 收敛，请调低"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_precision_scale_consistency(self) -> SessionConfig:
+        """齐次化门开时禁止 mood/text 精度旋钮停在旧标度（议会 2026-07-28 第四轮）。
+
+        `precision_commensurable=True` 会把 mood/text 两条流的 Π 换成 1/σ²（1.0 / 4.0），
+        而 `ZERO_MOOD_PRECISION` / `ZERO_TEXT_AFFECT_PRECISION` 的默认 0.8 / 0.3 是**旧标度**
+        的裸常数。两者混用 = 同一次 `fuse_terms` 里一半流按逆方差、一半按裸常数加权——
+        正是本项要消灭的量纲不可比。故门开时旋钮必须留在默认值，显式改过就 fail-fast，
+        不静默覆盖（覆盖会让用户的显式配置无声失效，同 [[zero-link-physiology]] BLOCK-1）。
+        """
+        if not self.precision_commensurable:
+            return self
+        stale = [
+            name
+            for name, got, legacy in (
+                ("ZERO_MOOD_PRECISION", self.mood_precision, 0.8),
+                ("ZERO_TEXT_AFFECT_PRECISION", self.text_affect_precision, 0.3),
+            )
+            if got != legacy
+        ]
+        if stale:
+            raise ValueError(
+                f"precision_commensurable=True 与旧标度精度旋钮 {'/'.join(stale)} 同时设置："
+                f"齐次化会把 mood/text 精度换成 1/σ²，与裸常数标度不可混用。"
+                f"请改回默认（mood=0.8 / text=0.3）或关闭 ZERO_PRECISION_COMMENSURABLE"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_gate_fusion_hpc_exclusive(self) -> SessionConfig:
+        """BLOCK 2（议会第四轮 · 位置由第五轮改判到此）：新融合架构 × HPC 显式互斥。
+
+        `gate_fusion=False`（全流精度加权）与 `hierarchical_layers≥2 且 coupling>0`（HPC）
+        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.py:419`
+        `pi_core = pi_l1e + w2 * pi_l0`），实测 coupling=0.3 时硬契约
+        `|post_mu − ΣΠμ/ΣΠ|` 偏差 **0.0773**、arousal 符号翻转。本轮**不解**该数学，
+        只做显式互斥——收缩的是两个独立开关的乘积空间，不是整个特性。
+
+        **为什么落在这里而不是纯函数**（第五轮订正）：`ignite()` 没有 layers/coupling、
+        `hierarchical_fuse()` 没有 gate_fusion，**两个纯函数各自都拿不到三字段全集**。
+        会话构造期是唯一信息完备且不在热路径上的位置（与齐次化的混标度校验同一形状）。
+
+        **为什么必须 fail-fast 而非静默取舍**：触发组合 `coupling∈[0.3,0.8]` 是 README
+        推荐值、**不是坏输入**——用户会理直气壮地这么配。静默按某一侧执行 = 产出未经评审
+        的数值。而 MCP 面若在热路径抛错则是**永久 DoS**（活跃会话 config 不可变，
+        client 无法自救），故必须在**构造期**就拒绝。
+        """
+        if (
+            not self.gate_fusion
+            and self.hierarchical_layers >= 2
+            and self.hierarchical_coupling > 0.0
+        ):
+            raise ValueError(
+                f"gate_fusion=False（全流精度加权）与 HPC（hierarchical_layers="
+                f"{self.hierarchical_layers} 且 coupling={self.hierarchical_coupling}）"
+                f"的联合语义未定义、本轮不支持：HPC 给 L0 流额外乘 w²，实测破坏硬契约"
+                f"（coupling=0.3 时偏差 0.0773、arousal 符号翻转）。"
+                f"请二选一——关 HPC（hierarchical_layers=1 或 hierarchical_coupling=0）"
+                f"或关新融合架构（ZERO_IGNITION_GATE_FUSION 留默认 true）"
             )
         return self
 
@@ -266,6 +343,11 @@ async def run(
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
     external_prior_precision_cap: float = 0.8,
     max_external_streams: int = 5,
+    # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+    precision_commensurable: bool = False,
+    # gate_fusion：硬门摘出数值通路（议会第三轮 D1）⚠ 默认 True=门关（方向与其它旋钮相反）
+    gate_fusion: bool = True,
+    exclude_physio_fusion: bool = True,
     expression_decoder: ChannelDecoder | None = None,
     language_model: LanguageModel | None = None,
 ) -> list[dict[str, Any]]:
@@ -282,6 +364,21 @@ async def run(
     可变量，经 `ConversationSession.step(stim, state_overrides={"external_priors": [...]})` 注入
     （同 interlocutor_affect）。run() 批量接口每条 stimulus 不携带外部先验（code-reviewer W5）。
     """
+    # 🛑 显式过一遍 SessionConfig，只为**触发它的跨字段校验**（返回值有意丢弃）。
+    # `run()` 是一条不经 ConversationSession 的公开入口（scripts/run_pipeline.py 等直接调），
+    # 它手拼 ainvoke 初值 dict、从不构造 SessionConfig ——若不在此补这一道，
+    # `_check_gate_fusion_hpc_exclusive`（BLOCK 2 互斥）·`_check_precision_scale_consistency`
+    # （混标度）·`_check_empathy_l1`（共情系数 L1）这三道护栏在本路径上**等于不存在**：
+    # 同样的参数组合经 ConversationSession 会 fail-fast，经 run() 却静默产出 BLOCK 2
+    # 自己写明的那类错误数值（硬契约偏差 0.0773、arousal 符号翻转）。code-reviewer 实测复现。
+    #
+    # 用 `locals()` 按 model_fields 过滤而非手写字段清单：**自维护**——将来 SessionConfig
+    # 新增字段/新增校验自动覆盖，不会重演这次「新增校验漏了一条入口」的漂移。
+    # ⚠ **必须放在函数体最前**（早于任何中间变量绑定）：此刻 `locals()` 只含函数形参，
+    # 彻底排除「将来某个中间量恰好与 SessionConfig 新字段撞名 → 传错值」的风险。
+    # 下面四个中间量与本校验无数据依赖，挪到其后不影响任何行为。
+    SessionConfig(**{k: v for k, v in locals().items() if k in SessionConfig.model_fields})
+
     client = (
         memory
         if memory is not None
@@ -367,6 +464,11 @@ async def run(
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 "external_prior_precision_cap": external_prior_precision_cap,
                 "max_external_streams": max_external_streams,
+                # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+                "precision_commensurable": precision_commensurable,
+                # gate_fusion / exclude_physio_fusion（议会第三轮 D1/D7）⚠ 二者默认均 True
+                "gate_fusion": gate_fusion,
+                "exclude_physio_fusion": exclude_physio_fusion,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -471,6 +573,11 @@ class ConversationSession:
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
         external_prior_precision_cap: float = 0.8,
         max_external_streams: int = 5,
+        # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+        precision_commensurable: bool = False,
+        # gate_fusion：硬门摘出数值通路（议会第三轮 D1）⚠ 默认 True=门关
+        gate_fusion: bool = True,
+        exclude_physio_fusion: bool = True,
         expression_decoder: ChannelDecoder | None = None,
         language_model: LanguageModel | None = None,
     ) -> None:
@@ -550,6 +657,11 @@ class ConversationSession:
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 external_prior_precision_cap=external_prior_precision_cap,
                 max_external_streams=max_external_streams,
+                # precision_commensurable：精度量纲齐次化（议会 2026-07-28 第四轮；默认关=零回归）
+                precision_commensurable=precision_commensurable,
+                # gate_fusion / exclude_physio_fusion（议会第三轮 D1/D7）⚠ 二者默认均 True
+                gate_fusion=gate_fusion,
+                exclude_physio_fusion=exclude_physio_fusion,
             )
 
     @property

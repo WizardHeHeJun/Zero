@@ -32,7 +32,13 @@ from __future__ import annotations
 import pytest
 
 from src.agents.affect_core import AffectCoreAgent
-from src.agents.affect_math import _PHYSIO_PREFIXES, MIN_PRECISION, expand_external_priors
+from src.agents.affect_math import (
+    _PHYSIO_PREFIXES,
+    MIN_PRECISION,
+    expand_external_priors,
+    hierarchical_fuse,
+)
+from src.orchestration.external_prior import ExternalPriorError
 from src.orchestration.state import AffectState, Stimulus
 
 # --------------------------------------------------------------------------
@@ -886,3 +892,72 @@ async def test_seeking_no_lock_neutral_stimulus_high_arousal() -> None:
         f"中性效价外部流（μv=0）把 valence 推离中性超过 0.35——疑似高 arousal 泄漏进 valence 维"
         f"或误进 occ_prior/survival 入口。valences={[round(v, 3) for v in valences]}"
     )
+
+
+class TestExternalPriorErrorAttribution:
+    """归责可辨：external_priors 校验失败抛专属类型，内核其它错不得被贴成它。
+
+    背景（议会 2026-07-29 第五轮校验 §四-5）：边界层 `server.py` 原先用**一个**
+    `except ValueError` 包住整个 `session.step()`（全图执行），把内核任何位置抛出的
+    `ValueError` 一律贴成「external_priors 校验失败（指向 MCP 传参）」。后果是误导性甩锅——
+    client 照着改传参永远改不好，而活跃会话的 config 不可变 → 无法自救，
+    表现为 open 成功、**每 step 崩**。
+    """
+
+    def test_all_expand_failures_raise_dedicated_type(self) -> None:
+        """M3/M6/M7 与形状校验**全部**抛 ExternalPriorError（漏一处就恢复成误导性甩锅）。"""
+        cases = [
+            [("a", (0.0, 0.0), (0.1, 0.1))] * 99,  # M6 流数超上界
+            [("a", (0.0, 0.0), (0.0, 0.1))],  # M3 精度非正
+            [("a", (0.0, 0.0), (9.9, 0.1))],  # M3 超 cap
+            [("a", (2.0, 0.0), (0.1, 0.1))],  # M7 μ 越域
+            ["not-a-tuple"],  # 形状不良构
+        ]
+        for priors in cases:
+            with pytest.raises(ExternalPriorError):
+                expand_external_priors(priors, precision_cap=0.8, max_streams=5)  # type: ignore[arg-type]
+
+    def test_dedicated_type_stays_backward_compatible(self) -> None:
+        """仍是 ValueError 子类——既有 `except ValueError` 的调用方/用例不受影响。"""
+        assert issubclass(ExternalPriorError, ValueError)
+        with pytest.raises(ValueError):
+            expand_external_priors(
+                [("a", (0.0, 0.0), (0.0, 0.1))], precision_cap=0.8, max_streams=5
+            )
+
+    def test_kernel_errors_are_not_external_prior_errors(self) -> None:
+        """反向：内核其它 fail-fast **不得**是 ExternalPriorError，否则归责又混回去了。
+
+        取 `hierarchical_fuse` 的 coupling 越界作代表——它是「会话级配置不兼容」那一类，
+        改 external_priors 传参对它毫无用处。
+        """
+        with pytest.raises(ValueError) as ei:
+            hierarchical_fuse(
+                [("appraisal", (0.1, 0.1), (1.0, 1.0)), ("survival", (0.2, 0.2), (0.4, 0.4))],
+                low_names=frozenset({"survival"}),
+                layers=2,
+                coupling=1.5,
+            )
+        assert not isinstance(ei.value, ExternalPriorError), (
+            "内核配置错被判成 external_priors 传参错——归责混淆已回归"
+        )
+
+    def test_boundary_layer_separates_the_two_attributions(self) -> None:
+        """边界层源码里两条 except 分支必须并存，且内核那条明说「改传参无效」。
+
+        结构性检查而非跑 server——起 MCP server 需要额外依赖，而这里要锁的是
+        「有没有把两类错分开报」这件事本身。
+        """
+        from src.mcp_server import server
+
+        with open(server.__file__, encoding="utf-8") as fh:
+            text = fh.read()
+        # 只看 step 调用点之后的片段——server.py 别处还有一个无关的 except ValueError
+        # （ZERO_MCP_HTTP_PORT 的 int() 解析），全局字符串比较会误判。
+        tail = text[text.index("await session.step(") :]
+        assert "except ExternalPriorError as e:" in tail
+        assert "except ValueError as e:" in tail
+        assert tail.index("except ExternalPriorError as e:") < tail.index(
+            "except ValueError as e:"
+        ), "专属类型的 except 必须在裸 ValueError **之前**，否则永远进不去（子类被父类先捕获）"
+        assert "非** external_priors 传参问题，改传参无效" in tail

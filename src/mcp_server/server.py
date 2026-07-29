@@ -36,6 +36,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from src.agents.expression import ChannelDecoder
 from src.mcp_server.mapping import external_priors_from_payload, stimulus_from_payload
 from src.mcp_server.registry import SessionRegistry
+from src.orchestration.external_prior import ExternalPriorError
 from src.orchestration.runner import ConversationSession, SessionConfig
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,19 @@ logger = logging.getLogger(__name__)
 # 议会解锁门：这两个字段**只受 ZERO_MCP_* env 治理**，client config overrides 中的同名键
 # 被 _build_session_config 静默忽略（A5·A6·2026-07-21）——防「生产关·MCP 开」旁路。
 _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
-    {"coping_potential_enabled", "text_coping_enabled", "fear_domain_enabled"}
+    {
+        "coping_potential_enabled",
+        "text_coping_enabled",
+        "fear_domain_enabled",
+        # precision_commensurable（议会 2026-07-28 第四轮）：改的是**默认融合路径**的证据加权，
+        # 比上面三个门更深——client 经 config 打开它等于在 MCP 面单方面换掉内核的精度标度。
+        # 同治理模式：只受 ZERO_MCP_PRECISION_COMMENSURABLE env 管，overrides 静默忽略。
+        "precision_commensurable",
+        # gate_fusion（议会第三轮 D1）：它决定**数值后验怎么算**（硬门是否参与数值通路），
+        # 比上面几个门更深；且 physio 排除是对 Zero_MCP 的跨仓承诺，不容 client 单边解除。
+        "gate_fusion",
+        "exclude_physio_fusion",
+    }
 )
 
 # step 未知/过期 session_id 的机读错误前缀（zero-link T6）：MCP graceful_step 按此前缀判定 →
@@ -52,11 +65,30 @@ _UNKNOWN_SESSION_MARKER = "unknown-session"
 
 
 def _env_flag(name: str, default: bool) -> bool:
-    """读布尔 env；未设 → default。真值集与 chat_driver 一致（1/true/yes/on）。"""
+    """读布尔 env：真值集 → True，假值集 → False，**其余一律回落 `default`**。
+
+    🛑 **旧实现只判真值集**（`raw.lower() in ("1","true","yes","on")`），未识别值一律 False。
+    那对「默认 False」的旗标恰好等于 default，看不出问题；但用在**默认 True** 的旗标上
+    （`workspace_enabled` / `gate_fusion` / `exclude_physio_fusion`）**失败方向就反了**：
+    空串 / 带空格的 `"true "` / `"enabled"` 这类值会静默把门**打开**，
+    而 `chat_driver` 侧同样取值判的是假值集、结论是门**关**——两侧语义直接冲突。
+    后果实测：`ZERO_MCP_EXCLUDE_PHYSIO_FUSION=""` 时反号 physio 回到数值通路，
+    arousal 后验被抬高 150%+，等于单边解除对 Zero_MCP 的 D7 跨仓承诺。
+    （终审工作流抓出，两名独立验证者复现。）
+
+    现改为**方向无关**：未识别值回落 `default`，并 `strip()` 掉首尾空白。
+    对三个既有的「默认 False」旗标**逐字零回归**（未识别值 → default → False，与旧实现同值）；
+    对「默认 True」的旗标则把失败方向从「打开未评审的新架构」改回「保持默认」。
+    """
     raw = os.getenv(name)
     if raw is None:
         return default
-    return raw.lower() in ("1", "true", "yes", "on")
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    return default  # 未识别（含空串）→ 回落默认，**不再一律 False**
 
 
 def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
@@ -89,6 +121,16 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # MCP 收窄前提（CS 席约束·design.md）：消费方须确认部署端已开此 env 才能依赖
         # canonical 键集（{hr,sc(μS),temperature_c}）；默认关=legacy 占位（含 pupil_mm）。
         "canonical_physiology": _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False),
+        # 默认 False：与生产/chat 零回归一致（议会 2026-07-28 第四轮）——齐次化改的是每轮
+        # 无条件执行的默认融合路径，MCP 面不得旁路生效；仅 ZERO_MCP_PRECISION_COMMENSURABLE
+        # env 治理，client override 被 gated_flags 静默忽略。
+        "precision_commensurable": _env_flag("ZERO_MCP_PRECISION_COMMENSURABLE", False),
+        # ⚠ 默认 **True**（=门关=与生产/chat 零回归一致）。方向与上面几个相反：
+        # 漏了这一行会使 gate_fusion 在 MCP 路径**永久 True**——新架构永远开不出来
+        # （不是永远开着）。写双向用例时别按其它旗标的方向照抄。
+        "gate_fusion": _env_flag("ZERO_MCP_IGNITION_GATE_FUSION", True),
+        # physio 排除默认 True（D7 跨仓承诺·由我方单边可控）。
+        "exclude_physio_fusion": _env_flag("ZERO_MCP_EXCLUDE_PHYSIO_FUSION", True),
         "external_prior_precision_cap": float(
             os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
         ),
@@ -283,9 +325,22 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         async with lock:
             try:
                 step_out = await session.step(stimulus, state_overrides={"external_priors": priors})
-            except ValueError as e:
-                # expand_external_priors 的 M3/M6 fail-fast（精度>0/≤cap、流数≤max、形状良构）。
+            except ExternalPriorError as e:
+                # expand_external_priors 的 M3/M6/M7 fail-fast（精度>0/≤cap、流数≤max、
+                # 形状良构、μ∈[-1,1]）——**确实**指向 client 传参，改传参就能好。
                 raise ToolError(f"external_priors 校验失败（指向 MCP 传参）：{e}") from e
+            except ValueError as e:
+                # 内核其它位置抛的 ValueError（如 HPC coupling 越界、未来的配置互斥 fail-fast）。
+                # ⚠ 这里**必须**与上一分支分开报（议会 2026-07-29 第五轮校验 §四-5）：
+                # 原先一个 except 包住整个 step（全图执行），把内核任何异常都贴成
+                # 「external_priors 校验失败（指向 MCP 传参）」→ 误导性甩锅。client 照着改
+                # 传参永远改不好，而活跃会话的 config 不可变（见 open_session 的 config 语义）
+                # → 无法自救，表现为 open 成功、**每 step 崩**。
+                logger.exception("zero.step 内核执行失败 sid=%s", session_id)
+                raise ToolError(
+                    f"内核执行失败（**非** external_priors 传参问题，改传参无效）：{e}；"
+                    "多为会话级配置组合不兼容，须以新配置重开会话"
+                ) from e
         expression = step_out.get("expression") or {}
         return expression
 

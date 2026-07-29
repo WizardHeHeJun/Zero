@@ -37,6 +37,14 @@ def stimulus_from_payload(
     `attitude_appeal` 保持默认 0.0（会话边界不承载 chat 层 running attitude）；
     `text=None`（client 已 appraise 过 (v,a)，**不**再跑我方文本回归器）。
 
+    **越域输入的处置有意不对称**（议会 2026-07-28 第四轮 A4 落地后）：
+    - `arousal` 越域 → `min(1.0, ...)` **静默钳制**。因为这里是语义映射（幅度→强度），
+      钳制是映射的一部分，不是防御。
+    - `valence` 越域 → `Stimulus` 的 `Field(ge=-1, le=1)` **拒绝**（`state.py:27-33`）。
+      因为这里是恒等透传，越域即 client 违反 `AffectStimulus` 契约，与 M3/M6/M7
+      同一处置（fail-fast 指向 MCP 传参）。`server.py:288-292` 转 ToolError，不裸崩。
+    改动此不对称须与配套项目 Zero_MCP 协调（对外契约）。
+
     coping 是否真正生效由会话侧 `coping_potential_enabled` 门控决定；生效时走 B3 四分支融合
     （`appraisal.py:192-228`）：ctrl=None → absent cue（分支1/2 精度趋零不参与），显式 0.0 →
     genuine-zero（分支3/4 参与）。client 省略 coping 与显式 0.0 语义天然对齐此新契约。

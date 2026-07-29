@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import logging
 import random
+from typing import TypedDict
 
 from src.agents.affect_math import (
     AROUSAL_GAIN,
     MIN_PRECISION,
     MIN_SIGMA,
+    SALIENCE_THRESHOLD,
+    effective_stream_count,
     evidence_from_value,
     expand_external_priors,
     fast_survival_prior,
@@ -23,12 +26,31 @@ from src.agents.affect_math import (
     gaussian_fuse,
     hierarchical_fuse,
     ignite,
+    mood_precision,
     precision_da,
+    report_ignited,
     sample_affect,
+    text_affect_precision,
 )
 from src.orchestration.state import AffectState
 
 logger = logging.getLogger(__name__)
+
+
+class _GateCriteria(TypedDict):
+    """`ignite()` 与 `report_ignited()` **必须共享**的判据参数。
+
+    用 TypedDict 而非裸 dict：`**kwargs` 展开裸 dict 会丢类型信息（mypy 报 arg-type），
+    而用 TypedDict 既保住「一处定义、两处消费」的防漂移结构，又不牺牲静态检查。
+    """
+
+    survival_fallback: bool
+    soft_beta: float | None
+    # `threshold` 也纳入——**即使当前两处调用都用签名默认值 `SALIENCE_THRESHOLD`**。
+    # 不纳入的话它就退回「两边各自吃同一个默认值」这种**隐性**对齐，正是本结构要消灭的模式，
+    # 只是收窄到一个字段上：将来若有人加 `ignition_threshold` 旋钮要传非默认阈值，
+    # TypedDict 不会提醒他两处都改。纳入后两处引用同一个键，改阈值会被这个结构自然架住。
+    threshold: float
 
 
 class AffectCoreAgent:
@@ -53,14 +75,23 @@ class AffectCoreAgent:
                 arousal_gain / max(MIN_SIGMA, state.prior_sigma[0]) ** 2,
                 arousal_gain / max(MIN_SIGMA, state.prior_sigma[1]) ** 2,
             )
-            surv_mu, surv_prec = fast_survival_prior(state.features)
+            # precision_commensurable（议会 2026-07-28 第四轮）：门开时 survival 流的精度
+            # 由裸常数 0.4 改为 1/σ²（conf→σ→Π 链路，同构 occ_prior 但截距/斜率远低）。
+            comm = state.precision_commensurable
+            # arousal_floor_fix 与 gate_fusion **共用同一开关**（议会 D5 强制）：
+            # 杜绝「只修地板不改架构」这种未评审的中间态。门关时逐字旧行为（带 0.5 地板）。
+            surv_mu, surv_prec = fast_survival_prior(
+                state.features, commensurable=comm, arousal_floor_fix=not state.gate_fusion
+            )
 
             # A-P1-A（议会裁决·神经席 M5+数学席 M6）：precision_split 门控。
             # True → value 流证据精度用 precision_da(rpe)（仅 DA 路径 |δ|，消 β·V 混同）；
             # False → 逐字旧行为 pi*arousal_gain（零回归）。
+            # 注：else 分支的 pi 来自 state.precision（value.py），门开时**已在那里齐次化**，
+            # 故此处不重复处理——两条支路的量纲始终一致。
             rpe_for_da = state.rpe if state.rpe is not None else 0.0
             if state.precision_split:
-                pi_da = precision_da(rpe_for_da) * arousal_gain
+                pi_da = precision_da(rpe_for_da, commensurable=comm) * arousal_gain
             else:
                 pi_da = pi * arousal_gain
 
@@ -84,16 +115,21 @@ class AffectCoreAgent:
                 ),  # 慢评价流（OCC）；精度=arousal_gain/σ²，即 NE 路径 pi_ne
                 ("value", evidence, value_prec),  # 价值流（RPE）
             ]
+            # mood/text 两条流的精度是 env 可调旋钮（ZERO_MOOD_PRECISION / ZERO_TEXT_AFFECT_
+            # PRECISION），默认停在旧标度 0.8/0.3。门开时**无条件**改用齐次值 1/σ²，
+            # 即丢弃 state 里的旋钮值——这在热路径里是有意为之（节点不做校验、不抛异常）。
+            # 防线在上游：SessionConfig._check_precision_scale_consistency 在配置期就拒绝
+            # 「门开 + 旋钮被显式改过」的组合，使这里永远不会真的丢弃用户的显式配置。
+            # AffectState 层刻意不设对等校验——它要能从 checkpoint 原样反序列化（同 :284 的理由）。
+            # 直接构造 AffectState 绕过 SessionConfig 的调用点（测试）会静默忽略旋钮，非数值错误。
+            mood_prec = mood_precision(commensurable=True) if comm else state.mood_precision
+            text_prec = (
+                text_affect_precision(commensurable=True) if comm else state.text_affect_precision
+            )
             if state.mood_enabled and state.mood is not None:
-                streams.append(("mood", state.mood, (state.mood_precision, state.mood_precision)))
+                streams.append(("mood", state.mood, (mood_prec, mood_prec)))
             if state.text_affect is not None:
-                streams.append(
-                    (
-                        "text",
-                        state.text_affect,
-                        (state.text_affect_precision, state.text_affect_precision),
-                    )
-                )
+                streams.append(("text", state.text_affect, (text_prec, text_prec)))
             # 外部多模态先验流注入（T4·议会 2026-07-15 M1；design.md 受约束方案 c）。
             # 仅读 state，只 extend 局部 streams，不写任何 state 字段（节点契约）。
             # 不进 occ_prior/survival 入口（守 text 流先例：独立低精度竞争流，非底噪）。
@@ -105,11 +141,30 @@ class AffectCoreAgent:
                         max_streams=state.max_external_streams,
                     )
                 )
-            terms, ignited = ignite(
+            # 数值通路与报告通路**分离**（议会第三轮 D1 + 实现期 D13）：
+            #   `ignite()` → 供 fuse_terms 的 (μ,Π) + **与之对齐**的流名（BLOCK 1 的实质保证：
+            #     二者同一次筛选产出、恒等长，下面的 zip(strict=True) 永不失配）；
+            #   `report_ignited()` → 「哪些流变得可报告」，**不影响任何数值**。
+            # gate_fusion=True（默认）时两者返回逐值相等 → out["ignited_streams"] 逐字不变。
+            # 两个函数**共享同一份判据参数**，写成一个 dict 传——不是风格偏好：
+            # 分开手写两遍时，「参数保持同步」是一条只靠人维护的隐性契约，一旦漂移
+            # （比如只给一边改了 soft_beta）两边都不会报错，`ignited_streams` 会悄悄变成
+            # 与实际融合流集合不一致的标签。长度失配有 zip(strict=True) 响亮兜底，
+            # **参数漂移没有任何兜底** → 用共享 dict 从结构上消除这种可能。
+            gate_criteria: _GateCriteria = {
+                "survival_fallback": state.ignition_survival_fallback,
+                "soft_beta": state.ignition_beta,
+                # 当前恒为签名默认值；显式写出来是为了让「改阈值」这件事必须动这一处，
+                # 而不是分头改两个调用点（见 _GateCriteria docstring）。
+                "threshold": SALIENCE_THRESHOLD,
+            }
+            terms, fusion_names = ignite(
                 streams,
-                survival_fallback=state.ignition_survival_fallback,
-                soft_beta=state.ignition_beta,
+                gate_fusion=state.gate_fusion,
+                exclude_physio_fusion=state.exclude_physio_fusion,
+                **gate_criteria,
             )
+            ignited = report_ignited(streams, **gate_criteria)
             # P3 层级预测编码（HPC v1）：门控关（默认 layers=1 或 coupling=0.0）→
             # 走现 fuse_terms 路径逐字不变（hierarchical_fuse 内部退化旁路保证零回归）。
             # 开启（layers>=2 且 coupling>0）→ 重建带 name 的流列表传给 hierarchical_fuse。
@@ -119,7 +174,10 @@ class AffectCoreAgent:
             # 精度语义自洽（gate 先于 HPC）；soft_beta=None（默认）时精度不变，零回归。
             if state.hierarchical_layers >= 2 and state.hierarchical_coupling > 0.0:
                 named_terms: list[tuple[str, tuple[float, float], tuple[float, float]]] = [
-                    (name, mu, prec) for name, (mu, prec) in zip(ignited, terms, strict=True)
+                    # 用 fusion_names（与 terms 同源对齐）而非 ignited（报告子集）——
+                    # 门开时后者是前者的子集、长度不等，用它会当场 ValueError（BLOCK 1）。
+                    (name, mu, prec)
+                    for name, (mu, prec) in zip(fusion_names, terms, strict=True)
                 ]
                 if named_terms:
                     post_mu, post_sigma = hierarchical_fuse(
@@ -138,11 +196,18 @@ class AffectCoreAgent:
                 1.0 / max(MIN_SIGMA, state.prior_sigma[0]) ** 2,
                 1.0 / max(MIN_SIGMA, state.prior_sigma[1]) ** 2,
             )
+            # precision_commensurable：同 workspace 分支的 mood 处理。evidence 的 pi 来自
+            # value.py，门开时已在那里齐次化，此处不重复处理。
+            mood_prec_nb = (
+                mood_precision(commensurable=True)
+                if state.precision_commensurable
+                else state.mood_precision
+            )
             post_mu, post_sigma = fuse_terms(
                 [
                     (state.prior_mu, prior_prec),
                     (evidence, (pi, pi)),
-                    (prev_mood, (state.mood_precision, state.mood_precision)),
+                    (prev_mood, (mood_prec_nb, mood_prec_nb)),
                 ]
             )
         else:
@@ -175,6 +240,20 @@ class AffectCoreAgent:
             entry["ignited_streams"] = ignited
             out["ignited_streams"] = ignited
             out["affect_precision"] = 0.5 * (1.0 / post_sigma[0] ** 2 + 1.0 / post_sigma[1] ** 2)
+            # Kish 有效流数（议会 2026-07-28 第四轮 D5）：**纯观测量**。读数 →1 = 后验实际
+            # 由单流决定。⚠ 不得据此下硬断言——单流主导在合法校准下也会发生（见函数 docstring）。
+            #
+            # ⚠ 措辞要准：`entry` **就是** `out["trace"][0]` 的同一个对象（列表存引用），
+            # 故 n_eff **确实随 trace 进 state 并被 Checkpointer 持久化**。它不是"游离于
+            # state 之外"。成立的不变式只有两条：① 不是独立的顶层 out 字段；
+            # ② 全仓无任何下游读 `trace[...]["n_eff"]`，故不参与计算、不做门。
+            # 体量上是一对 float，属 state.py:4「trace 仅存标量中间量」的允许范围。
+            #
+            # 只在 comm 门开时写：`workspace_enabled` 是早于本项就已上线的**独立**旗标，
+            # 本项承诺的「默认关=零回归」只覆盖 precision_commensurable。若不加这层判断，
+            # 已开 workspace 但没开本门的用户 trace 会静默多一个键——那是本项范围外溢。
+            if comm:
+                entry["n_eff"] = effective_stream_count(terms)
         logger.debug(
             "affect_core e*=%s post_mu=%s post_sigma=%s ignited=%s",
             e_star,

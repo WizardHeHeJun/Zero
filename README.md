@@ -346,7 +346,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_MCP_HTTP_TOKEN` | —（本机免鉴权） | streamable-http 的 Bearer 共享密钥；本机(loopback) 未设=免鉴权，**对外(非 loopback) 未设 token 则启动即拒绝**（不开无鉴权裸端口）。缺失或错误的 token 返回 401；client 侧需配置同一个 token 值（两端变量名不同） |
 | `ZERO_MCP_WORKSPACE_ENABLED` | 开 | 会话默认开显著度门控工作空间（否则外部先验流被整段跳过） |
 | `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关；只受这些 env 治理，client 传入的同名字段被忽略（防越权开启） |
-| `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数 |
+| `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数。<br>⚠ 这些精度是**独立校准完成前的保守占位**，不是「同等地位却意外弱势」——它们**有意**低于 `ZERO_TEXT_AFFECT_PRECISION=0.3` 以保持层级；且**不随 `ZERO_PRECISION_COMMENSURABLE` 齐次化**（该开关只作用于引擎内部的四条流）。即开启齐次化后外部流相对更弱，这是已知且被接受的现状。<br>⚠ 另注：`valence` 越出 `[-1,1]` 会在边界被拒（返回错误而非静默截断），`arousal` 越界则仍按幅度截断到 1.0——这个不对称是有意的：前者是恒等透传、越界即契约违反，后者是「幅度→强度」的语义映射、截断是映射的一部分。 |
 
 > **会话续接与安全**：默认内存后端下 server 重启即丢会话。要跨重启续会话，设 `ZERO_CHECKPOINT_BACKEND=sqlite`（+`ZERO_CHECKPOINT_DB`），client 用**同一个 `session_id`** 重新 `open_session` 即接上；session_id 失效时 `step` 返回带 `unknown-session:` 前缀的错误，client 可据此重开重试。⚠ session_id 等同于该会话运行态与记忆的**访问凭据**，多用户部署必须配鉴权。
 >
@@ -473,6 +473,9 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_PANKSEPP_DISTINGUISH_FEAR` | 关 | `(-v,+a)` 象限按 arousal 阈值分 fear/rage；**⚠ 纯 arousal 阈值不足以区分 RAGE/FEAR、缺乏神经生理依据，建议保持关闭**——区分愤怒 / 恐惧的正式方案是上文「进阶能力②」的第三维 `coping_potential`（按情境控制感分野），此旧旋钮已被取代 |
 | `ZERO_MOOD_PRECISION` | 内置常量 | mood 流精度加权（介于主评价流与 `SURVIVAL_PRECISION=0.4` 之间）；调小=降低心境流投票权 |
 | `ZERO_TEXT_AFFECT_PRECISION` | 内置常量 | 文本语义流精度（固定低值，Friston 2009 初始固定精度）；调小=进一步压制文本流权重 |
+| `ZERO_IGNITION_GATE_FUSION` | **开**（⚠ 默认值是 `true`，与本表其它开关相反）| **把「哪些流值得报告」与「哪些流参与算数」分开**。并行流竞争时原先由一个显著度阈值同时决定二者——一条流没跨过阈值，就既不被报告、**也完全不参与后验计算**。这在建模上说不通：阈下不显著 ≠ 对当前状态零贡献；且低精度流一旦单独跨阈，会把高精度流整条挤出计算。设为 `false` 后，后验改由**全部流按各自精度加权**得到（精度=该流的可信度，本就是它该起的作用），显著度阈值只保留为可解释性标签。<br>同一开关一并去掉快生存流唤醒的 `0.5` 常数底：零强度输入下它原先仍断言「中等唤醒」，等于把「没有信号」编码成「确定的中等激活」。<br>⚠ **与层级预测编码互斥**：设 `false` 时若同时开 `ZERO_HPC_LAYERS≥2` 且 `ZERO_HPC_COUPLING>0`，会在**启动时**明确报错——两者的联合语义尚未定义，宁可拒绝也不静默产出未经验证的数值。 |
+| `ZERO_EXCLUDE_PHYSIO_FUSION` | **开** | 生理通道（EDA/HRV/瞳孔等）的外部先验**不参与**后验计算，仅可被报告。当前生理唤醒读数在公开被试数据上与真实唤醒方向不一致，参与计算会引入系统性偏差；待其度量方式重做后再放开。仅在 `ZERO_IGNITION_GATE_FUSION=false` 时有意义。 |
+| `ZERO_PRECISION_COMMENSURABLE` | 关 | **把各并行流的精度放到同一把尺子上**。精度加权融合（`Σπμ/Σπ`）要求各流的 π 都是**逆方差**，即比值尺度（Stevens 1946）；但快生存流 / 心境流 / 文本流的 π 原是人工设定的常数、价值流的 π 原是 sigmoid **概率**，它们只保证了「谁比谁大」的次序，反解成标准差得 1.0~1.8——比 `[-1,1]` 值域的半宽还大。开启后四条流一律改写成 `1/σ²`、σ 表达在同一值域上，σ 的取值各有推导来源（如心境流取自其自身动力学的吸引盆半宽）。<br>实测效果：主评价流的权重占比均值从 92.7% 降到 70.0%，有效流数（Kish `N_eff`）从 1.18 升到 2.12，唤醒维的后验符号翻转率从 0.77% 降到 **0**。<br>**⚠ 这只统一了量纲，不等于校准正确**——从模型残差实证估计 σ 是独立的后续工作。<br>**⚠ 开启时 `ZERO_MOOD_PRECISION` / `ZERO_TEXT_AFFECT_PRECISION` 须留默认值**，否则新旧两套标度混用，启动时会直接报错而非静默生效。 |
 
 **⑥ 日志**
 
