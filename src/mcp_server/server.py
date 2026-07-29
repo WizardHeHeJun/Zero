@@ -132,26 +132,67 @@ _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
 DESCRIBE_CONFIG_VERSION = 1
 
 
-async def _purge_thread_state(thread_id: str) -> bool:
-    """删掉某 thread_id 的全部持久 checkpoint；返回是否确有删除动作。
+async def _delete_thread(saver: Any, thread_id: str) -> bool:
+    """在**给定的** saver 上删掉某 thread_id 的全部 checkpoint；返回是否确有删除动作。
 
-    走 LangGraph checkpointer 的公开 `adelete_thread`（存在则用）。老版本 saver 没有该方法时
-    返回 False 并记 WARNING —— **不自己拼 SQL**：那会绑死 sqlite 的表结构，
-    后端一换（postgres）就是静默失效或删错表。
+    走 LangGraph 公开的 `adelete_thread`。老版本 saver 无该方法时返回 False 并记 WARNING
+    —— **不自己拼 SQL**：那会绑死 sqlite 表结构，换后端即静默失效或删错表。
     """
-    from src.storage.checkpointer import build_checkpointer
-
-    saver = build_checkpointer()
     deleter = getattr(saver, "adelete_thread", None)
     if deleter is None:
         logger.warning(
-            "checkpointer %s 无 adelete_thread，purge 无法删除持久态 thread_id=%s",
+            "checkpointer %s 无 adelete_thread，purge 无法删除 thread_id=%s",
             type(saver).__name__,
             thread_id,
         )
         return False
     await deleter(thread_id)
     return True
+
+
+def _checkpoint_backend() -> str:
+    """当前 checkpointer 后端名（小写）。与 `build_checkpointer` 同源读同一 env。"""
+    return (os.getenv("ZERO_CHECKPOINT_BACKEND") or "memory").lower()
+
+
+async def _purge_detached_thread(thread_id: str) -> tuple[bool, str]:
+    """会话**不在册**时的 purge：只有持久后端才谈得上删（返回 是否真删, 说明）。
+
+    🛑 **memory 后端必须诚实回 False**（Zero_MCP 2026-07-30 只读核出、我方实证确认）：
+    `build_checkpointer()` 每次返回**新的空 `InMemorySaver`**（实测两次 build 非同一实例），
+    在它上面 `adelete_thread` 等于什么都没删，却会回 `purged=True`
+    —— **数据删除 API 的假成功**，而 memory 正是默认后端。
+    memory 后端的运行态本就随 `ConversationSession` 对象消亡，close 即等效清除。
+    """
+    backend = _checkpoint_backend()
+    if backend == "memory":
+        return False, (
+            "memory 后端：运行态随会话对象消亡、无持久副本可删；"
+            "会话不在册即已无数据。purged=False 是如实回报，不是失败"
+        )
+    from src.storage.checkpointer import build_checkpointer
+
+    try:
+        saver = build_checkpointer()
+    except NotImplementedError as e:
+        # postgres 分支构造期 fail-fast。⚠ 不加这一层它会**裸穿**出工具、不带任何机读码
+        # （对方只读核出、我方实证确认：抛的是 NotImplementedError 而非 ToolError）。
+        raise _tool_error(
+            ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+            f"checkpoint 后端 {backend!r} 尚未接线，无法执行 purge：{e}",
+        ) from e
+    try:
+        purged = await _delete_thread(saver, thread_id)
+    finally:
+        # ⚠ 关掉这条**临时** saver 的连接：sqlite 下 build_checkpointer 会新建一条
+        # aiosqlite 连接，不关则每次 purge 泄漏一条（对方指出的第 ① 条）。
+        conn = getattr(saver, "conn", None)
+        if conn is not None:
+            try:
+                await conn.close()
+            except Exception as e:  # 清理路径故意宽捕获，幂等
+                logger.debug("purge 临时 saver 关连接忽略异常：%s", e)
+    return purged, f"{backend} 后端：按 thread_id 删除持久 checkpoint"
 
 
 def _tool_error(code: str, message: str) -> ToolError:
@@ -757,11 +798,48 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         不自动清理 —— 它只提供「被要求删除时能删掉」的能力。双方已确认该能力的落地
         **不依赖**那两项定性。
 
-        实现：先 `close_session` 走一遍（释放连接、摘牌，幂等），再删 checkpoint。
+        🛑 **删除必须发生在会话自己的 saver 上、且在 `aclose()` 之前**（2026-07-30 修）：
+        初版走 `build_checkpointer()` **新建**一个 saver 再删，三处都错——
+        ① sqlite 下每次 purge 泄漏一条 aiosqlite 连接；
+        ② memory 下删的是个**新建的空 saver**，回 `purged=True` 却什么都没删（假成功）；
+        ③ postgres 下 `NotImplementedError` **裸穿**、不带机读码。
+
+        `purged=False` 是**如实回报**、不是失败：`ok` 表示「请求已被正确处理」，
+        `purged` 表示「是否真删掉了持久副本」，两者语义不同，请勿合并判断。
         """
-        await close_session(session_id)
-        purged = await _purge_thread_state(session_id)
+        session, lock = await registry.acquire(session_id)
+        if session is None or lock is None:
+            # 不在册：可能已 close、或 server 重启后从未开过——但持久后端上数据可能仍在，
+            # 这正是「按 id 删一个不活跃会话」的合法用法，不能当幂等 no-op 打发掉。
+            purged, detail = await _purge_detached_thread(session_id)
+            logger.info("zero.purge_session sid=%s purged=%s（不在册）", session_id, purged)
+            return {
+                "ok": True,
+                "purged": purged,
+                "backend": _checkpoint_backend(),
+                "detail": detail,
+            }
+
+        await registry.close(session_id)  # 先摘牌止住新活（同 close_session 的理由）
+        try:
+            await _acquire_with_timeout(lock, session_id)
+        except ToolError:
+            # ⚠ 与 `close_session` 的处置**有意不同**：close 超时可以回 ok（会话已摘牌、
+            # 不再接新活，连接晚点回收无伤）；但 purge 是**调用方显式要求的破坏性动作**，
+            # 静默不删比报错危险得多 —— 上抛，让调用方知道「没删成，请重试」。
+            logger.warning("zero.purge_session 等锁超时 sid=%s：未执行删除", session_id)
+            raise
+        try:
+            purged = await _delete_thread(session.checkpointer, session_id)
+        finally:
+            await session.aclose()  # 删完再关连接（顺序不能反：关了就删不动）
+            lock.release()
         logger.info("zero.purge_session sid=%s purged=%s", session_id, purged)
-        return {"ok": True, "purged": purged}
+        return {
+            "ok": True,
+            "purged": purged,
+            "backend": _checkpoint_backend(),
+            "detail": "已在该会话自身的 checkpointer 上按 thread_id 删除",
+        }
 
     return mcp

@@ -1185,6 +1185,71 @@ async def test_purge_session_is_idempotent_on_unknown_id() -> None:
         assert json.loads(getattr(r.content[0], "text", ""))["ok"] is True
 
 
+async def test_purge_memory_backend_reports_purged_false_honestly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 memory 后端 + 会话不在册 ⇒ `purged=False`，**不得回 True**。
+
+    初版走 `build_checkpointer()` 新建 saver 再删——而它每次返回**新的空 InMemorySaver**
+    （实测两次 build 非同一实例），删它等于什么都没删，却回 `purged=True`：
+    **数据删除 API 的假成功**，而 memory 正是默认后端。
+    这条由配套项目只读核出、我方实证确认。改回旧实现本用例即红。
+    """
+    monkeypatch.delenv("ZERO_CHECKPOINT_BACKEND", raising=False)
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.purge_session", {"session_id": "never-existed"})
+        d = json.loads(getattr(r.content[0], "text", ""))
+        assert d["ok"] is True, "ok 表示请求被正确处理"
+        assert d["purged"] is False, "memory 后端无持久副本可删，回 True 即假成功"
+        assert d["backend"] == "memory"
+        assert "如实回报" in d["detail"]
+
+
+async def test_purge_unsupported_backend_carries_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未接线后端（postgres）必须带机读码，不得裸穿 `NotImplementedError`。
+
+    实证：`build_checkpointer()` 在 postgres 下构造期 raise，且**不是** ToolError
+    ⇒ 无 `[zero:<code>]` 令牌，消费方查表落空。
+    """
+    monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", "postgres")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.purge_session", {"session_id": "x"})
+        assert r.isError is True
+        assert _wire_code(getattr(r.content[0], "text", "")) == "deploy-env-invalid"
+
+
+async def test_purge_uses_the_sessions_own_saver_not_a_fresh_one() -> None:
+    """在册会话的删除必须落在**该会话自己的** checkpointer 上。
+
+    钉法：换掉 session 自身 saver 的 `adelete_thread`，断言它**确实被调用**且拿到对的 thread_id。
+    若实现改回「新建一个 saver 再删」，本用例即红——那正是假成功的成因。
+    """
+    from src.mcp_server.registry import SessionRegistry
+
+    registry = SessionRegistry()
+    async with connect(build_server(registry=registry)) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        session = await registry.get(sid)
+        assert session is not None
+        seen: list[str] = []
+
+        async def _fake_delete(thread_id: str) -> None:
+            seen.append(thread_id)
+
+        session.checkpointer.adelete_thread = _fake_delete  # type: ignore[attr-defined]
+        r = await client.call_tool("zero.purge_session", {"session_id": sid})
+        d = json.loads(getattr(r.content[0], "text", ""))
+        assert d["purged"] is True
+        assert seen == [sid], f"未落在会话自身 saver 上（实收 {seen}）"
+
+
 async def test_purge_session_closes_then_purges() -> None:
     """purge 先走 close（摘牌），之后同 id step 报 unknown-session。"""
     from src.mcp_server.registry import SessionRegistry
