@@ -204,7 +204,7 @@ class SessionConfig(BaseModel):
         """BLOCK 2（议会第四轮 · 位置由第五轮改判到此）：新融合架构 × HPC 显式互斥。
 
         `gate_fusion=False`（全流精度加权）与 `hierarchical_layers≥2 且 coupling>0`（HPC）
-        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.py:419`
+        的**联合语义未定义**：HPC 给 L0 流额外乘 `w²`（`affect_math.hierarchical_fuse`
         `pi_core = pi_l1e + w2 * pi_l0`），实测 coupling=0.3 时硬契约
         `|post_mu − ΣΠμ/ΣΠ|` 偏差 **0.0773**、arousal 符号翻转。本轮**不解**该数学，
         只做显式互斥——收缩的是两个独立开关的乘积空间，不是整个特性。
@@ -714,6 +714,28 @@ class ConversationSession:
         )
         state = result if isinstance(result, AffectState) else AffectState(**result)
         return _state_to_entry(stim.name, state)
+
+    async def interrupted_at(self) -> tuple[str, ...] | None:
+        """上一轮是否被**中途取消**过：返回待执行节点名元组；未被中断返回 `None`。
+
+        判据是 LangGraph 自己持久化的 `next`——图跑完整一轮后 `next` 恒为空元组，
+        非空即「停在某个 super-step 边界、还有节点没跑」。**不需要我方在取消时抢着写标记**
+        （stdio 下取消后进程毫秒级退出，那个窗口靠不住）。
+
+        为什么要有这条（2026-07-29 跨仓实证）：
+        - LangGraph **每个 super-step 之后**写一次 checkpoint，我方图是线性 10 节点
+          ⇒ 取消几乎必然停在中间，已跑完节点的状态**已落盘**；
+        - 我方 `ZERO_MCP_TRANSPORT` 默认 stdio，client 只要关 stdin，handler **+0.015s**
+          就被取消 —— **不需要任何人加超时，今天就成立**；
+        - sqlite 后端下这个半截态**跨重启保留**，而跨重启 resume 正是 T6 支持的能力。
+        🛑 **半截 checkpoint 存在本身不致命，被当成有效状态续跑才致命**——本方法提供的就是
+        「续跑之前先看一眼」的能力。此前全仓**没有任何代码检查过 `next`**。
+
+        ⚠ 本方法只**报告**、不回滚。回滚是对外可见的行为变更，须单独决策。
+        """
+        snapshot = await self.graph.aget_state({"configurable": {"thread_id": self.thread_id}})
+        nxt = tuple(snapshot.next or ())
+        return nxt or None
 
     async def aclose(self) -> None:
         """释放运行态 checkpointer 的底层 aiosqlite 连接（sqlite 后端）；InMemory 无连接 = no-op。

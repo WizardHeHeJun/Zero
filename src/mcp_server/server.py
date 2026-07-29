@@ -10,7 +10,8 @@
 **不进 affect 热路径**（映射是纯数据搬运）、secrets 走 env。`mcp` 走 optional-deps 不入 core。
 
 会话门控默认（`ZERO_MCP_*` env 可调）：`workspace_enabled=True`（否则 external_priors 被整段
-跳过，`affect_core.py:44,100-107`——external_priors 是 client 契约核心、独立低精度流已经完整
+跳过，见 `affect_core` 的 `if state.workspace_enabled:` 分支——external_priors 是 client
+契约核心、独立低精度流已经完整
 PRP + code-reviewer 批准，故默认开）；`coping_potential_enabled=False`（**与生产/chat 路径一致·
 零回归**——原默认 True 被议会四轮 2026-07-18 判为「生产关·MCP 开」治理旁路：anger 方向先验尚未
 经议会解锁，不得经 MCP 面静默生效。MCP 边界是否统一/anger 侧是否受同一弃权门约束=议会 B1 悬而
@@ -25,9 +26,11 @@ MCP 面不得旁路生效，仅 `ZERO_MCP_TEXT_COPING_ENABLED` env 治理，见 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -56,12 +59,95 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
         # 比上面几个门更深；且 physio 排除是对 Zero_MCP 的跨仓承诺，不容 client 单边解除。
         "gate_fusion",
         "exclude_physio_fusion",
+        # ignition_beta（2026-07-29 跨仓）：非 None 即走**软门**分支，而软门下全部流（含 physio）
+        # 一律进 fuse_terms、无阈值筛除、也不施 D7 排除 ⇒ client 经 config 传它即可让 physio
+        # 进入数值后验，等于单边解除对 Zero_MCP 的 D7 承诺。深度等同 gate_fusion，故入白名单。
+        # ⚠ 配套项目已确认其生产码从不传该字段，但那是**当前调用点的事实、不是结构保证**
+        # （其 client 的 config 是无白名单透传），故我方按结构收紧、不依赖对方不传。
+        "ignition_beta",
+        # canonical_physiology（2026-07-29 跨仓）：它决定 physiology 载荷的**量纲与键集**
+        # （legacy 归一 [0,1] + pupil_mm ↔ canonical μS[0,20] + temperature_c），
+        # 而消费侧据此选 skin_conductance_max_us=1.0 还是 20.0——选错即 20× 欠/过标度且不报错。
+        # 🛑 入白名单前它**不在**治理内，而配套项目 client 对 config 是无白名单透传
+        # ⇒ 两侧 env 全未设时，client 经 config 置真即可让载荷变成 canonical μS
+        # （对方实测 sc=16.0），消费侧却按 env 推断成 legacy。
+        # 收紧理由与 ignition_beta 逐字同型：它改的是**对外可见的载荷语义**，不容 client 单边翻转。
+        # base 里已由 ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER 播种，故入白名单是零额外接线。
+        "canonical_physiology",
     }
 )
 
-# step 未知/过期 session_id 的机读错误前缀（zero-link T6）：MCP graceful_step 按此前缀判定 →
-# 用同 id resume 重开重试（区别于其它 ToolError）。消息仍含 "session_id" 子串保既有断言。
-_UNKNOWN_SESSION_MARKER = "unknown-session"
+# ── 机读错误码（zero-link 跨仓契约）────────────────────────────────────────
+# 🛑 **必须是位置不敏感的方括号令牌，不能用位置 0 的裸前缀**。
+# 原因（2026-07-29 两侧实证）：FastMCP 在工具层把 ToolError 加壳成
+#   "Error executing tool <tool_name>: <原文>"
+# ⇒ 任何写在位置 0 的前缀，在 wire 上**永远不在位置 0**。
+# 旧实现 `_UNKNOWN_SESSION_MARKER = "unknown-session"` 正是裸前缀：配套项目按
+# `text.lstrip().startswith(...)` 判定 ⇒ 对真 server 文本**恒 False**，
+# T6·④ 的 resume 重试通路是**生产死码**；而两侧单测都用子串/未加壳夹具，故长期全绿。
+# 典型「检查比消费方宽松 ⇒ 绿灯从没能红」。
+#
+# 现格式：`[zero:<code>]`，ASCII kebab-case，**全文恰出现一次**，位置不限。
+# 消费方按 `re.search(r"\[zero:([a-z][a-z0-9-]*)\]")` 提取查表，无需与 SDK 抢位置。
+# ⚠ 码值请按**符号名** pin（下面的常量），不要 pin 字面量。
+ZERO_ERROR_CODE_UNKNOWN_SESSION = "unknown-session"
+ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE = "config-incompatible"
+ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID = "external-prior-invalid"
+ZERO_ERROR_CODE_PAYLOAD_INVALID = "payload-invalid"
+ZERO_ERROR_CODE_CONFIG_INVALID = "config-invalid"
+ZERO_ERROR_CODE_DEPLOY_ENV_INVALID = "deploy-env-invalid"
+# ── 超时：**两个码，不是一个**（Zero_MCP 2026-07-29 建议，我方采纳）──
+# 二者**重试语义相反**，用同一个码等于把判别推回人读文案：
+#   · timeout-lock：等锁超时，本轮**未进入内核**、运行态未改动 ⇒ 可退避后原样重试；
+#   · timeout-step：内核执行超时，取消 ainvoke 会在 checkpointer 留**半截运行态**
+#     （已实证：LangGraph 每个 super-step 写一次 checkpoint，我方图线性 10 节点）
+#     ⇒ **不可原样重试**，重试会让已跑完的节点重跑、reducer 通道双重累加。
+# ⚠ timeout-step 目前**只登记不产出**——执行超时尚未实现（选型见跨仓件，倾向 shield 或节点内降级）。
+# 先登记是为了让消费方的分类表一次到位，不必等我方落地再改一轮。
+ZERO_ERROR_CODE_TIMEOUT_LOCK = "timeout-lock"
+ZERO_ERROR_CODE_TIMEOUT_STEP = "timeout-step"
+
+ZERO_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        ZERO_ERROR_CODE_UNKNOWN_SESSION,
+        ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE,
+        ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID,
+        ZERO_ERROR_CODE_PAYLOAD_INVALID,
+        ZERO_ERROR_CODE_CONFIG_INVALID,
+        ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+        ZERO_ERROR_CODE_TIMEOUT_LOCK,
+        ZERO_ERROR_CODE_TIMEOUT_STEP,
+    }
+)
+
+# 兼容别名：旧名仍导出，值不变（配套项目现有断言含 "unknown-session" 子串者不受影响）。
+_UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+
+def _tool_error(code: str, message: str) -> ToolError:
+    """构造带机读令牌的 `ToolError`：`[zero:<code>] <人读文案>`。
+
+    令牌前置只为人读顺眼；消费方按 `search` 匹配，**不依赖位置**——
+    FastMCP 加壳后它会落在文案中部，这正是本设计要容忍的。
+    """
+    if code not in ZERO_ERROR_CODES:  # 防手抖引入未登记码，消费方查表会漏
+        raise ValueError(f"未登记的错误码 {code!r}；请先加进 ZERO_ERROR_CODES")
+    # 净化人读文案里的同形字面量：坏载荷会被回显进文案（如 session_id={...!r}），
+    # 若其中含 "[zero:" 就会出现第二个令牌，破坏「全文恰一次」契约、让消费方取到歧义结果。
+    # 换开括号即可——保留可读性，且不引入零宽字符这类看不见的处理。
+    return ToolError(f"[zero:{code}] {message.replace('[zero:', '(zero:')}")
+
+
+class ServerEnvError(RuntimeError):
+    """**部署端** env 值不合法（不是 client 传参问题）。
+
+    刻意**不继承** `ValueError`/`TypeError`：`open_session` 用
+    `except (ValueError, TypeError) -> ToolError("config 不合法")` 兜 SessionConfig 的构造校验，
+    若本类落进那一支，部署端把 `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` 写成 `"0.8x"` 这种错，
+    报出来会指向 **client 的 config** —— client 照着改 config 永远改不好。
+    ⚠ stdio 传输下 client 进程环境**就是** server 进程环境（其 `_build_subprocess_env` 全量拷贝
+    `os.environ`），所以这条归责错位真的会落到对方头上，不是理论风险。
+    """
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -91,11 +177,71 @@ def _env_flag(name: str, default: bool) -> bool:
     return default  # 未识别（含空串）→ 回落默认，**不再一律 False**
 
 
+def _env_number[T: (int, float)](name: str, default: str, caster: Callable[[str], T]) -> T:
+    """读数值 env；坏值抛 `ServerEnvError`（指名 env），**不**抛 ValueError。
+
+    与 `ZERO_MCP_HTTP_PORT` 的处理同口径。区别在于本函数用于 `_build_session_config`，
+    而后者被 `open_session` 的 `except (ValueError, TypeError)` 包着——裸 `float()` 的
+    ValueError 落进那一支就会被贴成「config 不合法」，把部署端的锅甩给 client。
+    """
+    raw = os.getenv(name, default)
+    try:
+        return caster(raw)
+    except (ValueError, TypeError) as e:
+        raise ServerEnvError(
+            f"{name} 须为 {caster.__name__}，当前值={raw!r}；这是**部署端 env** 的问题，"
+            "改 client 传的 config 无效"
+        ) from e
+
+
+def _env_optional_float(name: str) -> float | None:
+    """读「可选 float」env：未设 / 空串 → `None`（保留「未设即关」语义）；坏值抛 `ServerEnvError`。
+
+    不能用 `_env_number`：那个必须给字符串默认值，而 `ignition_beta` 的 `None` 与任何浮点数
+    语义不同（`None` = 硬 step 门，任何 float = 软门，含 `0.0`）。
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise ServerEnvError(
+            f"{name} 须为浮点数或留空，当前值={raw!r}；这是**部署端 env** 的问题，"
+            "改 client 传的 config 无效"
+        ) from e
+
+
+async def _acquire_with_timeout(lock: asyncio.Lock, session_id: str) -> None:
+    """按 `ZERO_MCP_STEP_LOCK_TIMEOUT`（秒，未设=无限）获取会话锁；超时抛 `[zero:timeout]`。
+
+    ⚠ **只超时「获取」，不超时「执行」**——见调用点注释。超时的是排队中的请求，
+    正在跑的那一轮不受影响，故本函数**不会**引起运行态半落盘。
+
+    ⚠ `asyncio.wait_for` 取消 `lock.acquire()` 时，CPython 的 `asyncio.Lock` 会在
+    `CancelledError` 分支里把「取消瞬间恰好抢到锁」这种竞态还回去（唤醒下一个等待者）。
+    该性质由 `test_lock_timeout_does_not_leak_the_lock` 实证锁住——它是本函数正确性的地基，
+    不是可有可无的边界用例。
+    """
+    timeout = _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT")
+    if timeout is None:
+        await lock.acquire()
+        return
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout)
+    except TimeoutError as e:  # py3.11+ asyncio.TimeoutError 即 builtin TimeoutError
+        raise _tool_error(
+            ZERO_ERROR_CODE_TIMEOUT_LOCK,
+            f"等待会话锁超时（{timeout}s）：sid={session_id!r} 上一轮 step 仍在执行。"
+            "本轮未进入内核、运行态未改动，可原样重试",
+        ) from e
+
+
 def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     """从 env 装配 MCP 边界的会话默认门控；`overrides` 覆写 SessionConfig 已声明字段。
 
     覆写只挑 SessionConfig 已有字段（防注入未知键），并经 SessionConfig 构造**重新校验**
-    （如共情系数 L1 上界 `runner.py:131-140`），坏值 fail-fast → 上层转 ToolError。
+    （如共情系数 L1 上界 `SessionConfig._check_empathy_l1`），坏值 fail-fast → 上层转 ToolError。
 
     **议会解锁门（A5·A6·2026-07-21）**：`_MCP_GOVERNANCE_GATED_FLAGS` 中的字段
     （`text_coping_enabled`/`coping_potential_enabled`）**不受 overrides 覆写**，
@@ -121,6 +267,15 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # MCP 收窄前提（CS 席约束·design.md）：消费方须确认部署端已开此 env 才能依赖
         # canonical 键集（{hr,sc(μS),temperature_c}）；默认关=legacy 占位（含 pupil_mm）。
         "canonical_physiology": _env_flag("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", False),
+        # facs_extended：AU 扩展集合门控。**必须与 _maybe_expression_decoder 同读同一 env**——
+        # 该函数按此 env 决定 load_facs_decoder(extended=...)（13 键 vs 5 键），而 expression 节点
+        # 按 state.facs_extended 走。此前 base 漏了这一行：设 ZERO_FACS_EXTENDED=true 且给了
+        # ZERO_FACS_MODEL_PATH 时，decoder 载入 13 键真模型、state 却取字段默认 False
+        # → C2 residual 的 coping 分野（AU23/AU01/AU02/AU20）被静默跳过。同 canonical_physiology
+        # 的同源契约（composite.py 的键集对齐要求）。回归锁：
+        # tests/test_mcp_server.py::test_mcp_facs_extended_env_seeds_session_config
+        # （撤掉本行即红，已实证）。
+        "facs_extended": _env_flag("ZERO_FACS_EXTENDED", False),
         # 默认 False：与生产/chat 零回归一致（议会 2026-07-28 第四轮）——齐次化改的是每轮
         # 无条件执行的默认融合路径，MCP 面不得旁路生效；仅 ZERO_MCP_PRECISION_COMMENSURABLE
         # env 治理，client override 被 gated_flags 静默忽略。
@@ -131,10 +286,16 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         "gate_fusion": _env_flag("ZERO_MCP_IGNITION_GATE_FUSION", True),
         # physio 排除默认 True（D7 跨仓承诺·由我方单边可控）。
         "exclude_physio_fusion": _env_flag("ZERO_MCP_EXCLUDE_PHYSIO_FUSION", True),
-        "external_prior_precision_cap": float(
-            os.getenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8")
+        # ⚠ **成对要求**：进了 _MCP_GOVERNANCE_GATED_FLAGS 就必须在 base 里给 env 入口，
+        # 否则该字段在 MCP 路径**永久取默认值**（对 ignition_beta 即永久 None）——design D6 的教训。
+        "ignition_beta": _env_optional_float("ZERO_MCP_IGNITION_BETA"),
+        # ⚠ 这两个走 _env_number：裸 float()/int() 抛的 ValueError 会被 open_session 的
+        # `except (ValueError, TypeError)` 贴成「config 不合法」——**部署端 env 写错却指向
+        # client 传参**（见 ServerEnvError 的说明）。
+        "external_prior_precision_cap": _env_number(
+            "ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8", float
         ),
-        "max_external_streams": int(os.getenv("ZERO_MAX_EXTERNAL_STREAMS", "5")),
+        "max_external_streams": _env_number("ZERO_MAX_EXTERNAL_STREAMS", "5", int),
     }
     if overrides:
         base.update(
@@ -226,7 +387,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     decoder = _maybe_expression_decoder()
     # HTTP 传输的监听配置（stdio 下无害·仅 streamable-http 生效）：host/port/path 走 env，
     # 便于给 MCP 侧稳定 endpoint（默认 127.0.0.1:8000/mcp，与 FastMCP 默认一致）。
-    # port 非法值 fail-fast 指向 env 名（与 _build_session_config 的 float/int 处理风格一致）。
+    # port 非法值 fail-fast 指向 env 名（与 _build_session_config 的 _env_number 同口径）。
     try:
         http_port = int(os.getenv("ZERO_MCP_HTTP_PORT", "8000"))
     except ValueError as e:
@@ -243,8 +404,11 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     @mcp.tool(
         name="zero.open_session",
         description=(
-            "建/重开一个 Zero 情感引擎会话（建图/checkpointer 一次），返回 {session_id}。"
-            "传 session_id 则按旧 id 重开（跨 server 重启续会话·须持久后端）；不传则新铸。"
+            "建/重开一个 Zero 情感引擎会话（建图/checkpointer 一次）。"
+            "返回 {session_id, resumed}；resume 且探测到上一轮被中途取消时另带 "
+            "{interrupted_at: [待执行节点名]}——该会话运行态停在 super-step 边界，"
+            "续跑会从此处继续而非重跑整轮。传 session_id 则按旧 id 重开"
+            "（跨 server 重启续会话·须持久后端）；不传则新铸。"
         ),
         structured_output=False,
     )
@@ -252,7 +416,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         persona: str | None = None,
         config: dict[str, Any] | None = None,
         session_id: str | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:  # resumed 是 bool、interrupted_at 是 list[str]，故不能收窄成 dict[str,str]
         """建会话；传 `session_id` 走 resume（zero-link T6）。
 
         `config` 经唯一治理入口 `_build_session_config`（议会 env-only 门控 resume 亦保持）。
@@ -263,21 +427,36 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         """
         try:
             cfg = _build_session_config(config)
+        except ServerEnvError as e:
+            # 部署端 env 坏值：必须与下面的 client-config 分支分开报，否则 client 照着改
+            # config 永远改不好（同 zero.step 里 ExternalPriorError / ValueError 的分治理由）。
+            raise _tool_error(
+                ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+                f"服务端 env 配置不合法（**非** client config 问题）：{e}",
+            ) from e
         except (ValueError, TypeError) as e:
-            raise ToolError(f"config 不合法：{e}") from e
+            raise _tool_error(ZERO_ERROR_CODE_CONFIG_INVALID, f"config 不合法：{e}") from e
         if session_id is not None:
             if not isinstance(session_id, str) or not session_id.strip():
-                raise ToolError(f"session_id 须为非空字符串，实际为 {session_id!r}")
+                raise _tool_error(
+                    ZERO_ERROR_CODE_PAYLOAD_INVALID,
+                    f"session_id 须为非空字符串，实际为 {session_id!r}",
+                )
             if await registry.get(session_id) is not None:
                 # 同进程内仍活跃：幂等返回（不重建·不重开 aiosqlite 连接·不覆盖在飞运行态）。
                 # 会话门控构造时固定、贯穿整会话，故此处不重应用 cfg：client 对活跃会话传的新
                 # config 静默不生效（SessionConfig 不可变；跨重启 resume 重建时才用新 cfg）。
                 logger.info("zero.open_session resume(active) sid=%s", session_id)
-                return {"session_id": session_id}
+                # ⚠ 本分支**不得**回显刚算出的 `cfg`（Zero_MCP R11 实现警告）：活跃会话的门控
+                # 构造时固定，回显 cfg = 回显「本可生效但实际未生效」的值，**比不回显更危险**
+                # （消费方会拿它当真、比对通过、实则语义已分叉）。要回显只能从 session 对象取。
+                return {"session_id": session_id, "resumed": True}
             # resume：新建绑同 thread_id，持久后端 ainvoke 时自动从 checkpoint 恢复。
             sid = session_id
+            resuming = True
         else:
             sid = uuid.uuid4().hex
+            resuming = False
         # thread_id=user_id=sid：会话态经 checkpointer 按 thread_id 跨轮持久 + 记忆作用域天然按
         # session 隔离（防多会话共享 default-user 记忆串味，同 chat_driver 口径）。
         session = ConversationSession(
@@ -287,6 +466,25 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             expression_decoder=decoder,
         )
         await registry.open(sid, session)
+        # ── resume 时先看一眼上一轮是否被中途取消（2026-07-29 跨仓实证）──
+        # 我方默认 stdio 传输，client 关 stdin 即让在飞的 step 在 +0.015s 被取消，
+        # LangGraph 每个 super-step 都已落盘 ⇒ 半截运行态跨重启保留。
+        # 🛑 半截 checkpoint 存在本身不致命，**被当成有效状态续跑才致命** —— 此处至少让它可见。
+        # ⚠ 只报告不回滚：回滚是对外可见的行为变更，须单独决策。
+        interrupted: tuple[str, ...] | None = None
+        if resuming:
+            try:
+                interrupted = await session.interrupted_at()
+            except Exception:
+                # 探测失败不得挡住 resume 本身（宁可少一条观测量，也不把会话打不开）。
+                logger.exception("zero.open_session 中断探测失败 sid=%s", sid)
+            if interrupted is not None:
+                logger.warning(
+                    "zero.open_session resume 发现上一轮被中断 sid=%s 待执行节点=%s；"
+                    "该会话的运行态停在 super-step 边界，续跑会从此处继续而非重跑整轮",
+                    sid,
+                    interrupted,
+                )
         logger.info(
             "zero.open_session sid=%s persona=%s resume=%s active=%d",
             sid,
@@ -294,7 +492,12 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             session_id is not None,
             await registry.count(),
         )
-        return {"session_id": sid}
+        # 返回体**只增不改**：配套项目按「除 session_id 外容忍并收下额外键、缺键即回落」解析，
+        # 故新增键对现网零回归。`interrupted` 缺席 = 未探测（新建会话）或探测失败。
+        out: dict[str, Any] = {"session_id": sid, "resumed": resuming}
+        if interrupted is not None:
+            out["interrupted_at"] = list(interrupted)
+        return out
 
     @mcp.tool(
         name="zero.step",
@@ -311,24 +514,38 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     ) -> dict[str, Any]:
         session, lock = await registry.acquire(session_id)
         if session is None or lock is None:
-            raise ToolError(
-                f"{_UNKNOWN_SESSION_MARKER}: 未知 session_id={session_id!r}；"
-                "请先调 zero.open_session（可用同 id resume 续会话）"
+            raise _tool_error(
+                ZERO_ERROR_CODE_UNKNOWN_SESSION,
+                f"未知 session_id={session_id!r}；"
+                "请先调 zero.open_session（可用同 id resume 续会话）",
             )
         try:
             stimulus = stimulus_from_payload(stim)
             priors = external_priors_from_payload(external_priors)
         except (ValueError, TypeError) as e:
-            raise ToolError(f"stim/external_priors 载荷不合法：{e}") from e
+            raise _tool_error(
+                ZERO_ERROR_CODE_PAYLOAD_INVALID, f"stim/external_priors 载荷不合法：{e}"
+            ) from e
         # 同会话串行化：LangGraph checkpointer 读-改-写非原子，并发 ainvoke(同 thread_id) 会竞态
         # （http 传输下 client 可能并发）；stdio 顺序则此锁无争用、零成本。
-        async with lock:
+        # ── 锁**获取**超时（R12 上半，2026-07-29 跨仓契约）──
+        # ⚠ 这里刻意只给「获取」加超时，**不给 step 执行加超时**：
+        #   · 获取超时只让**排队者**失败，不碰正在跑的 ainvoke ⇒ 无状态风险；
+        #   · 执行超时要取消 ainvoke，而「LangGraph 被取消时 checkpointer 会不会落半截运行态」
+        #     今天**未经证实**（已向对方标 UNVERIFIED），在答案出来前取消 ainvoke 可能留下脏态、
+        #     被下一次同 thread_id 的 resume 读到。宁可不做，也不做成一个会静默污染运行态的超时。
+        # 默认 None = 无限等待 = 逐字旧行为（零回归）；秒数按对方 R12「先测再钉」，暂不预设。
+        await _acquire_with_timeout(lock, session_id)
+        try:
             try:
                 step_out = await session.step(stimulus, state_overrides={"external_priors": priors})
             except ExternalPriorError as e:
                 # expand_external_priors 的 M3/M6/M7 fail-fast（精度>0/≤cap、流数≤max、
                 # 形状良构、μ∈[-1,1]）——**确实**指向 client 传参，改传参就能好。
-                raise ToolError(f"external_priors 校验失败（指向 MCP 传参）：{e}") from e
+                raise _tool_error(
+                    ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID,
+                    f"external_priors 校验失败（指向 MCP 传参）：{e}",
+                ) from e
             except ValueError as e:
                 # 内核其它位置抛的 ValueError（如 HPC coupling 越界、未来的配置互斥 fail-fast）。
                 # ⚠ 这里**必须**与上一分支分开报（议会 2026-07-29 第五轮校验 §四-5）：
@@ -337,10 +554,13 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 # 传参永远改不好，而活跃会话的 config 不可变（见 open_session 的 config 语义）
                 # → 无法自救，表现为 open 成功、**每 step 崩**。
                 logger.exception("zero.step 内核执行失败 sid=%s", session_id)
-                raise ToolError(
+                raise _tool_error(
+                    ZERO_ERROR_CODE_CONFIG_INCOMPATIBLE,
                     f"内核执行失败（**非** external_priors 传参问题，改传参无效）：{e}；"
-                    "多为会话级配置组合不兼容，须以新配置重开会话"
+                    "多为会话级配置组合不兼容，须以新配置重开会话",
                 ) from e
+        finally:
+            lock.release()
         expression = step_out.get("expression") or {}
         return expression
 

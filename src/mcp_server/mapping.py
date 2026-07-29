@@ -4,10 +4,12 @@
 - client 发的 `stim = {valence, arousal, coping_potential?}`（`AffectStimulus.model_dump`）
   须映射成内核 OCC 结构 `Stimulus`（无 valence/arousal 字段）。
 - `external_priors` 线上是 `list[[name, [μv,μa], [Πv,Πa]]]`（JSON array，无 tuple），
-  而 `expand_external_priors` 要求 **真 tuple**（`affect_math.py:977-989` isinstance 校验），
+  而 `expand_external_priors` 要求 **真 tuple**
+  （见其形状 isinstance 校验），
   故须 array→tuple。
 
-映射口径镜像既有 canonical 文本→Stimulus 路径 `chat_driver.py:307-316`，不新造语义。
+映射口径镜像既有 canonical 文本→Stimulus 路径
+（`chat_driver` 的 canonical (v,a)->Stimulus 构造处），不新造语义。
 本模块只做形状搬运；精度上界/流数/正性等权威校验交下游 `expand_external_priors`（M3/M6）。
 """
 
@@ -29,25 +31,26 @@ def stimulus_from_payload(
 ) -> Stimulus:
     """把 client 的 `{valence, arousal, coping_potential?}` 映射成内核 `Stimulus`。
 
-    镜像 `chat_driver.py:307-316` 的 canonical (v,a)→Stimulus：
+    镜像 `chat_driver` 的 canonical (v,a)->Stimulus 构造处 的 canonical (v,a)→Stimulus：
     - `goal_congruence = valence`
     - `intensity = min(1.0, max(intensity_floor, |arousal|))`（floor 默认 0：不注入 arousal 底噪）
     - `control_appraisal = coping_potential`（仅非 None 时设；client `model_dump(exclude_none=True)`
-      故省略 coping → 不设 → 保持默认 **None=absent cue**，`state.py:36`）
+      故省略 coping → 不设 → 保持默认 **None=absent cue**，`Stimulus.control_appraisal`）
     `attitude_appeal` 保持默认 0.0（会话边界不承载 chat 层 running attitude）；
     `text=None`（client 已 appraise 过 (v,a)，**不**再跑我方文本回归器）。
 
     **越域输入的处置有意不对称**（议会 2026-07-28 第四轮 A4 落地后）：
     - `arousal` 越域 → `min(1.0, ...)` **静默钳制**。因为这里是语义映射（幅度→强度），
       钳制是映射的一部分，不是防御。
-    - `valence` 越域 → `Stimulus` 的 `Field(ge=-1, le=1)` **拒绝**（`state.py:27-33`）。
+    - `valence` 越域 → `Stimulus` 的 `Field(ge=-1, le=1)` **拒绝**。
       因为这里是恒等透传，越域即 client 违反 `AffectStimulus` 契约，与 M3/M6/M7
       同一处置（fail-fast 指向 MCP 传参）。`server.step` 的 `stimulus_from_payload` 外层
       `except (ValueError, TypeError)` 转 ToolError，不裸崩。
     改动此不对称须与配套项目 Zero_MCP 协调（对外契约）。
 
     coping 是否真正生效由会话侧 `coping_potential_enabled` 门控决定；生效时走 B3 四分支融合
-    （`appraisal.py:192-228`）：ctrl=None → absent cue（分支1/2 精度趋零不参与），显式 0.0 →
+    （`AppraisalAgent.__call__` 的 B3 分支）：ctrl=None → absent cue
+    （分支1/2 精度趋零不参与），显式 0.0 →
     genuine-zero（分支3/4 参与）。client 省略 coping 与显式 0.0 语义天然对齐此新契约。
     """
     if "valence" not in stim or "arousal" not in stim:
@@ -81,7 +84,7 @@ def external_priors_from_payload(payload: list[Any] | None) -> list[ExternalPrio
 
     每条线上是 `[name, [μv,μa], [Πv,Πa]]`；`expand_external_priors` 要求真 tuple。
     本函数只做形状良构（3 元 + 两个 2 元子序列）+ array→tuple；精度正性/上界/流数上界/
-    physio 覆写等权威校验交 `expand_external_priors`（`affect_math.py:935-1010`，M2/M3/M6）。
+    physio 覆写等权威校验交 `affect_math.expand_external_priors`（M2/M3/M6）。
     空/None → 空列表（零回归：无外部先验）。
     """
     if not payload:

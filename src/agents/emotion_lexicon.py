@@ -443,7 +443,8 @@ def appraise_standard_compliance(text: str) -> float:
 # 值域硬约束 {confrontational, None}：
 #   - 绝不产 survival_narrative（36pp 悬崖·CS+神经席 BLOCK·议会 2026-07-21）
 #   - 只做 confrontational 二值；三路体裁分类属 FPN 离线不在词汇层
-#   - None=absent 旁路·非 neutral 显式弃权（语义不同·state.py:42-43）
+#   - None=absent 旁路·非 neutral 显式弃权
+#     （语义不同·见 `Stimulus.control_appraisal` 的 None=absent 约定）
 # 权重≥1.0 强信号才触发·0.5 轻度词弃权（心理席·方向性盲区留 B-direction）。
 
 
@@ -453,7 +454,8 @@ def infer_domain(text: str) -> Literal["confrontational"] | None:
     返回值域硬约束 {'confrontational', None}（assert 双保险）：
     - 绝不产 survival_narrative（36pp 悬崖·CS+神经席 BLOCK·议会 2026-07-21）。
     - 只做 confrontational 二值；三路体裁分类属 FPN 离线不在词汇层。
-    - None=absent 旁路·非 neutral 显式弃权（语义不同·state.py:42-43）。
+    - None=absent 旁路·非 neutral 显式弃权
+      （语义不同·见 `Stimulus.control_appraisal` 的 None=absent 约定）。
 
     算法：
     1. lower = text.lower()

@@ -245,6 +245,520 @@ async def test_real_facs_decoder_13au_path(monkeypatch: pytest.MonkeyPatch) -> N
         assert all(0.0 <= v <= 1.0 for v in spontaneous["facs_au"].values())  # 值域守界 [0,1]
 
 
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [("true", True), ("1", True), ("false", False), (None, False)],
+)
+def test_mcp_facs_extended_env_seeds_session_config(
+    monkeypatch: pytest.MonkeyPatch, env_value: str | None, expected: bool
+) -> None:
+    """ZERO_FACS_EXTENDED 必须同时播种 state.facs_extended，而不只喂 decoder。
+
+    缺口（本用例即为其回归锁）：`_build_session_config` 的 base 曾漏掉这一键，而
+    `_maybe_expression_decoder` 读了它 → 同设 ZERO_FACS_EXTENDED=true 与 ZERO_FACS_MODEL_PATH 时，
+    decoder 载入 13 键真模型、state 却取字段默认 False，C2 residual 的 coping 分野
+    （AU23/AU01/AU02/AU20）被静默跳过。修复前 env_value="true" 这格返回 False → 本用例变红。
+    """
+    from src.mcp_server.server import _build_session_config
+
+    if env_value is None:
+        monkeypatch.delenv("ZERO_FACS_EXTENDED", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_FACS_EXTENDED", env_value)
+    assert _build_session_config(None).facs_extended is expected
+
+
+def test_mcp_facs_extended_same_env_as_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同源契约：session config 与 decoder 构造读的是**同一个** env 名。
+
+    不比对字面量（那只会锁住注释），而是改 env 后断言两侧**一起翻**——任一侧改读别的 env 即红。
+    """
+    pytest.importorskip("torch")  # _maybe_expression_decoder 的 facs 分支延迟 import models 层
+    import src.agents.models.facs_decoder as facs_mod
+    import src.mcp_server.server as srv
+
+    captured: dict[str, bool] = {}
+
+    def _fake_load(path: str, extended: bool) -> object:
+        captured["extended"] = extended
+        return object()
+
+    monkeypatch.setattr(facs_mod, "load_facs_decoder", _fake_load)
+    monkeypatch.setenv("ZERO_FACS_MODEL_PATH", "dummy.pt")
+    monkeypatch.delenv("ZERO_PROSODY_MODEL_PATH", raising=False)
+    monkeypatch.delenv("ZERO_PHYSIOLOGY_MODEL_PATH", raising=False)
+    for value, expected in (("true", True), ("false", False)):
+        captured.clear()
+        monkeypatch.setenv("ZERO_FACS_EXTENDED", value)
+        srv._maybe_expression_decoder()
+        assert captured["extended"] is expected, "decoder 侧未跟随 env"
+        assert srv._build_session_config(None).facs_extended is expected, "state 侧未跟随 env"
+
+
+# ── 机读错误码：位置不敏感令牌 [zero:<code>] ─────────────────────────────
+
+
+def _wire_code(text: str) -> str | None:
+    """按**配套项目实际用的**正则从 wire 文本里提取码——不用我方内部知识取巧。"""
+    import re
+
+    m = re.search(r"\[zero:([a-z][a-z0-9-]*)\]", text)
+    return m.group(1) if m else None
+
+
+async def test_error_token_survives_fastmcp_wrapping() -> None:
+    """🛑 本组的核心判别力：令牌必须在 **FastMCP 加壳后**仍可被提取。
+
+    2026-07-29 两侧实证：FastMCP 把 ToolError 加壳成
+    `Error executing tool <name>: <原文>` ⇒ **位置 0 的裸前缀在 wire 上永远不在位置 0**。
+    旧实现 `_UNKNOWN_SESSION_MARKER` 正是裸前缀，配套项目按 `startswith` 判定 ⇒ 恒 False，
+    其 resume 重试通路是**生产死码**；而两侧旧用例都用子串/未加壳夹具，故长期全绿。
+
+    本用例**刻意同时断言两件事**：① 加壳确实发生（否则本用例没在测东西）；
+    ② `startswith` 确实不成立——把这条钉死，防日后有人「顺手」改回裸前缀。
+    """
+    from src.mcp_server.server import ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool(
+            "zero.step", {"session_id": "nope", "stim": {"valence": 0.0, "arousal": 0.0}}
+        )
+        assert r.isError is True
+        text = getattr(r.content[0], "text", "")
+        assert text.startswith("Error executing tool"), "FastMCP 未加壳 → 本用例失去判别力，须重写"
+        assert not text.lstrip().startswith(ZERO_ERROR_CODE_UNKNOWN_SESSION), (
+            "裸前缀在 wire 上不可能成立；若这条通过，说明有人改回了位置敏感格式"
+        )
+        assert _wire_code(text) == ZERO_ERROR_CODE_UNKNOWN_SESSION
+
+
+@pytest.mark.parametrize(
+    ("call", "expected_code"),
+    [
+        (
+            ("zero.step", {"session_id": "nope", "stim": {"valence": 0.0, "arousal": 0.0}}),
+            "unknown-session",
+        ),
+        (
+            ("zero.open_session", {"session_id": "   "}),
+            "payload-invalid",
+        ),
+    ],
+)
+async def test_error_codes_are_extractable(call: tuple[str, dict], expected_code: str) -> None:
+    """各错误出口都带得上令牌，且码值取自登记表。"""
+    from src.mcp_server.server import ZERO_ERROR_CODES
+
+    name, args = call
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool(name, args)
+        assert r.isError is True
+        code = _wire_code(getattr(r.content[0], "text", ""))
+        assert code == expected_code
+        assert code in ZERO_ERROR_CODES
+
+
+async def test_deploy_env_error_carries_its_own_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """部署端 env 坏值的码与 client-config 坏值**必须不同**——归责靠它区分。"""
+    monkeypatch.setenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8x")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.open_session", {})
+        assert _wire_code(getattr(r.content[0], "text", "")) == "deploy-env-invalid"
+
+
+def test_tool_error_rejects_unregistered_code() -> None:
+    """未登记的码构造即抛——防手抖引入消费方查不到的码。"""
+    from src.mcp_server.server import _tool_error
+
+    with pytest.raises(ValueError, match="未登记的错误码"):
+        _tool_error("made-up-code", "x")
+
+
+def test_error_token_appears_exactly_once() -> None:
+    """契约要求「全文恰出现一次」——多于一次会让消费方的 search 取到歧义结果。"""
+    from src.mcp_server.server import ZERO_ERROR_CODE_CONFIG_INVALID, _tool_error
+
+    text = str(_tool_error(ZERO_ERROR_CODE_CONFIG_INVALID, "内含 [zero:] 字样的用户输入"))
+    assert text.count("[zero:") == 1
+
+
+# ── 结构性守卫 + 锁获取超时 ───────────────────────────────────────────────
+
+
+def test_no_toolerror_raised_outside_the_helper() -> None:
+    """🛑 AST 级：`server.py` 里**不得**有绕过 `_tool_error` 的 `raise ToolError(...)`。
+
+    配套项目 2026-07-29 指出：它按 `re.search` 取**首个**令牌，若某条 raise 绕过 `_tool_error`，
+    ① 该错误没有码、② 回显载荷里的 `[zero:` 不会被净化 ⇒ 它会取到用户输入伪造的令牌而不报歧义。
+    我方原有的 `test_error_token_appears_exactly_once` 只覆盖 `_tool_error` **自身**，
+    挡不住「新增一处裸 raise」——本用例补的正是那条缝。
+    """
+    import ast
+    import inspect
+
+    import src.mcp_server.server as srv
+
+    tree = ast.parse(inspect.getsource(srv))
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id == "ToolError"
+    ]
+    assert not offenders, (
+        f"server.py 第 {offenders} 行直接 raise 了 ToolError；请改用 _tool_error(code, msg)——"
+        "裸 ToolError 既无机读码、也不会净化回显载荷里的 [zero: 字面量"
+    )
+
+
+async def test_lock_timeout_does_not_leak_the_lock() -> None:
+    """🛑 本组的地基：`wait_for` 取消 `Lock.acquire()` **不得**把锁留在「已占用但无人持有」态。
+
+    若 CPython 的 `asyncio.Lock` 在取消瞬间恰好抢到锁却不还回去，超时一次就会**永久锁死该会话**
+    ——那比不加超时更糟。这条不是边界用例，是 `_acquire_with_timeout` 能不能用的前提。
+    """
+    import asyncio
+
+    lock = asyncio.Lock()
+    await lock.acquire()  # 持有者
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(lock.acquire(), 0.05)  # 排队者超时
+    assert lock.locked(), "持有者仍应持有"
+    lock.release()
+    assert not lock.locked(), "释放后必须真正可用——否则超时泄漏了锁"
+    await asyncio.wait_for(lock.acquire(), 0.05)  # 后续等待者拿得到
+    lock.release()
+
+
+async def test_step_lock_timeout_yields_timeout_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """锁被占住时，排队的 step 超时 → `[zero:timeout]`，且**未进入内核**。"""
+    import asyncio
+
+    from src.mcp_server.registry import SessionRegistry
+
+    monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", "0.05")
+    registry = SessionRegistry()
+    async with connect(build_server(registry=registry)) as client:
+        await client.initialize()
+        # getattr 而非 .text：见本文件既有说明（不给 mypy tests 基线添 union-attr 增量）
+        opened = await client.call_tool("zero.open_session", {})
+        sid = json.loads(getattr(opened.content[0], "text", ""))["session_id"]
+        _, lock = await registry.acquire(sid)
+        assert lock is not None
+        await lock.acquire()  # 模拟「上一轮 step 仍在执行」
+        try:
+            r = await client.call_tool(
+                "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
+            )
+            assert r.isError is True
+            text = getattr(r.content[0], "text", "")
+            assert _wire_code(text) == "timeout-lock"
+            assert "可原样重试" in text, "须告知调用方本轮未改动运行态"
+        finally:
+            lock.release()
+
+        # 锁释放后照常可用——超时那一轮没留下任何副作用
+        r2 = await client.call_tool(
+            "zero.step", {"session_id": sid, "stim": {"valence": 0.1, "arousal": 0.1}}
+        )
+        assert r2.isError is False
+        await asyncio.sleep(0)
+
+
+async def test_no_lock_timeout_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未设 env = 无限等待 = 逐字旧行为（零回归）；空串同样回落无限等待。"""
+    from src.mcp_server.server import _env_optional_float
+
+    for value in (None, "", "  "):
+        if value is None:
+            monkeypatch.delenv("ZERO_MCP_STEP_LOCK_TIMEOUT", raising=False)
+        else:
+            monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", value)
+        assert _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT") is None
+
+
+# ── 取消留下的半截运行态：检测与回显 ─────────────────────────────────────
+
+
+async def test_interrupted_at_is_none_on_clean_session() -> None:
+    """跑完整轮后 `next` 恒为空 ⇒ `interrupted_at()` 返回 None（负对照）。
+
+    没有这条，下面那条阳性用例无法排除「该方法恒返回非 None」。
+    """
+    from src.orchestration.runner import ConversationSession, SessionConfig
+    from src.orchestration.state import Stimulus
+
+    session = ConversationSession(thread_id="clean-t1", user_id="clean-t1", config=SessionConfig())
+    try:
+        assert await session.interrupted_at() is None, "全新会话不该被判为中断"
+        await session.step(Stimulus(name="s", goal_congruence=0.4, intensity=0.6))
+        assert await session.interrupted_at() is None, "跑完整轮后 next 应为空"
+    finally:
+        await session.aclose()
+
+
+async def test_interrupted_at_detects_a_real_half_turn() -> None:
+    """🛑 判别力核心：**真造一个半截态**，确认检测得出来。
+
+    造法不是伪造 checkpoint，而是**真的取消一次在飞的 ainvoke**——这正是生产里
+    stdio 关 stdin 会发生的事（2026-07-29 实证：+0.015s 取消）。
+    取消点选在图跑到一半时，此时已完成 super-step 的 checkpoint 已落盘、`next` 非空。
+
+    若 `interrupted_at()` 改成恒 None、或判据从 `next` 换成别的东西，本用例即红。
+    """
+    import asyncio
+
+    from src.orchestration.runner import ConversationSession, SessionConfig
+    from src.orchestration.state import Stimulus
+
+    session = ConversationSession(thread_id="half-t1", user_id="half-t1", config=SessionConfig())
+    try:
+        task = asyncio.ensure_future(
+            session.step(Stimulus(name="s", goal_congruence=0.4, intensity=0.6))
+        )
+        # 让图跑起来但不跑完：让出若干次事件循环后取消。
+        for _ in range(3):
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        nxt = await session.interrupted_at()
+        if nxt is None:
+            pytest.skip(
+                "本机上该图跑得太快、取消未落在 super-step 之间——本用例此次未构造出目标态。"
+                "⚠ 这不是「没有半截态」的证据（跨仓件已实证它存在），只是本次没抓到"
+            )
+        assert isinstance(nxt, tuple) and nxt, "检测到中断时应返回非空的待执行节点元组"
+    finally:
+        await session.aclose()
+
+
+async def test_open_session_reports_resumed_flag() -> None:
+    """`open_session` 回显 `resumed`：新建 False、按 id 重开 True。
+
+    该键是配套项目在观察期唯一能事后判断「本次是否走了 resume 分支」的观测量。
+    返回体只增不改——其解析按「容忍额外键、缺键即回落」，故对现网零回归。
+    """
+    async with connect(build_server()) as client:
+        await client.initialize()
+        fresh = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )
+        assert fresh["resumed"] is False
+        again = json.loads(
+            getattr(
+                (
+                    await client.call_tool("zero.open_session", {"session_id": fresh["session_id"]})
+                ).content[0],
+                "text",
+                "",
+            )
+        )
+        assert again["session_id"] == fresh["session_id"]
+        assert again["resumed"] is True
+
+
+def test_active_resume_branch_does_not_echo_freshly_built_cfg() -> None:
+    """🛑 AST：活跃 resume 分支的 return 里**不得**出现 `cfg`。
+
+    配套项目 R11 的实现警告：该分支的门控是构造时固定的，回显刚算出的 `cfg` 等于回显
+    「本可生效但实际未生效」的值——**比不回显更危险**（消费方会拿它当真、比对通过、
+    实则语义已分叉）。要回显只能从 session 对象取。
+    本用例钉住这条，防日后「顺手把 cfg 加进去」。
+    """
+    import ast
+    import inspect
+
+    import src.mcp_server.server as srv
+
+    tree = ast.parse(inspect.getsource(srv))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)):
+            continue
+        names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+        assert "cfg" not in names, (
+            "open_session 的 return 字典里出现了 cfg——活跃 resume 分支回显它会造成语义分叉"
+        )
+
+
+def test_server_env_error_is_not_valueerror() -> None:
+    """判别力自证：`ServerEnvError` **不得**继承 ValueError/TypeError。
+
+    整个归责修复就靠这一点——一旦它落进 `open_session` 的
+    `except (ValueError, TypeError)`，部署端 env 写错又会被贴成「config 不合法」，
+    修复静默失效而所有用例照样绿。若日后有人改继承链，本用例即红。
+    """
+    from src.mcp_server.server import ServerEnvError
+
+    assert not issubclass(ServerEnvError, (ValueError, TypeError))
+
+
+@pytest.mark.parametrize(
+    ("env_name", "bad_value"),
+    [("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8x"), ("ZERO_MAX_EXTERNAL_STREAMS", "many")],
+)
+def test_numeric_env_bad_value_points_at_env(
+    monkeypatch: pytest.MonkeyPatch, env_name: str, bad_value: str
+) -> None:
+    """部署端数值 env 写坏 → `ServerEnvError` 且消息指名 env（不是 client 的 config）。"""
+    from src.mcp_server.server import ServerEnvError, _build_session_config
+
+    monkeypatch.setenv(env_name, bad_value)
+    with pytest.raises(ServerEnvError, match=env_name):
+        _build_session_config(None)
+
+
+async def test_open_session_env_error_message_does_not_blame_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """端到端：坏 env 经 zero.open_session 返回的错误文案须点明「非 client config 问题」。
+
+    修复前该错误被贴成「config 不合法」——而 stdio 下 client 进程环境就是 server 进程环境，
+    对方会照着改自己传的 config，永远改不好。
+    """
+    monkeypatch.setenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8x")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.open_session", {})
+        assert r.isError is True
+        # getattr 而非 `.text`：content 是 TextContent|ImageContent|… 联合类型，直接取 .text
+        # 会给 `mypy tests` 添 4 条 union-attr（本仓已有 28 处同款噪声，不再增量）。
+        text = getattr(r.content[0], "text", "")
+        assert "ZERO_EXTERNAL_PRIOR_PRECISION_CAP" in text, "错误未指名 env"
+        assert "非" in text and "client" in text, "错误未澄清归责方"
+
+
+def test_canonical_physiology_is_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`canonical_physiology` 入治理白名单：client 经 config 传它被静默忽略。
+
+    它决定 physiology 载荷的**量纲与键集**（legacy 归一 `[0,1]` + `pupil_mm` ↔
+    canonical μS`[0,20]` + `temperature_c`），消费侧据此选 `skin_conductance_max_us`
+    是 1.0 还是 20.0——选错即 **20× 欠/过标度且不报错**。
+    入白名单前配套项目实测：两侧 env 全未设时，client 经 config 置真即可让载荷变成
+    canonical μS（sc=16.0），而消费侧按 env 推断成 legacy。
+    """
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS, _build_session_config
+
+    monkeypatch.delenv("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", raising=False)
+    assert "canonical_physiology" in _MCP_GOVERNANCE_GATED_FLAGS
+    assert _build_session_config({"canonical_physiology": True}).canonical_physiology is False
+
+
+def test_canonical_physiology_env_still_works(monkeypatch: pytest.MonkeyPatch) -> None:
+    """入白名单不得把它钉死——env 仍是唯一且有效的入口（成对要求）。"""
+    from src.mcp_server.server import _build_session_config
+
+    monkeypatch.setenv("ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER", "true")
+    assert _build_session_config(None).canonical_physiology is True
+    assert _build_session_config({"canonical_physiology": False}).canonical_physiology is True
+
+
+def test_timeout_codes_are_split_by_retry_semantics() -> None:
+    """两个超时码必须分开：重试语义相反，一个码承载两种等于把判别推回人读文案。
+
+    · `timeout-lock`：本轮未进内核 ⇒ **可**退避重试；
+    · `timeout-step`：取消 ainvoke 会留半截运行态 ⇒ **不可**原样重试。
+    ⚠ `timeout-step` 目前只登记不产出（执行超时未实现），本用例同时钉住这个事实——
+    若它开始被产出而语义未定，这条会提醒补齐。
+    """
+    from src.mcp_server.server import (
+        ZERO_ERROR_CODE_TIMEOUT_LOCK,
+        ZERO_ERROR_CODE_TIMEOUT_STEP,
+        ZERO_ERROR_CODES,
+    )
+
+    assert ZERO_ERROR_CODE_TIMEOUT_LOCK != ZERO_ERROR_CODE_TIMEOUT_STEP
+    assert {ZERO_ERROR_CODE_TIMEOUT_LOCK, ZERO_ERROR_CODE_TIMEOUT_STEP} <= ZERO_ERROR_CODES
+    # 只登记不产出：AST 查所有 _tool_error(...) 调用点的第一个实参，不得有 TIMEOUT_STEP。
+    # （不能用字符串搜——登记表 ZERO_ERROR_CODES 自身就含这个名字，会假红。第一版就栽在这。）
+    import ast
+    import inspect
+
+    import src.mcp_server.server as srv
+
+    tree = ast.parse(inspect.getsource(srv))
+    emitted = {
+        node.args[0].id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_tool_error"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    }
+    assert "ZERO_ERROR_CODE_TIMEOUT_STEP" not in emitted, (
+        "timeout-step 已被产出，但执行超时的半截运行态语义尚未落地——请同批补齐"
+    )
+    assert "ZERO_ERROR_CODE_TIMEOUT_LOCK" in emitted, (
+        "timeout-lock 应当有产出点，否则本组没在测东西"
+    )
+
+
+def test_ignition_beta_is_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ignition_beta` 入治理白名单：client 经 config 传它被静默忽略。
+
+    为什么它必须入白名单：非 None 即走**软门**分支，而软门下全部流（含 physio）一律进
+    `fuse_terms`、无阈值筛除、也不施 D7 排除 ⇒ client 传它即可单边解除 D7 跨仓承诺。
+    ⚠ 配套项目已确认其生产码从不传该字段，但那是「当前调用点的事实、不是结构保证」，
+    故我方按结构收紧、**不依赖对方不传**。
+    """
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS, _build_session_config
+
+    monkeypatch.delenv("ZERO_MCP_IGNITION_BETA", raising=False)
+    assert "ignition_beta" in _MCP_GOVERNANCE_GATED_FLAGS
+    assert _build_session_config({"ignition_beta": 20.0}).ignition_beta is None
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [(None, None), ("", None), ("   ", None), ("20", 20.0), ("0", 0.0)],
+)
+def test_ignition_beta_env_seeding(
+    monkeypatch: pytest.MonkeyPatch, env_value: str | None, expected: float | None
+) -> None:
+    """成对要求：进白名单**必须**同时给 env 入口，否则该字段在 MCP 路径永久取默认值（None）。
+
+    撤掉 base 里那一行 ⇒ `"20"` 那格返回 None，本用例即红。
+    ⚠ `"0"` 与未设**语义不同**（0.0 是软门、None 是硬门），故空串回落 None 而非 0.0。
+    """
+    from src.mcp_server.server import _build_session_config
+
+    if env_value is None:
+        monkeypatch.delenv("ZERO_MCP_IGNITION_BETA", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_MCP_IGNITION_BETA", env_value)
+    assert _build_session_config(None).ignition_beta == expected
+
+
+def test_ignition_beta_bad_env_points_at_deploy_side(monkeypatch: pytest.MonkeyPatch) -> None:
+    """坏值走 `ServerEnvError`（部署端归责），不被贴成「config 不合法」。"""
+    from src.mcp_server.server import ServerEnvError, _build_session_config
+
+    monkeypatch.setenv("ZERO_MCP_IGNITION_BETA", "soft")
+    with pytest.raises(ServerEnvError, match="ZERO_MCP_IGNITION_BETA"):
+        _build_session_config(None)
+
+
+def test_mcp_facs_extended_not_governance_gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """特征化（**非**期望行为）：facs_extended 不在治理白名单，client 可经 config 单边覆写。
+
+    已在 2026-07-29 跨仓回执 §4.1 向 Zero_MCP 声明「治理保证只覆盖 6 项、不含本字段」。
+    若日后把它纳入 `_MCP_GOVERNANCE_GATED_FLAGS`（须先确认不摘除对方已用能力），本用例应变红，
+    届时改成断言 override 被忽略——**不要靠放宽断言让它变绿**。
+    """
+    from src.mcp_server.server import _MCP_GOVERNANCE_GATED_FLAGS, _build_session_config
+
+    monkeypatch.delenv("ZERO_FACS_EXTENDED", raising=False)
+    assert "facs_extended" not in _MCP_GOVERNANCE_GATED_FLAGS
+    assert _build_session_config({"facs_extended": True}).facs_extended is True
+
+
 def test_maybe_expression_decoder_wires_prosody(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

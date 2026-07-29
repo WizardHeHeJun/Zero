@@ -247,7 +247,8 @@ class AffectCoreAgent:
             # 故 n_eff **确实随 trace 进 state 并被 Checkpointer 持久化**。它不是"游离于
             # state 之外"。成立的不变式只有两条：① 不是独立的顶层 out 字段；
             # ② 全仓无任何下游读 `trace[...]["n_eff"]`，故不参与计算、不做门。
-            # 体量上是一对 float，属 state.py:4「trace 仅存标量中间量」的允许范围。
+            # 体量上是一对 float，属 `state.py` 模块 docstring
+            # 「trace 仅存标量中间量」的允许范围。
             #
             # 只在 comm 门开时写：`workspace_enabled` 是早于本项就已上线的**独立**旗标，
             # 本项承诺的「默认关=零回归」只覆盖 precision_commensurable。若不加这层判断，
