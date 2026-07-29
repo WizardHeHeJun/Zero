@@ -26,6 +26,7 @@ MCP 面不得旁路生效，仅 `ZERO_MCP_TEXT_COPING_ENABLED` env 治理，见 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -86,6 +87,9 @@ ZERO_ERROR_CODE_EXTERNAL_PRIOR_INVALID = "external-prior-invalid"
 ZERO_ERROR_CODE_PAYLOAD_INVALID = "payload-invalid"
 ZERO_ERROR_CODE_CONFIG_INVALID = "config-invalid"
 ZERO_ERROR_CODE_DEPLOY_ENV_INVALID = "deploy-env-invalid"
+# timeout：配套项目在 R12 契约提案里自己提的码。其异常族对未登记码是「落基类 + warning」，
+# 故我方单边先加不会炸它；是否正式列为码表第七项已在回执 §9 问出。
+ZERO_ERROR_CODE_TIMEOUT = "timeout"
 
 ZERO_ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -95,6 +99,7 @@ ZERO_ERROR_CODES: frozenset[str] = frozenset(
         ZERO_ERROR_CODE_PAYLOAD_INVALID,
         ZERO_ERROR_CODE_CONFIG_INVALID,
         ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+        ZERO_ERROR_CODE_TIMEOUT,
     }
 )
 
@@ -187,6 +192,31 @@ def _env_optional_float(name: str) -> float | None:
         raise ServerEnvError(
             f"{name} 须为浮点数或留空，当前值={raw!r}；这是**部署端 env** 的问题，"
             "改 client 传的 config 无效"
+        ) from e
+
+
+async def _acquire_with_timeout(lock: asyncio.Lock, session_id: str) -> None:
+    """按 `ZERO_MCP_STEP_LOCK_TIMEOUT`（秒，未设=无限）获取会话锁；超时抛 `[zero:timeout]`。
+
+    ⚠ **只超时「获取」，不超时「执行」**——见调用点注释。超时的是排队中的请求，
+    正在跑的那一轮不受影响，故本函数**不会**引起运行态半落盘。
+
+    ⚠ `asyncio.wait_for` 取消 `lock.acquire()` 时，CPython 的 `asyncio.Lock` 会在
+    `CancelledError` 分支里把「取消瞬间恰好抢到锁」这种竞态还回去（唤醒下一个等待者）。
+    该性质由 `test_lock_timeout_does_not_leak_the_lock` 实证锁住——它是本函数正确性的地基，
+    不是可有可无的边界用例。
+    """
+    timeout = _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT")
+    if timeout is None:
+        await lock.acquire()
+        return
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout)
+    except TimeoutError as e:  # py3.11+ asyncio.TimeoutError 即 builtin TimeoutError
+        raise _tool_error(
+            ZERO_ERROR_CODE_TIMEOUT,
+            f"等待会话锁超时（{timeout}s）：sid={session_id!r} 上一轮 step 仍在执行。"
+            "本轮未进入内核、运行态未改动，可原样重试",
         ) from e
 
 
@@ -449,7 +479,15 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             ) from e
         # 同会话串行化：LangGraph checkpointer 读-改-写非原子，并发 ainvoke(同 thread_id) 会竞态
         # （http 传输下 client 可能并发）；stdio 顺序则此锁无争用、零成本。
-        async with lock:
+        # ── 锁**获取**超时（R12 上半，2026-07-29 跨仓契约）──
+        # ⚠ 这里刻意只给「获取」加超时，**不给 step 执行加超时**：
+        #   · 获取超时只让**排队者**失败，不碰正在跑的 ainvoke ⇒ 无状态风险；
+        #   · 执行超时要取消 ainvoke，而「LangGraph 被取消时 checkpointer 会不会落半截运行态」
+        #     今天**未经证实**（已向对方标 UNVERIFIED），在答案出来前取消 ainvoke 可能留下脏态、
+        #     被下一次同 thread_id 的 resume 读到。宁可不做，也不做成一个会静默污染运行态的超时。
+        # 默认 None = 无限等待 = 逐字旧行为（零回归）；秒数按对方 R12「先测再钉」，暂不预设。
+        await _acquire_with_timeout(lock, session_id)
+        try:
             try:
                 step_out = await session.step(stimulus, state_overrides={"external_priors": priors})
             except ExternalPriorError as e:
@@ -472,6 +510,8 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                     f"内核执行失败（**非** external_priors 传参问题，改传参无效）：{e}；"
                     "多为会话级配置组合不兼容，须以新配置重开会话",
                 ) from e
+        finally:
+            lock.release()
         expression = step_out.get("expression") or {}
         return expression
 

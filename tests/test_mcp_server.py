@@ -385,6 +385,103 @@ def test_error_token_appears_exactly_once() -> None:
     assert text.count("[zero:") == 1
 
 
+# ── 结构性守卫 + 锁获取超时 ───────────────────────────────────────────────
+
+
+def test_no_toolerror_raised_outside_the_helper() -> None:
+    """🛑 AST 级：`server.py` 里**不得**有绕过 `_tool_error` 的 `raise ToolError(...)`。
+
+    配套项目 2026-07-29 指出：它按 `re.search` 取**首个**令牌，若某条 raise 绕过 `_tool_error`，
+    ① 该错误没有码、② 回显载荷里的 `[zero:` 不会被净化 ⇒ 它会取到用户输入伪造的令牌而不报歧义。
+    我方原有的 `test_error_token_appears_exactly_once` 只覆盖 `_tool_error` **自身**，
+    挡不住「新增一处裸 raise」——本用例补的正是那条缝。
+    """
+    import ast
+    import inspect
+
+    import src.mcp_server.server as srv
+
+    tree = ast.parse(inspect.getsource(srv))
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id == "ToolError"
+    ]
+    assert not offenders, (
+        f"server.py 第 {offenders} 行直接 raise 了 ToolError；请改用 _tool_error(code, msg)——"
+        "裸 ToolError 既无机读码、也不会净化回显载荷里的 [zero: 字面量"
+    )
+
+
+async def test_lock_timeout_does_not_leak_the_lock() -> None:
+    """🛑 本组的地基：`wait_for` 取消 `Lock.acquire()` **不得**把锁留在「已占用但无人持有」态。
+
+    若 CPython 的 `asyncio.Lock` 在取消瞬间恰好抢到锁却不还回去，超时一次就会**永久锁死该会话**
+    ——那比不加超时更糟。这条不是边界用例，是 `_acquire_with_timeout` 能不能用的前提。
+    """
+    import asyncio
+
+    lock = asyncio.Lock()
+    await lock.acquire()  # 持有者
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(lock.acquire(), 0.05)  # 排队者超时
+    assert lock.locked(), "持有者仍应持有"
+    lock.release()
+    assert not lock.locked(), "释放后必须真正可用——否则超时泄漏了锁"
+    await asyncio.wait_for(lock.acquire(), 0.05)  # 后续等待者拿得到
+    lock.release()
+
+
+async def test_step_lock_timeout_yields_timeout_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """锁被占住时，排队的 step 超时 → `[zero:timeout]`，且**未进入内核**。"""
+    import asyncio
+
+    from src.mcp_server.registry import SessionRegistry
+
+    monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", "0.05")
+    registry = SessionRegistry()
+    async with connect(build_server(registry=registry)) as client:
+        await client.initialize()
+        sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
+            "session_id"
+        ]
+        _, lock = await registry.acquire(sid)
+        assert lock is not None
+        await lock.acquire()  # 模拟「上一轮 step 仍在执行」
+        try:
+            r = await client.call_tool(
+                "zero.step", {"session_id": sid, "stim": {"valence": 0.0, "arousal": 0.0}}
+            )
+            assert r.isError is True
+            text = getattr(r.content[0], "text", "")
+            assert _wire_code(text) == "timeout"
+            assert "可原样重试" in text, "须告知调用方本轮未改动运行态"
+        finally:
+            lock.release()
+
+        # 锁释放后照常可用——超时那一轮没留下任何副作用
+        r2 = await client.call_tool(
+            "zero.step", {"session_id": sid, "stim": {"valence": 0.1, "arousal": 0.1}}
+        )
+        assert r2.isError is False
+        await asyncio.sleep(0)
+
+
+async def test_no_lock_timeout_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """未设 env = 无限等待 = 逐字旧行为（零回归）；空串同样回落无限等待。"""
+    from src.mcp_server.server import _env_optional_float
+
+    for value in (None, "", "  "):
+        if value is None:
+            monkeypatch.delenv("ZERO_MCP_STEP_LOCK_TIMEOUT", raising=False)
+        else:
+            monkeypatch.setenv("ZERO_MCP_STEP_LOCK_TIMEOUT", value)
+        assert _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT") is None
+
+
 def test_server_env_error_is_not_valueerror() -> None:
     """判别力自证：`ServerEnvError` **不得**继承 ValueError/TypeError。
 
