@@ -445,9 +445,9 @@ async def test_step_lock_timeout_yields_timeout_code(monkeypatch: pytest.MonkeyP
     registry = SessionRegistry()
     async with connect(build_server(registry=registry)) as client:
         await client.initialize()
-        sid = json.loads((await client.call_tool("zero.open_session", {})).content[0].text)[
-            "session_id"
-        ]
+        # getattr 而非 .text：见本文件既有说明（不给 mypy tests 基线添 union-attr 增量）
+        opened = await client.call_tool("zero.open_session", {})
+        sid = json.loads(getattr(opened.content[0], "text", ""))["session_id"]
         _, lock = await registry.acquire(sid)
         assert lock is not None
         await lock.acquire()  # 模拟「上一轮 step 仍在执行」
