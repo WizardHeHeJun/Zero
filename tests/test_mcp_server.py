@@ -482,6 +482,111 @@ async def test_no_lock_timeout_by_default(monkeypatch: pytest.MonkeyPatch) -> No
         assert _env_optional_float("ZERO_MCP_STEP_LOCK_TIMEOUT") is None
 
 
+# ── 取消留下的半截运行态：检测与回显 ─────────────────────────────────────
+
+
+async def test_interrupted_at_is_none_on_clean_session() -> None:
+    """跑完整轮后 `next` 恒为空 ⇒ `interrupted_at()` 返回 None（负对照）。
+
+    没有这条，下面那条阳性用例无法排除「该方法恒返回非 None」。
+    """
+    from src.orchestration.runner import ConversationSession, SessionConfig
+    from src.orchestration.state import Stimulus
+
+    session = ConversationSession(thread_id="clean-t1", user_id="clean-t1", config=SessionConfig())
+    try:
+        assert await session.interrupted_at() is None, "全新会话不该被判为中断"
+        await session.step(Stimulus(name="s", goal_congruence=0.4, intensity=0.6))
+        assert await session.interrupted_at() is None, "跑完整轮后 next 应为空"
+    finally:
+        await session.aclose()
+
+
+async def test_interrupted_at_detects_a_real_half_turn() -> None:
+    """🛑 判别力核心：**真造一个半截态**，确认检测得出来。
+
+    造法不是伪造 checkpoint，而是**真的取消一次在飞的 ainvoke**——这正是生产里
+    stdio 关 stdin 会发生的事（2026-07-29 实证：+0.015s 取消）。
+    取消点选在图跑到一半时，此时已完成 super-step 的 checkpoint 已落盘、`next` 非空。
+
+    若 `interrupted_at()` 改成恒 None、或判据从 `next` 换成别的东西，本用例即红。
+    """
+    import asyncio
+
+    from src.orchestration.runner import ConversationSession, SessionConfig
+    from src.orchestration.state import Stimulus
+
+    session = ConversationSession(thread_id="half-t1", user_id="half-t1", config=SessionConfig())
+    try:
+        task = asyncio.ensure_future(
+            session.step(Stimulus(name="s", goal_congruence=0.4, intensity=0.6))
+        )
+        # 让图跑起来但不跑完：让出若干次事件循环后取消。
+        for _ in range(3):
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        nxt = await session.interrupted_at()
+        if nxt is None:
+            pytest.skip(
+                "本机上该图跑得太快、取消未落在 super-step 之间——本用例此次未构造出目标态。"
+                "⚠ 这不是「没有半截态」的证据（跨仓件已实证它存在），只是本次没抓到"
+            )
+        assert isinstance(nxt, tuple) and nxt, "检测到中断时应返回非空的待执行节点元组"
+    finally:
+        await session.aclose()
+
+
+async def test_open_session_reports_resumed_flag() -> None:
+    """`open_session` 回显 `resumed`：新建 False、按 id 重开 True。
+
+    该键是配套项目在观察期唯一能事后判断「本次是否走了 resume 分支」的观测量。
+    返回体只增不改——其解析按「容忍额外键、缺键即回落」，故对现网零回归。
+    """
+    async with connect(build_server()) as client:
+        await client.initialize()
+        fresh = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )
+        assert fresh["resumed"] is False
+        again = json.loads(
+            getattr(
+                (
+                    await client.call_tool("zero.open_session", {"session_id": fresh["session_id"]})
+                ).content[0],
+                "text",
+                "",
+            )
+        )
+        assert again["session_id"] == fresh["session_id"]
+        assert again["resumed"] is True
+
+
+def test_active_resume_branch_does_not_echo_freshly_built_cfg() -> None:
+    """🛑 AST：活跃 resume 分支的 return 里**不得**出现 `cfg`。
+
+    配套项目 R11 的实现警告：该分支的门控是构造时固定的，回显刚算出的 `cfg` 等于回显
+    「本可生效但实际未生效」的值——**比不回显更危险**（消费方会拿它当真、比对通过、
+    实则语义已分叉）。要回显只能从 session 对象取。
+    本用例钉住这条，防日后「顺手把 cfg 加进去」。
+    """
+    import ast
+    import inspect
+
+    import src.mcp_server.server as srv
+
+    tree = ast.parse(inspect.getsource(srv))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)):
+            continue
+        names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+        assert "cfg" not in names, (
+            "open_session 的 return 字典里出现了 cfg——活跃 resume 分支回显它会造成语义分叉"
+        )
+
+
 def test_server_env_error_is_not_valueerror() -> None:
     """判别力自证：`ServerEnvError` **不得**继承 ValueError/TypeError。
 

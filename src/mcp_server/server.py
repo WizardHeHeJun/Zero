@@ -404,8 +404,11 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     @mcp.tool(
         name="zero.open_session",
         description=(
-            "建/重开一个 Zero 情感引擎会话（建图/checkpointer 一次），返回 {session_id}。"
-            "传 session_id 则按旧 id 重开（跨 server 重启续会话·须持久后端）；不传则新铸。"
+            "建/重开一个 Zero 情感引擎会话（建图/checkpointer 一次）。"
+            "返回 {session_id, resumed}；resume 且探测到上一轮被中途取消时另带 "
+            "{interrupted_at: [待执行节点名]}——该会话运行态停在 super-step 边界，"
+            "续跑会从此处继续而非重跑整轮。传 session_id 则按旧 id 重开"
+            "（跨 server 重启续会话·须持久后端）；不传则新铸。"
         ),
         structured_output=False,
     )
@@ -413,7 +416,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         persona: str | None = None,
         config: dict[str, Any] | None = None,
         session_id: str | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:  # resumed 是 bool、interrupted_at 是 list[str]，故不能收窄成 dict[str,str]
         """建会话；传 `session_id` 走 resume（zero-link T6）。
 
         `config` 经唯一治理入口 `_build_session_config`（议会 env-only 门控 resume 亦保持）。
@@ -444,11 +447,16 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 # 会话门控构造时固定、贯穿整会话，故此处不重应用 cfg：client 对活跃会话传的新
                 # config 静默不生效（SessionConfig 不可变；跨重启 resume 重建时才用新 cfg）。
                 logger.info("zero.open_session resume(active) sid=%s", session_id)
-                return {"session_id": session_id}
+                # ⚠ 本分支**不得**回显刚算出的 `cfg`（Zero_MCP R11 实现警告）：活跃会话的门控
+                # 构造时固定，回显 cfg = 回显「本可生效但实际未生效」的值，**比不回显更危险**
+                # （消费方会拿它当真、比对通过、实则语义已分叉）。要回显只能从 session 对象取。
+                return {"session_id": session_id, "resumed": True}
             # resume：新建绑同 thread_id，持久后端 ainvoke 时自动从 checkpoint 恢复。
             sid = session_id
+            resuming = True
         else:
             sid = uuid.uuid4().hex
+            resuming = False
         # thread_id=user_id=sid：会话态经 checkpointer 按 thread_id 跨轮持久 + 记忆作用域天然按
         # session 隔离（防多会话共享 default-user 记忆串味，同 chat_driver 口径）。
         session = ConversationSession(
@@ -458,6 +466,25 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             expression_decoder=decoder,
         )
         await registry.open(sid, session)
+        # ── resume 时先看一眼上一轮是否被中途取消（2026-07-29 跨仓实证）──
+        # 我方默认 stdio 传输，client 关 stdin 即让在飞的 step 在 +0.015s 被取消，
+        # LangGraph 每个 super-step 都已落盘 ⇒ 半截运行态跨重启保留。
+        # 🛑 半截 checkpoint 存在本身不致命，**被当成有效状态续跑才致命** —— 此处至少让它可见。
+        # ⚠ 只报告不回滚：回滚是对外可见的行为变更，须单独决策。
+        interrupted: tuple[str, ...] | None = None
+        if resuming:
+            try:
+                interrupted = await session.interrupted_at()
+            except Exception:
+                # 探测失败不得挡住 resume 本身（宁可少一条观测量，也不把会话打不开）。
+                logger.exception("zero.open_session 中断探测失败 sid=%s", sid)
+            if interrupted is not None:
+                logger.warning(
+                    "zero.open_session resume 发现上一轮被中断 sid=%s 待执行节点=%s；"
+                    "该会话的运行态停在 super-step 边界，续跑会从此处继续而非重跑整轮",
+                    sid,
+                    interrupted,
+                )
         logger.info(
             "zero.open_session sid=%s persona=%s resume=%s active=%d",
             sid,
@@ -465,7 +492,12 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             session_id is not None,
             await registry.count(),
         )
-        return {"session_id": sid}
+        # 返回体**只增不改**：配套项目按「除 session_id 外容忍并收下额外键、缺键即回落」解析，
+        # 故新增键对现网零回归。`interrupted` 缺席 = 未探测（新建会话）或探测失败。
+        out: dict[str, Any] = {"session_id": sid, "resumed": resuming}
+        if interrupted is not None:
+            out["interrupted_at"] = list(interrupted)
+        return out
 
     @mcp.tool(
         name="zero.step",
