@@ -33,6 +33,7 @@ import asyncio
 import logging
 import math
 import os
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -136,7 +137,36 @@ _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
 #   ③ 某键**语义**变化（同名同类型但含义变了 —— 这类最危险，消费方看不出来）。
 # 判据：凡消费方**照旧解析会得出错误结论**的变化，都要 bump。
 # 只加一个不影响既有键解释的新键，可以不 bump —— 但拿不准时 bump，代价只是对方多读一次。
-DESCRIBE_CONFIG_VERSION = 2
+# 2 → 3（Zero_MCP 2026-07-30 §3.3-2）：新增 `transport` / `stateless_http` 两键。按上面第 ①
+# 类（增删键）本可不 bump（不影响既有键的解释），但这两键正是对方要用来**换掉一整套取消模型
+# 适用边界判定**的输入 —— 拿不准就 bump 的那一档，故 bump。
+DESCRIBE_CONFIG_VERSION = 3
+
+# ── 生效传输模式：**唯一**解析点 ────────────────────────────────────────────
+# 🛑 `__main__.main` 与 `zero.describe_config` **共用**本符号，任何第二处都不得重抄这段解析。
+# 理由：describe_config 报传输的全部价值就在于「回的值与真正起传输的那段代码同源」；
+# 两处各读一次 env、各判一次别名 = 亲手造一个新的漂移源，比不报更糟
+# （消费方会拿它当真、比对通过、实则与实际起的传输已分叉——同 R11「回显本可生效但未生效的值」）。
+TRANSPORT_STDIO = "stdio"
+TRANSPORT_STREAMABLE_HTTP = "streamable-http"
+# 两个别名都认（历史口径，勿收窄）：`http` 是人手写的短名，`streamable-http` 是 SDK 里的正名。
+_HTTP_TRANSPORT_ALIASES: frozenset[str] = frozenset({"http", TRANSPORT_STREAMABLE_HTTP})
+
+
+def resolve_transport() -> str:
+    """`ZERO_MCP_TRANSPORT` → **规范化后的生效传输名**（两态常量见本模块 `TRANSPORT_*`）。
+
+    行为与抽取前写在 `__main__.main` 里的那两行**逐字一致**：未设 → stdio；`.lower()` 后命中
+    `http`/`streamable-http` → HTTP；**其余一切值（含空串、拼错）回落 stdio**——因为
+    `__main__` 的 `else` 分支本来就是 `server.run(transport="stdio")`，回读面必须与它同向，
+    否则会宣称一个部署端根本没起的传输。
+    ⚠ 回落方向与 `_env_flag`（回落调用方给的 default）**不同源**，别按那个照抄：这里的
+    default 恒是 stdio。
+    ⚠ **刻意不做 `strip()`**：抽取前没有，加了会让 `" http"` 从「起 stdio」变成「起 HTTP」
+    —— 那是行为变更，不是重构。
+    """
+    raw = os.getenv("ZERO_MCP_TRANSPORT", TRANSPORT_STDIO).lower()
+    return TRANSPORT_STREAMABLE_HTTP if raw in _HTTP_TRANSPORT_ALIASES else TRANSPORT_STDIO
 
 
 async def _delete_thread(saver: Any, thread_id: str) -> bool:
@@ -650,11 +680,32 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                     interrupted,
                 )
         logger.info(
-            "zero.open_session sid=%s persona=%s resume=%s active=%d",
+            "zero.open_session sid=%s persona=%s resume=%s active=%d probe=%s",
             sid,
             persona,
             session_id is not None,
             await registry.count(),
+            probe,
+        )
+        # 🛑 生效门控快照（2026-07-30，兑现 R10）：此前 open 只记 sid/persona/resume/active，
+        # **不记任何门控值** ⇒ 跨仓争议「这轮到底用的哪组门」事后无从裁定。
+        # ⚠ 取值源是 `cfg`（本次真正构造进会话的那份），不是现读 env —— 与 `describe_config`
+        # 带 sid 时同源；记 env 会在「构造后 env 被改」时留下与会话不符的假快照。
+        logger.info(
+            "zero.open_session gates sid=%s workspace=%s gate_fusion=%s exclude_physio=%s "
+            "commensurable=%s ignition_beta=%s canonical_physio=%s facs_ext=%s "
+            "cap=%s max_streams=%s readout=%s",
+            sid,
+            cfg.workspace_enabled,
+            cfg.gate_fusion,
+            cfg.exclude_physio_fusion,
+            cfg.precision_commensurable,
+            cfg.ignition_beta,
+            cfg.canonical_physiology,
+            cfg.facs_extended,
+            cfg.external_prior_precision_cap,
+            cfg.max_external_streams,
+            cfg.affect_readout,
         )
         # 返回体**只增不改**：配套项目按「除 session_id 外容忍并收下额外键、缺键即回落」解析，
         # 故新增键对现网零回归。
@@ -706,6 +757,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         #     今天**未经证实**（已向对方标 UNVERIFIED），在答案出来前取消 ainvoke 可能留下脏态、
         #     被下一次同 thread_id 的 resume 读到。宁可不做，也不做成一个会静默污染运行态的超时。
         # 默认 None = 无限等待 = 逐字旧行为（零回归）；秒数按对方 R12「先测再钉」，暂不预设。
+        started = time.perf_counter()
         await _acquire_with_timeout(lock, session_id)
         try:
             # 🛑 拿到锁后**复查在册**（TOCTOU）：`acquire()` 到真正拿到锁之间，
@@ -765,6 +817,14 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                     session_id,
                     residual,
                 )
+        # step 端到端耗时（2026-07-30）：此前**成功路径一行日志都不打**。
+        # 这条同时兑现 R12 的「超时秒数先测再钉」—— 两仓都没有任何 step 耗时数据，
+        # 任何默认秒数今天都只是工程假设。DEBUG 级，避免热路径刷 INFO。
+        logger.debug(
+            "zero.step done sid=%s elapsed_ms=%.1f",
+            session_id,
+            (time.perf_counter() - started) * 1e3,
+        )
         expression = step_out.get("expression") or {}
         return expression
 
@@ -818,6 +878,9 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             "只读回读面：不传 session_id 返回**部署端默认**（env + caps + versions，"
             "供在 open_session 之前决定是否发某类流）；传 session_id 返回**该会话真实生效**的值。"
             "未知 session_id 视同不传。字段集演进看 describe_config_version。"
+            "另回 transport（stdio / streamable-http，规范化后的生效值）+ stateless_http，"
+            "供在运行期确认「stateful + 何种传输」。⚠ 二者是**本 server 进程**的事实"
+            "（进程 env 解析值 + 本进程 FastMCP settings），**不是连接级事实**。"
         ),
         structured_output=False,
     )
@@ -840,6 +903,29 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         （对方 R11 实现警告）。活跃会话的门控构造时固定，回显刚算的 cfg 等于回显
         「本可生效但实际未生效」的值 —— 比不回显更危险：消费方会拿它当真、比对通过、
         实则语义已分叉。
+
+        ── `transport` / `stateless_http` 的**诚实边界**（Zero_MCP 2026-07-30 §3.3-2）──
+        这两键的存在理由：上面那句「HTTP 传输下两进程**不共享 env**，『同名 env 对齐』这条机制
+        结构上不成立」对**传输模式本身**逐字适用 ⇒ 源码 pin 只能保证「源码里是 stateful」，
+        只有本工具能让消费方在运行期、对着真正连上的那个部署确认。
+        🛑 但二者回的都是「**这个 server 进程**的事实」，**不是连接级事实**：
+          · `transport` = 本进程 env（`ZERO_MCP_TRANSPORT`）经 `resolve_transport` 解析出的值，
+            与 `__main__.main` 起传输用的是**同一个符号** ⇒ **无解析口径漂移**
+            （不会两处各判一次别名而分叉）。
+            ⚠ 但**消不掉时序漂移**：本值是本工具**被调用时**现读 env，而传输是**启动时**起的
+            ⇒ 进程启动后若有人改过 `os.environ["ZERO_MCP_TRANSPORT"]`（测试里的 monkeypatch
+            正是这么做的），回读值会与已经起好的那个传输不符。要消掉这半条，
+            得在启动时把解析结果缓存到实例上再回读——本轮**未做**。
+            ⚠ 但 `build_server()` 被测试/程序内直接调用（in-memory client）时**根本没起任何
+            传输**，env 也可能未设 ⇒ 此时它回的是「若按本进程 env 起传输会起哪个」，
+            **不是**「你这条连接实际用的是哪个」。别把它当连接级断言用。
+          · `stateless_http` 读的是**本进程 `FastMCP` 实例的 settings**，不是写死的常量——
+            我方从不传该实参 ⇒ 今天恒 `False`（结构守卫见
+            `tests/test_mcp_server.py::test_fastmcp_construction_does_not_pass_stateless_http`
+            与 `::test_no_env_can_flip_stateless_http`）。读实例而非写死 `False` 是刻意的：
+            万一 SDK 将来改成从它自己的 `FASTMCP_*` env 前缀读该字段（当前版本**不会**，
+            已实测：`FastMCP.__init__` 把 `stateless_http` 作显式形参传进 Settings，
+            故 `FASTMCP_STATELESS_HTTP` 无效），写死的 `False` 会当场变成谎话，而读实例仍诚实。
         """
         session = await registry.get(session_id) if session_id else None
         if session is not None:
@@ -877,6 +963,11 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             "external_prior_schema_version": EXTERNAL_PRIOR_SCHEMA_VERSION,
             "governance_gated_flags": sorted(_MCP_GOVERNANCE_GATED_FLAGS),
             "error_codes": sorted(ZERO_ERROR_CODES),
+            # ── 生效传输（Zero_MCP 2026-07-30 §3.3-2）；诚实边界见上方 docstring ──
+            # 🛑 同源：`resolve_transport` 也是 `__main__.main` 的判据，此处**不重抄解析**。
+            "transport": resolve_transport(),
+            # 读实例 settings，不写死 False —— 判据要取在真正决定行为的那个对象上。
+            "stateless_http": mcp.settings.stateless_http,
             # 第二批（对方已接受后置）：显式回 null，**不省略键**——省略会让「未实现」
             # 与「探测失败」不可区分，正是对方第 3 条形制要求要避开的。
             "sample_sigma_cap": cfg.sample_sigma_cap,

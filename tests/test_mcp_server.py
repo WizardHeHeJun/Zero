@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import ast  # 结构性守卫（ToolError / cfg 回显 / stateless_http 双重 pin / 传输同源）用
 import json
 from pathlib import Path  # _facs_v2_weights() 用
 
@@ -937,8 +938,11 @@ async def test_describe_config_version_bumped_with_contract_change() -> None:
     """契约版本随本轮变化 bump —— 纪律覆盖值域/语义变化，不只增删键。"""
     from src.mcp_server.server import DESCRIBE_CONFIG_VERSION
 
-    assert DESCRIBE_CONFIG_VERSION >= 2, (
-        "本轮 open_session 增了 interrupt_probe 且其取值集合是新契约，须 bump"
+    # ⚠ 下界必须随每轮 bump 一起收紧，否则本断言不是 tripwire、只是注释：
+    # 实测把 DESCRIBE_CONFIG_VERSION 改回 2 时，旧的 `>= 2` 下界让**全套 1850 条全绿**。
+    assert DESCRIBE_CONFIG_VERSION >= 3, (
+        "本轮 describe_config 新增 transport / stateless_http 两键（契约变化），须 bump 到 ≥3；"
+        "上一轮的理由是 open_session 增了 interrupt_probe 且其取值集合是新契约"
     )
     async with connect(build_server()) as client:
         await client.initialize()
@@ -1979,3 +1983,473 @@ async def test_resume_persists_run_state_across_server_instances(
         rr2 = await c2.call_tool("zero.step", {"session_id": sid, "stim": stim})
         assert rr2.isError is False
         await c2.call_tool("zero.close_session", {"session_id": sid})  # 关连接（aclose·免泄漏）
+
+
+# ── 生效传输回读 + stateless_http 双重 pin（Zero_MCP 2026-07-30 §3.3）────────────────────
+#
+# 两件事同批，动机同源：
+# ① **运行期回读传输**——我方自己写在 `describe_config` docstring 里的那句「HTTP 传输下两进程
+#    **不共享 env**，『同名 env 对齐』这条机制结构上不成立」对**传输模式本身**逐字适用 ⇒
+#    源码 pin 只能保证「源码里是 stateful」，只有 `describe_config` 能让消费方在运行期、
+#    对着真正连上的那个部署确认。
+# ② **stateless_http 的双重 pin**——对方原话：「pin 要覆盖两件事：`FastMCP(...)` 构造不传
+#    `stateless_http`，**且不存在读该值的 env**。只钉构造实参挡不住『以后加一个 env』——
+#    而**部署期翻转**恰恰是我方唯一在意的失败形态。」
+# ⚠ 全仓今天 `stateless_http` 零命中 ⇒ 两条守卫**必然绿**，故判别力不能靠「今天是绿的」自证：
+#   `::test_stateless_guards_catch_the_flip_vectors` 喂合成源码把三种翻转与两处合法读一起钉住
+#   （仓内「绿灯必须先证明能红」）。
+
+
+def _fastmcp_calls_in(source: str, filename: str, func_name: str) -> list[list[str | None]]:
+    """返回 `func_name` 里每次 `FastMCP(...)` 调用的关键字实参名列表（`**d` 展开记作 `None`）。
+
+    按名字匹配 `FastMCP`（`ast.Name` 或 `ast.Attribute`）。若上游改成
+    `from … import FastMCP as FM`，本函数会回空表 —— 调用方据此**报失锚**（安全方向：
+    宁可红一次让人重写守卫，也不要静默变成真空绿）。
+    """
+    tree = ast.parse(source, filename=filename)
+    calls: list[list[str | None]] = []
+    for target in ast.walk(tree):
+        if not (
+            isinstance(target, ast.FunctionDef | ast.AsyncFunctionDef) and target.name == func_name
+        ):
+            continue
+        for node in ast.walk(target):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            called = (
+                func.id
+                if isinstance(func, ast.Name)
+                else func.attr
+                if isinstance(func, ast.Attribute)
+                else None
+            )
+            if called == "FastMCP":
+                calls.append([kw.arg for kw in node.keywords])
+    return calls
+
+
+# 读 env 的**间接层**：这些函数体内 env 名是形参（变量），由调用方传字面量 ⇒ 不算「不可判」。
+# 新增同类助手时加进来，否则 `_stateless_flip_sites` 会把它报成不可判（刻意的：那正是
+# 「以后偷偷加一个 env」最容易藏进去的地方）。
+_ENV_NAME_INDIRECTION: frozenset[str] = frozenset(
+    {"_env_flag", "_env_number", "_env_optional_float"}
+)
+# 直接读 env 的写法（`_ENV_NAME_INDIRECTION` 里的助手也在内：它们第一个实参就是 env 名）。
+_ENV_READ_FUNCS: frozenset[str] = frozenset({"getenv"}) | _ENV_NAME_INDIRECTION
+
+
+def _is_os_environ(node: ast.AST) -> bool:
+    """`node` 是否 `os.environ` / 裸 `environ`。"""
+    return (isinstance(node, ast.Attribute) and node.attr == "environ") or (
+        isinstance(node, ast.Name) and node.id == "environ"
+    )
+
+
+def _env_read_name(node: ast.AST) -> tuple[bool, str | None]:
+    """`(该节点是否一次 env 读取, env 名)`；名不是字符串字面量则 env 名回 `None`（=不可判）。
+
+    覆盖 `os.getenv(...)` / 裸 `getenv(...)`（`from os import getenv`）/ `os.environ[...]` /
+    `os.environ.get(...)` / `os.environ.setdefault(...)`，以及 `_ENV_NAME_INDIRECTION` 里的助手。
+    """
+    if isinstance(node, ast.Subscript) and _is_os_environ(node.value):
+        key = node.slice
+        return True, key.value if isinstance(key, ast.Constant) and isinstance(
+            key.value, str
+        ) else None
+    if not isinstance(node, ast.Call):
+        return False, None
+    func = node.func
+    hit = (isinstance(func, ast.Name) and func.id in _ENV_READ_FUNCS) or (
+        isinstance(func, ast.Attribute)
+        and (
+            func.attr in _ENV_READ_FUNCS
+            or (func.attr in ("get", "setdefault") and _is_os_environ(func.value))
+        )
+    )
+    if not hit:
+        return False, None
+    first = node.args[0] if node.args else None
+    return True, (
+        first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else None
+    )
+
+
+def _env_read_sites(source: str, filename: str) -> list[tuple[int, str | None, str]]:
+    """扫一段源码，返回全部 env 读取点：`(行号, env 名或 None, 最内层函数名)`。
+
+    最内层函数名用于**豁免间接层**与判定「某个 env 只在某一个函数里被读」（同源守卫要用）。
+    """
+    sites: list[tuple[int, str | None, str]] = []
+
+    def visit(node: ast.AST, enclosing: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = (
+                child.name
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
+                else enclosing
+            )
+            is_read, env_name = _env_read_name(child)
+            if is_read:
+                sites.append((getattr(child, "lineno", 0), env_name, enclosing))
+            visit(child, inner)
+
+    visit(ast.parse(source, filename=filename), "<module>")
+    return sites
+
+
+def _stateless_flip_sites(source: str, filename: str) -> list[tuple[int, str]]:
+    """扫一段源码，返回能让 `stateless_http` **在部署期被翻转**的位置：`(行号, 原因)`。
+
+    两条判据（缺一不可，正是对方要的「双重」）：
+    **写入侧（与 env 名无关）**——任何调用里的 `stateless_http=` 关键字实参；对 `.stateless_http`
+    属性的**赋值/删除**。这一条**不看 env 叫什么**，故「以后加一个叫别的名字但语义相同的 env」
+    只要经这两种写法落地就会被抓。
+    **env 名侧**——env 名归一化（去掉非字母数字后大写）后含 `STATELESS`；以及**非豁免函数**里
+    env 名不是字面量（记「不可判」并同样报红）。
+
+    🛑 **只读不算**：`{"stateless_http": mcp.settings.stateless_http}` 这种 Load 上下文的属性读
+    是 `describe_config` 的生产写法，必须放行 —— 判据要分清「读出来如实回报」与「写进去翻转」。
+    """
+    import re
+
+    tree = ast.parse(source, filename=filename)
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "stateless_http":
+            found.append((node.value.lineno, "关键字实参 stateless_http=… 传进了某次调用"))
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr == "stateless_http"
+            and isinstance(node.ctx, ast.Store | ast.Del)
+        ):
+            found.append((node.lineno, "对 .stateless_http 属性赋值/删除（部署期翻转的写入侧）"))
+    for lineno, env_name, enclosing in _env_read_sites(source, filename):
+        if env_name is None:
+            if enclosing not in _ENV_NAME_INDIRECTION:
+                found.append(
+                    (
+                        lineno,
+                        f"{enclosing}() 里 env 名不是字面量 ⇒ 守卫**不可判**"
+                        "（改成字面量，或把新助手加进 _ENV_NAME_INDIRECTION）",
+                    )
+                )
+        elif "STATELESS" in re.sub(r"[^A-Za-z0-9]", "", env_name).upper():
+            found.append((lineno, f"env {env_name!r} 的名字命中 stateless 语义"))
+    return sorted(found)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, "stdio"),  # 未设 = 默认
+        ("stdio", "stdio"),
+        ("http", "streamable-http"),  # 短别名 → **规范化**成 SDK 正名
+        ("HTTP", "streamable-http"),  # 大小写不敏感
+        ("Streamable-HTTP", "streamable-http"),
+        ("streamable-http", "streamable-http"),
+        ("", "stdio"),  # 空串：未识别 → 与 __main__ 的 else 同向回落
+        ("sse", "stdio"),  # 拼错/别的传输名 → 同上
+        (" http", "stdio"),  # 带空白：抽取前不 strip，回读面也不得 strip
+    ],
+)
+async def test_describe_config_reports_effective_transport(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: str
+) -> None:
+    """`describe_config` 回**规范化后的生效传输值**，未识别值的回落方向与 `__main__` 一致。
+
+    对方核过我方返回体里此前**没有任何传输相关字段**（daecce1）⇒ 消费方无手段在运行期确认
+    「连上的这个部署到底起的是哪种传输」，而它整套取消模型的适用边界就挂在这上面。
+    ⚠ 断言的是**规范化值**（`http` → `streamable-http`），不是原始 env 字符串：回原始串等于把
+    别名/大小写的解析责任又推回消费方，两边各解析一次就会分叉。
+    """
+    from src.mcp_server.server import TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP
+
+    if raw is None:
+        monkeypatch.delenv("ZERO_MCP_TRANSPORT", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_MCP_TRANSPORT", raw)
+    async with connect(build_server()) as client:
+        await client.initialize()
+        d = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+    assert d["transport"] == expected, f"ZERO_MCP_TRANSPORT={raw!r} 的生效传输回错了"
+    assert d["transport"] in (TRANSPORT_STDIO, TRANSPORT_STREAMABLE_HTTP), (
+        "值域必须是规范化后的两态之一——按符号名 pin，勿 pin 字面量"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        "",
+        " ",
+        "stdio",
+        "STDIO",
+        "http",
+        "Http",
+        "HTTP",
+        "streamable-http",
+        "STREAMABLE-HTTP",
+        " http",
+        "http ",
+        "streamable_http",
+        "sse",
+        "1",
+        "true",
+    ],
+)
+def test_resolve_transport_matches_pre_extraction_expression(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None
+) -> None:
+    """抽取出的 `resolve_transport` 与抽取前写在 `__main__.main` 里那两行**逐字同判**。
+
+    oracle 就是抽取前的原表达式（在测试里重写一份是刻意的：它是「行为逐字不变」唯一可执行的
+    判据）。含 `" http"` / `"http "` 两条 —— 抽取前没有 `strip()`，加上就是**行为变更**而非重构。
+    """
+    import os
+
+    from src.mcp_server.server import TRANSPORT_STREAMABLE_HTTP, resolve_transport
+
+    if raw is None:
+        monkeypatch.delenv("ZERO_MCP_TRANSPORT", raising=False)
+    else:
+        monkeypatch.setenv("ZERO_MCP_TRANSPORT", raw)
+    # ⚠ 抽取前的原样表达式，勿「顺手改进」
+    legacy_is_http = os.getenv("ZERO_MCP_TRANSPORT", "stdio").lower() in (
+        "http",
+        "streamable-http",
+    )
+    assert (resolve_transport() == TRANSPORT_STREAMABLE_HTTP) is legacy_is_http, (
+        f"ZERO_MCP_TRANSPORT={raw!r}：抽取后的判别与抽取前不一致 —— 这是行为变更，不是重构"
+    )
+
+
+def test_transport_resolution_is_single_sourced() -> None:
+    """🛑 AST：`ZERO_MCP_TRANSPORT` 在 `src/mcp_server/` 里**只能**被 `resolve_transport` 读。
+
+    件一的关键设计约束：传输模式此前只在 `__main__.main` 里解析，而 `describe_config` 在
+    `server.py`。若在回读面里**重抄一遍**解析，就是亲手造一个新的漂移源 —— 回读面会宣称一个
+    部署端根本没起的传输，且消费方会拿它当真（同 R11「回显本可生效但实际未生效的值」的失效型，
+    比不报更糟）。故解析必须是**同一个符号**。
+
+    ⚠ 挡不住：把 env 名先塞进变量再读（`n = "ZERO_MCP_TRANSPORT"; os.getenv(n)`）——
+    那属存心绕过；本守卫的目标是无心之失（同 `_toolerror_sites` 的边界声明）。
+    """
+    import src.mcp_server.server as srv
+
+    files = sorted(Path(srv.__file__).parent.glob("*.py"))
+    assert {p.name for p in files} >= {"server.py", "__main__.py"}, (
+        "扫描面缺 server.py/__main__.py —— 守卫失去两个抓手，glob 写错了"
+    )
+    readers: list[tuple[str, str, int]] = []
+    for path in files:
+        # 显式 utf-8：本仓 Windows 默认 cp936，中文注释会 UnicodeDecodeError（表现为报错而非报红）
+        source = path.read_text(encoding="utf-8")
+        readers += [
+            (path.name, enclosing, line)
+            for line, env_name, enclosing in _env_read_sites(source, path.name)
+            if env_name == "ZERO_MCP_TRANSPORT"
+        ]
+    assert readers, "全包内没有一处读 ZERO_MCP_TRANSPORT —— 守卫已失锚（env 名改了？），请重写"
+    assert [(f, fn) for f, fn, _ in readers] == [("server.py", "resolve_transport")], (
+        f"ZERO_MCP_TRANSPORT 被多处/别处读取：{readers}；解析必须只在 resolve_transport 里，"
+        "__main__ 与 describe_config 共用它 —— 两处各写一份必然漂移"
+    )
+
+
+async def test_describe_config_reports_stateless_http() -> None:
+    """一次调用就能确认「stateful + 何种传输」：`stateless_http` 与 `transport` 同时在。
+
+    ⚠ 值取自**本进程 FastMCP 实例的 settings**，不是写死的 `False` —— 哪天真开了 stateless，
+    这里会**如实**变 `True` 而不是继续说谎；「不会被悄悄开」由下面两条结构守卫钉住。
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    async with connect(build_server()) as client:
+        await client.initialize()
+        d = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+    assert d["stateless_http"] is False, "我方从不传该实参 ⇒ 今天恒 False"
+    assert "transport" in d, "两键须成对：只知 stateful 不知传输，消费方仍要再问一次"
+    assert FastMCP("probe").settings.stateless_http is False, (
+        "SDK 的 stateless_http 默认已不是 False —— 「不传即 stateful」这句前提没了，"
+        "两侧取消模型的适用边界须重测（对方 §3.3 限定：反号结论来自最小 FastMCP 变体）"
+    )
+
+
+def test_fastmcp_construction_does_not_pass_stateless_http() -> None:
+    """🛑 AST（双重 pin 之一）：`build_server` 里那次 `FastMCP(...)` 不得传 `stateless_http`。
+
+    对方挂在「我方是 stateful」这个前提上的是**整套取消模型的适用边界**（断连不取消 / 关传输
+    才取消 / `__aexit__` 发的 DELETE 才是真风险口），而该结论此前只以 notes 文字形式存在
+    —— 产品码 0 处、守卫 0 处，**没有任何东西会因为对端翻转而变红**。这正是「该 pin」的
+    定义性情形。stateless 下取消语义**反号**（对方最小 FastMCP 变体实测）。
+    """
+    import src.mcp_server.server as srv
+
+    source = Path(srv.__file__).read_text(encoding="utf-8")
+    calls = _fastmcp_calls_in(source, "server.py", "build_server")
+    assert len(calls) == 1, (
+        f"build_server 里的 FastMCP 构造点不是恰好一处（实得 {len(calls)}）—— 守卫失锚"
+        "（改名/别名 import/挪了位置？），请重写而不是删掉"
+    )
+    assert None not in calls[0], (
+        "FastMCP(...) 里出现了 `**` 展开 ⇒ 本守卫看不见键名、已失效：请把实参写成显式关键字"
+    )
+    assert "stateless_http" not in calls[0], (
+        "FastMCP(...) 传了 stateless_http —— 跨仓前提是「不传该实参、取 SDK 默认 stateful」；"
+        "真要开 stateless，两侧的取消语义都要重测（对方原话：不能直接搬用）"
+    )
+
+
+def test_no_env_can_flip_stateless_http() -> None:
+    """🛑 AST（双重 pin 之二）：`src/mcp_server/` 下不存在能让 `stateless_http` 被翻转的位置。
+
+    对方原话：「只钉构造实参挡不住『以后加一个 env』——而**部署期翻转**恰恰是我方唯一在意的
+    失败形态。」
+
+    **能挡**（判据在 `_stateless_flip_sites`，判别力由
+    `::test_stateless_guards_catch_the_flip_vectors` 自证）：
+      · 任何调用里的 `stateless_http=` 关键字实参 —— 含 `FastMCP` 之外的调用、含未来新增文件
+        （与上一条守卫**故意重叠**：上一条锚在当前构造点、归因精确；本条扫全包、防未来新构造点）；
+      · 对 `.stateless_http` 的**赋值/删除**（`mcp.settings.stateless_http = …`）——
+        **与 env 叫什么无关**，故「以后加一个叫别的名字但语义相同的 env」只要经这种写法落地
+        就会被抓（这是本条相对「只查 env 名」的真正增量）；
+      · env **名**归一化后含 `STATELESS`（去掉非字母数字再比，故 `ZERO_MCP_STATE_LESS_HTTP`
+        这种靠下划线拆词的写法躲不过）；
+      · 非豁免函数里 env 名不是字面量 → 记「不可判」同样报红。
+
+    **挡不住**（明说，不声称挡住了实际挡不住的）：
+      · `setattr(mcp.settings, "stateless_" + "http", True)` 一类动态写入；
+      · 别的文件里新写 `FastMCP(**d)` 且 `d` 运行期拼出（当前构造点由上一条守卫的 `**` 检查兜住）；
+      · 把 `FastMCP` 构造整个搬到 `src/mcp_server/` **之外**（扫描面只有本包）；
+      · env 的**值**（如 `ZERO_MCP_HTTP_MODE=stateless`）：只查名、不查值；
+      · SDK 自己的 `FASTMCP_*` env 前缀 —— 当前版本对 `stateless_http` **无效**（已实测：
+        `FastMCP.__init__` 把它作显式形参传给 Settings，故 `FASTMCP_STATELESS_HTTP` 不起作用），
+        但那属源码 pin 结构上摸不到的部署期向量，只能靠 `describe_config` 的运行期回读兜住
+        —— 这正是对方 §3.3-2 把回读面称作「更值的形态」的理由。
+    """
+    import src.mcp_server.server as srv
+
+    files = sorted(Path(srv.__file__).parent.glob("*.py"))
+    assert files, "扫描面为空 → 守卫恒真空绿，glob 写错了"
+    assert any(p.name == "server.py" for p in files), "server.py 不在扫描面内 → 守卫失去主要抓手"
+    offenders: list[str] = []
+    for path in files:
+        source = path.read_text(encoding="utf-8")  # 显式 utf-8：见上一条守卫的同款说明
+        offenders += [
+            f"{path.name}:{line}: {why}" for line, why in _stateless_flip_sites(source, path.name)
+        ]
+    assert not offenders, (
+        f"出现了能翻转 stateless_http 的位置：{offenders}；跨仓前提是「不传该实参、"
+        "**且不存在读该值的 env**」——部署期翻转会让对方整套取消模型的适用边界反号"
+    )
+
+
+def test_stateless_guards_catch_the_flip_vectors() -> None:
+    """判别力自证：喂合成源码，三种翻转必须全抓、两处合法写法必须不抓。
+
+    ⚠ 必须有这一条：全仓今天 `stateless_http` 零命中 ⇒ 上面两条守卫**必然绿**，
+    「今天绿」证明不了它们会红（仓内「绿灯必须先证明能红」）。这里把判别力做成常驻断言，
+    不依赖任何一次性的手工变异。
+    """
+    flips = (
+        "import os\n"
+        "from mcp.server.fastmcp import FastMCP\n"
+        "\n"
+        "def build_server():\n"
+        "    mcp = FastMCP('zero', stateless_http=True)\n"
+        "    mcp.settings.stateless_http = os.getenv('ZERO_MCP_STATELESS_HTTP') == '1'\n"
+        "    mcp.settings.stateless_http = _env_flag('ZERO_MCP_FAST_MODE', False)\n"
+        "    return mcp\n"
+    )
+    # ① 构造实参：两条守卫都该抓（重叠是故意的，见 test_no_env_can_flip_stateless_http）
+    assert _fastmcp_calls_in(flips, "server.py", "build_server") == [["stateless_http"]]
+    by_line: dict[int, str] = {}
+    for line, why in _stateless_flip_sites(flips, "server.py"):
+        by_line[line] = by_line.get(line, "") + " | " + why
+    assert set(by_line) == {5, 6, 7}, f"有翻转向量未被抓住，实得 {by_line}"
+    assert "关键字实参" in by_line[5]  # ① FastMCP(..., stateless_http=True)
+    assert "命中 stateless 语义" in by_line[6] and "属性赋值" in by_line[6]  # ② 同名 env + 写入
+    assert "属性赋值" in by_line[7], (  # ③ **换个名字**的 env + 写入 —— 只有写入侧判据能抓
+        "换名 env 只被写入侧判据兜住；这条一旦漏，「以后加一个叫别的名字的 env」就穿了"
+    )
+
+    legal = (
+        "import os\n"
+        "from mcp.server.fastmcp import FastMCP\n"
+        "\n"
+        "def build_server():\n"
+        "    mcp = FastMCP('zero', host=os.getenv('ZERO_MCP_HTTP_HOST', '127.0.0.1'))\n"
+        "    return {'stateless_http': mcp.settings.stateless_http}\n"
+        "\n"
+        "def _env_flag(name, default):\n"
+        "    return os.getenv(name)\n"
+    )
+    assert _stateless_flip_sites(legal, "server.py") == [], (
+        "误报：`{'stateless_http': mcp.settings.stateless_http}` 是 describe_config 的生产写法"
+        "（只读回显·必须放行），`_env_flag(name)` 是既有间接层"
+    )
+    opaque = "import os\n\ndef f(n):\n    return os.getenv(n)\n"
+    assert [why for _, why in _stateless_flip_sites(opaque, "server.py")] == [
+        "f() 里 env 名不是字面量 ⇒ 守卫**不可判**"
+        "（改成字面量，或把新助手加进 _ENV_NAME_INDIRECTION）"
+    ], "非豁免函数里的变量 env 名必须报「不可判」——那是「偷偷加一个 env」最好的藏身处"
+
+
+# ── R10 日志回落：setup_logging 失败时必须真调 basicConfig ────────────────────
+# 🛑 为什么要这条锁：`__main__.main` 的注释与 warning 都宣称「回落 basicConfig」，
+# 而 2026-07-30 实测代码里**根本没有那个调用** —— setup_logging 失败时 root logger
+# 保持未配置（默认 WARNING、无 handler）⇒ warning 靠 lastResort 勉强出 stderr，
+# 而**所有 INFO 全丢**，包括 `open_session` 的门控快照。即 R10 想要的可裁定性
+# 恰在最该生效的场景（只读容器 / 目录不可写）失效，且相对改动前是**回退**。
+# 一句宣称「已回落」的注释 + 没有该调用的代码 = 一个永远不会响的警报。
+#
+# ⚠ 本文件此前**没有任何测试 import 过 `src.mcp_server.__main__`** ⇒ `main()` 整块零运行时覆盖。
+# 本条是该模块的第一条运行时锁，故刻意把三处外部依赖全 patch 掉、只观测日志配置这一件事。
+def test_setup_logging_failure_falls_back_to_basicconfig(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """setup_logging 抛异常时，`main()` 必须真调 `logging.basicConfig` 且带 ZERO_LOG_LEVEL。"""
+    import logging as _logging
+
+    from src.mcp_server import __main__ as entry
+
+    calls: list[dict[str, object]] = []
+
+    def _spy_basic_config(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    def _boom() -> str:
+        raise OSError("日志目录不可写（模拟只读容器）")
+
+    class _DummyServer:
+        def run(self, transport: str) -> None:
+            self.ran_with = transport
+
+    dummy = _DummyServer()
+    # setup_logging 在 main() 内部**函数体里** import，故要 patch 它的来源模块。
+    monkeypatch.setattr("src.observability.setup_logging", _boom)
+    monkeypatch.setattr(entry, "build_server", lambda: dummy)
+    monkeypatch.setattr(_logging, "basicConfig", _spy_basic_config)
+    monkeypatch.setenv("ZERO_MCP_TRANSPORT", "stdio")  # 走 else 支，不起 uvicorn
+    monkeypatch.setenv("ZERO_LOG_LEVEL", "DEBUG")  # 非默认值，用来证明它真被读
+
+    entry.main()
+
+    assert calls, (
+        "setup_logging 失败时未调 logging.basicConfig —— root logger 保持未配置 ⇒ INFO 全丢"
+        "（含 open_session 的门控快照）。注释宣称『回落 basicConfig』就必须真有该调用"
+    )
+    assert calls[0].get("level") == "DEBUG", (
+        f"回落时未按 ZERO_LOG_LEVEL 配级别，实得 {calls[0]!r}；"
+        "改动前该路径恒 basicConfig(level=ZERO_LOG_LEVEL)，丢掉它是回退"
+    )
+    assert getattr(dummy, "ran_with", None) == "stdio", (
+        "日志回落不得挡启动 —— server 仍须照常起 stdio 传输"
+    )
