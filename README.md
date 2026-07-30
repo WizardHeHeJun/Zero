@@ -16,11 +16,11 @@
 
 Zero 是数字人的**情感 / 认知内核**——那颗负责「产生并调制情绪」的大脑。它**不直接接管**感官与身体：
 
-- **感知输入**（视觉 / 语音 / 生理信号 / 面部…）与**执行操控**（形象驱动 / 动作 / 对外动作）封装在一个**配套项目**里、作为 **MCP client** 接入。本内核**已内建 MCP server**——把一次情感引擎会话暴露为 `open / step / close` 三工具（本地 stdio / 远程 streamable-http，带 Bearer 鉴权），配套项目作为 client **已端到端接通**：每轮透传会话身份、喂入 `(v,a)` 刺激与可选多模态先验，即可推进会话并取回情绪化输出。
+- **感知输入**（视觉 / 语音 / 生理信号 / 面部…）与**执行操控**（形象驱动 / 动作 / 对外动作）封装在一个**配套项目**里、作为 **MCP client** 接入。本内核**已内建 MCP server**——把一次情感引擎会话暴露为 `open_session / step / close_session / describe_config / purge_session` **五工具**（本地 stdio / 远程 streamable-http，带 Bearer 鉴权），配套项目作为 client **已端到端接通**：每轮透传会话身份、喂入 `(v,a)` 刺激与可选多模态先验，即可推进会话并取回情绪化输出。前三个是会话主回路；`describe_config` 是**只读回读面**（不传会话 id 回服务端默认配置，传了回该会话真实生效的开关与能力，供 client 在发某类流之前先确认服务端开关状态）；`purge_session` 按会话 id **删掉该会话的持久运行态**——与 `close_session` 语义不同：close 只释放连接与登记，purge 才真正删数据（不可逆）。
 - 因此本仓库当前以**文本进、情绪化文本 + 通道值出**跑通内核回路；`main.py` / CLI 是**单跑内核的验证路径**——更丰富的多模态输入与操控经**已接通的 MCP 接点**驱动，且不动内核契约。
 - 内核所有对外能力都**协议化、可注入**（评价桥 / 语言 / 通道解码器 / 记忆后端按协议替换），正是为了让 MCP 侧的感知与操控**接进来而不动内核契约**。
 
-![MCP 接点边界：内核内建 MCP server（open/step/close 三工具）← MCP 协议 → 配套项目的感知输入 client + 执行操控 client](docs/v2/mcp-boundary.png)
+![MCP 接点边界：内核内建 MCP server（图示会话主回路 open/step/close；另有只读回读 describe_config 与清运行态 purge_session 两个工具未入图）← MCP 协议 → 配套项目的感知输入 client + 执行操控 client](docs/v2/mcp-boundary.png)
 
 ---
 
@@ -184,7 +184,7 @@ Zero/
 │   │   ├── conversation_log.py  #   --chat 对话运行态：transcript + 跨重启 attitude 落本地 SQLite
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   ├── observability/       # 横切：统一日志 setup_logging + 对话人读日志 setup_conversation_log（每启动落 logs/、级别可配）
-│   └── mcp_server/          # zero-link：情感引擎会话包成 MCP open/step/close 三工具（边界适配层·三层之外，stdio/streamable-http + Bearer 鉴权）
+│   └── mcp_server/          # zero-link：情感引擎会话包成 MCP 五工具（主回路 open/step/close + 只读回读 describe_config + 清持久运行态 purge_session；边界适配层·三层之外，stdio/streamable-http + Bearer 鉴权）
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练 train_*.py + 运行入口（cli_modes 承接 main.py 三模式 / run_pipeline 端到端）+ 验证 verify_*.py（含 verify_text_input 文本输入）+ 数据构建 build_*.py + 泛化/门控评测（*_direction_ood.py · gate_*.py 等，研究用）
 ├── tools/                   # 运维/文档工具（reset_db.py 清库 · plot_timescales.py / plot_consolidation.py 生成曲线图）
@@ -347,7 +347,9 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 > **两条入口的开法不同**：MCP 接入用 `ZERO_MCP_TEXT_COPING_ENABLED`，并由 client 在请求里带上语境与应对潜能字段；`--chat` 对话则需 `ZERO_TEXT_COPING_ENABLED` 与 `ZERO_TEXT_DOMAIN_ENABLED` 同开。
 
-**③ zero-link MCP server**（把情感引擎会话对外暴露为 `open / step / close` 三工具，供配套项目作 client 接入）
+**③ zero-link MCP server**（把情感引擎会话对外暴露为 `open_session / step / close_session / describe_config / purge_session` 五工具，供配套项目作 client 接入）
+
+五个工具的分工：`open_session` 建 / 重开会话，`step` 喂一条刺激推进一轮并取回通道值，`close_session` 释放会话（幂等）；`describe_config` 是**只读**回读面——不传 `session_id` 回**部署端默认**（env 装配出的开关 + 能力 + 各版本号，供 client 在开会话之前决定发不发某类流），传了则回**该会话真实生效**的值（未知 id 视同不传），返回体带 `describe_config_version` 供字段集演进对齐；`purge_session` 按会话 id 删掉该会话的**持久运行态**（按 thread_id 清 checkpoint），返回 `{ok, purged, backend, detail}`——`ok` 只表示请求已被正确处理、`purged` 才表示是否真删掉了持久副本，两者**别合并判断**：会话已不在册（已 close，或 server 重启后从未开过）且后端是默认内存后端时，会如实回 `purged=false`，因为内存后端的运行态随会话对象消亡、本就没有持久副本可删。另注 purge 与 close 在**等锁超时**时的处置有意不同：close 仍回 `{ok:true}`（会话已摘牌、不再接新活），purge 则**上抛错误**——它是调用方显式要求的破坏性动作，静默没删比报错危险。⚠ purge **不可逆**，与 close 语义不同：close 只释放连接与登记，purge 才真正删数据。
 
 起服务：`pip install -e ".[mcp]"` 后 `python -m src.mcp_server`。不起 server 时以下变量均无关。
 
@@ -365,7 +367,9 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 > **会话续接与安全**：默认内存后端下 server 重启即丢会话。要跨重启续会话，设 `ZERO_CHECKPOINT_BACKEND=sqlite`（+`ZERO_CHECKPOINT_DB`），client 用**同一个 `session_id`** 重新 `open_session` 即接上；session_id 失效时 `step` 返回的错误文案里含 `[zero:unknown-session]` 令牌（**位置不限、全文恰出现一次**，不是行首前缀），client 按 `re.search(r"\[zero:([a-z][a-z0-9-]*)\]")` 提取出该码即可据此重开重试。⚠ session_id 等同于该会话运行态与记忆的**访问凭据**，多用户部署必须配鉴权。
 >
-> 上表中 `ZERO_MCP_COPING_ENABLED` 起的三行是一组**只受 `ZERO_MCP_*` env 治理**的开关：client 在 `open_session` 的 config 里传入的同名字段一律被静默忽略，防越权开启。
+> **重开时先看 `interrupt_probe`**：`open_session` 的返回体是 `{session_id, resumed, interrupt_probe}`，其中 `interrupt_probe` **恒存在**，取值是显式四态——`not_probed`（新建会话，或该会话仍活跃、按原样幂等返回，没做探测）/ `clean`（探测成功且上一轮跑完整轮）/ `interrupted`（探测成功且发现上一轮停在中途，此时**另带** `interrupted_at`＝待执行节点名列表，续跑会从该处继续而非重跑整轮）/ `probe_failed`（探测本身失败＝**不可判**，须按最坏情况处理）。⚠ 判「能不能安全续跑」请读 `interrupt_probe` 的取值，**不要**靠 `interrupted_at` 这个键在不在——后者缺席同时对应「干净」「没探测」「探测失败」三种完全不同的情形。
+>
+> 上表中 `ZERO_MCP_COPING_ENABLED` 起的几行属于一份**治理白名单**：白名单内的字段只由服务端 env 治理，client 在 `open_session` 的 config 里传入的同名字段一律被静默忽略，防越权开启。白名单当前共 **8 项**——`coping_potential_enabled` / `text_coping_enabled` / `fear_domain_enabled` / `precision_commensurable` / `gate_fusion` / `exclude_physio_fusion` / `ignition_beta` / `canonical_physiology`。其中前 7 项由上表带 `ZERO_MCP_` 前缀的对应变量治理（变量名与字段名并非处处逐字相同，如 `gate_fusion` 对应的是 `ZERO_MCP_IGNITION_GATE_FUSION`）；第 8 项 `canonical_physiology` 例外，它读的是**不带该前缀**的 `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER`（与生理占位口径同源，见②组）。这份名单不必照抄——`describe_config` 的返回体里就带着 `governance_gated_flags` 全表，client 运行期直接读即可。
 >
 > ⑤组的 `ZERO_PRECISION_COMMENSURABLE` / `ZERO_IGNITION_GATE_FUSION` / `ZERO_EXCLUDE_PHYSIO_FUSION`（无 `ZERO_MCP_` 前缀那三个）**对 MCP server 不生效**——MCP 面读的是上表带前缀的同名变量；要改服务端的融合语义，请设带前缀的那一份。
 >
