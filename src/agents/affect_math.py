@@ -885,8 +885,13 @@ def ignite(
     本参数的过滤**只在门开分支执行**；门关（默认）分支调完 `_select_fired` 即提前 return，
     根本走不到它。故 D7「physio 不进数值通路」这个跨仓承诺在门关路径下**并未由本开关兑现**：
     - 门关 + 硬门（`soft_beta=None`，默认）：physio 进不来靠的是**它自己的低 Πa**
-      （Zero_MCP 线上载荷 salience 上界 0.088 < 阈值 0.18），不是 D7。对方把 Πa 抬到
-      ≥0.359 即可在此路径下自行过阈——该边界目前是**对方的自律**，我方无结构约束。
+      （Zero_MCP 线上载荷 salience 上界 0.088 < 阈值 0.18），不是 D7。把 Πa 抬到
+      ≥0.359 即可在此路径下自行过阈。该边界**对方侧现已落成运行期守卫**（其 M8 在出网
+      收口点 `build_external_priors_override` 现算最坏 salience，达阈即 raise），已不再
+      只是自律；但那是**对方仓内的单边守卫**，我方侧仍无结构约束——不经该收口点的入口
+      （我方 chat 面、测试夹具、其它 MCP client）照样能把这样的载荷送过阈。
+      回归锁：`tests/test_external_priors.py::TestPhysioSelfIgniteExposureOnDefaultPath`
+      （该界现算、双向断言曝露面仍在）。
     - 门关 + 软门（`soft_beta` 非 None）：**全部流含 physio 一律进 `fuse_terms`**（精度乘
       logistic gate），既无阈值筛除也无 D7 —— 这是**真实旁路**。默认 `IGNITION_BETA=None`
       故生产未触发。⚠ 旁路面**比早前记的小**：`ignition_beta` 现已在

@@ -25,6 +25,8 @@
        `SALIENCE_THRESHOLD` 仍是 0.18）。PR #46 落的是另外两个方案——线 A（硬门从数值通路
        摘出，`ZERO_IGNITION_GATE_FUSION`）+ 线 B（精度量纲齐次化），二者默认关。
        故本组**不会**因该修复变红；真正会动它的是「翻默认」或「改 SALIENCE_THRESHOLD」
+     - 反面（同一主题的另一半）：Πa 抬到**现算**的界即可在生产默认路径上自行过门
+       —— 曝露面而非期望行为，见 TestPhysioSelfIgniteExposureOnDefaultPath
   6. AffectState 默认值断言
      - external_prior_precision_cap==0.8、max_external_streams==5、external_priors==[]
   7. _PHYSIO_PREFIXES 派生的前缀覆盖抽样
@@ -744,6 +746,91 @@ class TestIgnitionReachabilityAtRecommendedPrecision:
         )
         out = AffectCoreAgent()(state)
         assert "physio" not in out["ignited_streams"], "特征化：合并后 salience≈0.0744 仍 < 0.18"
+
+
+class TestPhysioSelfIgniteExposureOnDefaultPath:
+    """⚠ **曝露面**特征化（记录真实状态，**不是**期望行为）：physio 流只要把 Πa 抬到某个界，
+    就能在**生产默认配置**（`gate_fusion=True` 门关 + `soft_beta=None` 硬门）上**自行过点燃门**。
+    我方侧对此没有任何结构约束。
+
+    此前这个曝露面只写在 `ignite()` docstring 的散文里（D7 缺口那段），**零可执行断言**——
+    注释会烂、常量会漂。本类把它钉成回归锁。
+
+    界**现算**（`SALIENCE_THRESHOLD` / `MIN_PRECISION` 一动即跟着动，**禁止手抄 0.359**）：
+    M2 把 physio 的 Πv 覆写为 MIN_PRECISION、μv 归零 ⇒ hypot(μ)=|μa| ≤ 1
+    ⇒ 最坏 salience = |μa|·(MIN_PRECISION + Πa)/2；取 |μa|=1 令其 ≥ SALIENCE_THRESHOLD
+    即得 Πa ≥ 2·SALIENCE_THRESHOLD − MIN_PRECISION。判据（`_select_fired` 硬门分支）是
+    `s >= threshold`——**取等即过门**，故该界本身就在门内。
+
+    对侧现状：Zero_MCP 已在其出网收口点落了 M8 运行期守卫（最坏 salience 达阈即 raise），
+    但那是**对方仓内**的单边守卫——不经该收口点的入口（我方 chat 面、测试夹具、其它 client）
+    照样能把这样的载荷送进来，故本曝露面在我方侧依然成立。
+
+    🛑 **若我方将来加了结构上界**（给 physio 的 Πa 设硬顶 / 收紧点燃判据），本类会红——
+    **那是好事**：届时请把用例改写成「越界载荷被拒」，**不要**放宽本用例把绿灯要回来。
+    （同 D7 那条双向消息的教训：堵上缺口的那天不能红着喊「缺口仍在」。）
+    """
+
+    @staticmethod
+    def _self_ignite_pi_a_bound() -> float:
+        """现算 physio 在生产默认路径上自行过门所需的 Πa 下界（禁止手抄常量）。"""
+        return 2 * SALIENCE_THRESHOLD - MIN_PRECISION
+
+    def test_computed_bound_is_injectable_at_all(self) -> None:
+        """前置条件：该界本身必须落在默认 precision_cap 内，否则下面两条测的不是点燃门。"""
+        assert self._self_ignite_pi_a_bound() <= AffectState().external_prior_precision_cap, (
+            "现算的自点燃界已超出默认 precision_cap ⇒ M3 会先 raise，"
+            "本类的两条断言不再刻画点燃门；若这是有意收紧，请连带重写本类而非删本条"
+        )
+
+    def test_physio_at_computed_bound_ignites_on_production_default_path(self) -> None:
+        """⚠ 曝露面（非期望行为）：Πa 取现算界时，physio **确实**在生产默认路径上过门。
+
+        故意带 μv=0.9 与 Πv=0.5 注入：M2 会把两者分别归零 / 压到 MIN_PRECISION，
+        故该界只由 |μa| 决定——「Πv 被覆写、μv 被归零」这两条前提也一并锁在本用例里。
+        """
+        pi_a = self._self_ignite_pi_a_bound()
+        prior = ("physio", (0.9, 1.0), (0.5, pi_a))
+        expanded = expand_external_priors(
+            [prior],
+            precision_cap=AffectState().external_prior_precision_cap,
+            max_streams=5,
+        )
+        assert expanded[0][1] == (0.0, 1.0), "前提①：M2 应把 μv 归零、μa 原样透传"
+        assert expanded[0][2] == pytest.approx((MIN_PRECISION, pi_a)), (
+            "前提②：M2 应把 Πv 覆写为 MIN_PRECISION、Πa 原样透传"
+        )
+        assert stream_salience(expanded[0][1], expanded[0][2]) >= SALIENCE_THRESHOLD, (
+            "现算的界应使最坏 salience 恰好取等过门（判据是 >=）；不成立说明推导前提变了"
+        )
+        out = AffectCoreAgent()(_base_state(external_priors=[prior]))
+        assert "physio" in out["ignited_streams"], (
+            f"⚠ 曝露面消失：Πa={pi_a}（现算 = 2·{SALIENCE_THRESHOLD} − {MIN_PRECISION}）的 "
+            "physio 流本应在生产默认路径（门关+硬门）上自行过门。"
+            "**这不是期望行为，是我方无结构上界的记录**——若我方刚加了结构约束，"
+            "请把本类改写成「越界载荷被拒」，不要放宽本断言"
+        )
+
+    def test_physio_just_below_computed_bound_does_not_ignite(self) -> None:
+        """反向（防恒真）：Πa 取该界**略下方**时不过门——过门资格确实由这个界划定。"""
+        pi_a = self._self_ignite_pi_a_bound() - 1e-6
+        prior = ("physio", (0.9, 1.0), (0.5, pi_a))
+        expanded = expand_external_priors(
+            [prior],
+            precision_cap=AffectState().external_prior_precision_cap,
+            max_streams=5,
+        )
+        assert stream_salience(expanded[0][1], expanded[0][2]) < SALIENCE_THRESHOLD
+        out = AffectCoreAgent()(_base_state(external_priors=[prior]))
+        assert out["ignited_streams"], "本用例前提：至少有内核流点燃"
+        assert "physio" not in out["ignited_streams"], (
+            f"界下方（Πa={pi_a}）的 physio 不应过门；若它过了，说明上一条的绿灯是恒真的，"
+            "两条一起失去刻画能力"
+        )
+        assert set(out["ignited_streams"]) >= {"survival", "appraisal", "value"}, (
+            "内核流须已点燃 ⇒ physio 的落选来自阈值判据，而非 `_select_fired` "
+            "全员亚阈时的 max 兜底分支（兜底会把 physio 选回来，让本用例变成假绿）"
+        )
 
 
 class TestAffectCoreNoPollution:
