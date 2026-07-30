@@ -1,9 +1,12 @@
-"""zero-link MCP **server**：把 `ConversationSession` 包成三工具（边界适配层，三层之外）。
+"""zero-link MCP **server**：把 `ConversationSession` 包成五个工具（边界适配层，三层之外）。
 
 对齐 MCP 侧 client 契约（`D:\\Zero_MCP\\notes\\2026-07-15-zero-link-client-ready-to-zero.md`）：
-- `zero.open_session(persona?, config?) -> {"session_id": str}`
+- `zero.open_session(persona?, config?, session_id?)`
+  `-> {"session_id", "resumed", "interrupt_probe"}`
 - `zero.step(session_id, stim, external_priors?) -> <expression 子 dict>`
 - `zero.close_session(session_id) -> {"ok": true}`
+- `zero.describe_config(session_id?) -> <生效门控回读面>`（只读；不传 sid = 部署端默认）
+- `zero.purge_session(session_id) -> {"ok", "purged", "backend", "detail"}`（删持久运行态）
 错误一律 `ToolError`（FastMCP 转成 `CallToolResult.isError=true`，消息进 `content[0].text`）。
 
 红线守则：本模块**不反向依赖**内核内部（只经 `ConversationSession` 公开 `step`）、
@@ -30,6 +33,7 @@ import asyncio
 import logging
 import math
 import os
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -127,31 +131,131 @@ ZERO_ERROR_CODES: frozenset[str] = frozenset(
 # 兼容别名：旧名仍导出，值不变（配套项目现有断言含 "unknown-session" 子串者不受影响）。
 _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
 
-# describe_config 的字段集版本：**增删任何键都要 bump**。
-# 没有它，消费方在字段集演进后会静默少读（对方 desktop 面踩过这个坑）。
-DESCRIBE_CONFIG_VERSION = 1
+# describe_config 的**契约**版本。
+# 🛑 bump 纪律覆盖三类变化，不止增删键（Zero_MCP 2026-07-30 §5-4 追问，我方明确）：
+#   ① 增删键；② 某键的**值域/取值集合**变化（如 interrupt_probe 加一个新态）；
+#   ③ 某键**语义**变化（同名同类型但含义变了 —— 这类最危险，消费方看不出来）。
+# 判据：凡消费方**照旧解析会得出错误结论**的变化，都要 bump。
+# 只加一个不影响既有键解释的新键，可以不 bump —— 但拿不准时 bump，代价只是对方多读一次。
+# 2 → 3（Zero_MCP 2026-07-30 §3.3-2）：新增 `transport` / `stateless_http` 两键。按上面第 ①
+# 类（增删键）本可不 bump（不影响既有键的解释），但这两键正是对方要用来**换掉一整套取消模型
+# 适用边界判定**的输入 —— 拿不准就 bump 的那一档，故 bump。
+# 3 → 4（Zero_MCP 2026-07-30 §E.13）：新增 `memory_store_impl` / `semantic_store_impl` /
+# `checkpointer_impl` 三键。同属第 ① 类，但同样 bump：对方要拿它们判定「本次观察期是否全内存」
+# ——即数据留存问题的事实基础，误读的代价是把一个落盘部署当成全内存部署上报。
+DESCRIBE_CONFIG_VERSION = 4
+
+# ── 生效传输模式：**唯一**解析点 ────────────────────────────────────────────
+# 🛑 `__main__.main` 与 `zero.describe_config` **共用**本符号，任何第二处都不得重抄这段解析。
+# 理由：describe_config 报传输的全部价值就在于「回的值与真正起传输的那段代码同源」；
+# 两处各读一次 env、各判一次别名 = 亲手造一个新的漂移源，比不报更糟
+# （消费方会拿它当真、比对通过、实则与实际起的传输已分叉——同 R11「回显本可生效但未生效的值」）。
+TRANSPORT_STDIO = "stdio"
+TRANSPORT_STREAMABLE_HTTP = "streamable-http"
+# 两个别名都认（历史口径，勿收窄）：`http` 是人手写的短名，`streamable-http` 是 SDK 里的正名。
+_HTTP_TRANSPORT_ALIASES: frozenset[str] = frozenset({"http", TRANSPORT_STREAMABLE_HTTP})
 
 
-async def _purge_thread_state(thread_id: str) -> bool:
-    """删掉某 thread_id 的全部持久 checkpoint；返回是否确有删除动作。
+def resolve_transport() -> str:
+    """`ZERO_MCP_TRANSPORT` → **规范化后的生效传输名**（两态常量见本模块 `TRANSPORT_*`）。
 
-    走 LangGraph checkpointer 的公开 `adelete_thread`（存在则用）。老版本 saver 没有该方法时
-    返回 False 并记 WARNING —— **不自己拼 SQL**：那会绑死 sqlite 的表结构，
-    后端一换（postgres）就是静默失效或删错表。
+    行为与抽取前写在 `__main__.main` 里的那两行**逐字一致**：未设 → stdio；`.lower()` 后命中
+    `http`/`streamable-http` → HTTP；**其余一切值（含空串、拼错）回落 stdio**——因为
+    `__main__` 的 `else` 分支本来就是 `server.run(transport="stdio")`，回读面必须与它同向，
+    否则会宣称一个部署端根本没起的传输。
+    ⚠ 回落方向与 `_env_flag`（回落调用方给的 default）**不同源**，别按那个照抄：这里的
+    default 恒是 stdio。
+    ⚠ **刻意不做 `strip()`**：抽取前没有，加了会让 `" http"` 从「起 stdio」变成「起 HTTP」
+    —— 那是行为变更，不是重构。
     """
-    from src.storage.checkpointer import build_checkpointer
+    raw = os.getenv("ZERO_MCP_TRANSPORT", TRANSPORT_STDIO).lower()
+    return TRANSPORT_STREAMABLE_HTTP if raw in _HTTP_TRANSPORT_ALIASES else TRANSPORT_STDIO
 
-    saver = build_checkpointer()
+
+async def _delete_thread(saver: Any, thread_id: str) -> bool:
+    """在**给定的** saver 上删掉某 thread_id 的全部 checkpoint；返回是否确有删除动作。
+
+    走 LangGraph 公开的 `adelete_thread`。老版本 saver 无该方法时返回 False 并记 WARNING
+    —— **不自己拼 SQL**：那会绑死 sqlite 表结构，换后端即静默失效或删错表。
+    """
     deleter = getattr(saver, "adelete_thread", None)
     if deleter is None:
         logger.warning(
-            "checkpointer %s 无 adelete_thread，purge 无法删除持久态 thread_id=%s",
+            "checkpointer %s 无 adelete_thread，purge 无法删除 thread_id=%s",
             type(saver).__name__,
             thread_id,
         )
         return False
     await deleter(thread_id)
     return True
+
+
+def _checkpoint_backend() -> str:
+    """当前 checkpointer 后端名（小写）。与 `build_checkpointer` 同源读同一 env。"""
+    return (os.getenv("ZERO_CHECKPOINT_BACKEND") or "memory").lower()
+
+
+async def _purge_detached_thread(thread_id: str) -> tuple[bool, str]:
+    """会话**不在册**时的 purge：只有持久后端才谈得上删（返回 是否真删, 说明）。
+
+    🛑 **memory 后端必须诚实回 False**（Zero_MCP 2026-07-30 只读核出、我方实证确认）：
+    `build_checkpointer()` 每次返回**新的空 `InMemorySaver`**（实测两次 build 非同一实例），
+    在它上面 `adelete_thread` 等于什么都没删，却会回 `purged=True`
+    —— **数据删除 API 的假成功**，而 memory 正是默认后端。
+    memory 后端的运行态本就随 `ConversationSession` 对象消亡，close 即等效清除。
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from src.storage.checkpointer import build_checkpointer
+
+    backend = _checkpoint_backend()
+    # 🛑 **判据必须是「实际构造出来的 saver 是什么」，不是「env 名写的是什么」**
+    # （2026-07-30 文档清扫只读核出、我方实证确认）：
+    # `build_checkpointer` 在 `sqlite` **缺 db extra** 时会**告警回退 InMemorySaver**。
+    # 若按 env 名判，这种部署会走「持久后端」分支 ⇒ 在回退出的**空** InMemorySaver 上
+    # adelete_thread ⇒ 又回 `purged=True`。
+    # ⚠ 这正是本函数刚修掉的那个「假成功」**换了个门回来** ——
+    # 与我方前两次事故（字符串搜把登记表算成产出点 / AST 守卫扫全模块）同族：
+    # **判据取在了名字/文本上，而不是取在真正决定行为的那个对象上。**
+    try:
+        saver = build_checkpointer()
+    except NotImplementedError as e:
+        # postgres 分支构造期 fail-fast。⚠ 不加这一层它会**裸穿**出工具、不带任何机读码
+        # （对方只读核出、我方实证确认：抛的是 NotImplementedError 而非 ToolError）。
+        raise _tool_error(
+            ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+            f"checkpoint 后端 {backend!r} 尚未接线，无法执行 purge：{e}",
+        ) from e
+    if isinstance(saver, InMemorySaver):
+        # 走到这里有两种情形，处置相同：env 就写的 memory；或写了 sqlite/postgres 但驱动缺失回退。
+        detail = (
+            "无持久副本可删（运行态随会话对象消亡，会话不在册即已无数据）；"
+            "purged=False 是如实回报、不是失败"
+        )
+        if backend != "memory":
+            detail += (
+                f"。⚠ env 写的是 {backend!r} 但实际构造出的是 InMemorySaver"
+                "——多为缺 db extra 导致的回退，请检查部署依赖"
+            )
+            logger.warning(
+                "purge: ZERO_CHECKPOINT_BACKEND=%s 但实际 saver 是 InMemorySaver（驱动缺失回退），"
+                "thread_id=%s 无持久副本可删",
+                backend,
+                thread_id,
+            )
+        return False, detail
+    try:
+        purged = await _delete_thread(saver, thread_id)
+    finally:
+        # ⚠ 关掉这条**临时** saver 的连接：sqlite 下 build_checkpointer 会新建一条
+        # aiosqlite 连接，不关则每次 purge 泄漏一条（对方指出的第 ① 条）。
+        conn = getattr(saver, "conn", None)
+        if conn is not None:
+            try:
+                await conn.close()
+            except Exception as e:  # 清理路径故意宽捕获，幂等
+                logger.debug("purge 临时 saver 关连接忽略异常：%s", e)
+    return purged, f"{backend} 后端：按 thread_id 删除持久 checkpoint"
 
 
 def _tool_error(code: str, message: str) -> ToolError:
@@ -308,7 +412,7 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     （如共情系数 L1 上界 `SessionConfig._check_empathy_l1`），坏值 fail-fast → 上层转 ToolError。
 
     **议会解锁门（A5·A6·2026-07-21）**：`_MCP_GOVERNANCE_GATED_FLAGS` 中的字段
-    （`text_coping_enabled`/`coping_potential_enabled`）**不受 overrides 覆写**，
+    （现 **8 项**，以该 frozenset 为准、勿抄本注释）**不受 overrides 覆写**，
     只由 `ZERO_MCP_TEXT_COPING_ENABLED`/`ZERO_MCP_COPING_ENABLED` env 治理——防 client
     经 config 旁路生产门控（「生产关·MCP 开」治理漏洞）。非门控字段（如 `contagion_alpha`）
     仍可正常 override。
@@ -469,10 +573,13 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         name="zero.open_session",
         description=(
             "建/重开一个 Zero 情感引擎会话（建图/checkpointer 一次）。"
-            "返回 {session_id, resumed}；resume 且探测到上一轮被中途取消时另带 "
-            "{interrupted_at: [待执行节点名]}——该会话运行态停在 super-step 边界，"
-            "续跑会从此处继续而非重跑整轮。传 session_id 则按旧 id 重开"
-            "（跨 server 重启续会话·须持久后端）；不传则新铸。"
+            "返回 {session_id, resumed, interrupt_probe}。"
+            "interrupt_probe 恒存在，四态：not_probed（新建 / 活跃幂等重开）· "
+            "clean（上一轮跑完整轮）· interrupted（停在 super-step 边界，另带 "
+            "interrupted_at=[待执行节点名]）· probe_failed（探测本身失败=**不可判**，"
+            "请按最坏情况处理、不得视同 clean）。"
+            "⚠ 判「能否安全续跑」请读 interrupt_probe，**不要靠 interrupted_at 是否缺席**。"
+            "传 session_id 则按旧 id 重开（跨 server 重启续会话·须持久后端）；不传则新铸。"
         ),
         structured_output=False,
     )
@@ -514,7 +621,13 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 # ⚠ 本分支**不得**回显刚算出的 `cfg`（Zero_MCP R11 实现警告）：活跃会话的门控
                 # 构造时固定，回显 cfg = 回显「本可生效但实际未生效」的值，**比不回显更危险**
                 # （消费方会拿它当真、比对通过、实则语义已分叉）。要回显只能从 session 对象取。
-                return {"session_id": session_id, "resumed": True}
+                # ⚠ 本分支**不探测**（会话仍活跃、没有「上一轮已结束」这回事），
+                # 故 interrupt_probe 显式回 not_probed —— 对方指出旧注释漏了这条缺席路径。
+                return {
+                    "session_id": session_id,
+                    "resumed": True,
+                    "interrupt_probe": "not_probed",
+                }
             # resume：新建绑同 thread_id，持久后端 ainvoke 时自动从 checkpoint 恢复。
             sid = session_id
             resuming = True
@@ -535,13 +648,33 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         # LangGraph 每个 super-step 都已落盘 ⇒ 半截运行态跨重启保留。
         # 🛑 半截 checkpoint 存在本身不致命，**被当成有效状态续跑才致命** —— 此处至少让它可见。
         # ⚠ 只报告不回滚：回滚是对外可见的行为变更，须单独决策。
+        # 🛑 **显式多态，不用「键缺席」承载多义**（Zero_MCP 2026-07-30 §5-1，我方采纳）。
+        # 旧实现把「未探测」「探测成功且干净」「探测失败」三种情况**都表示成 interrupted_at 缺席**，
+        # 而消费方只能把缺席一律解释成「可以安全续跑」。要害在于：
+        # **「探测失败」与要防的半截态是故障相关的** —— 探测读的正是那份可能半写的 checkpoint
+        # ⇒ 越是真出事的时候越可能探测失败 ⇒ **止血在最该生效时静默失效，且无可区分信号**。
+        # 现改为回一个恒存在的 `interrupt_probe` 字段，取值是**显式四态**：
+        #   not_probed  —— 新建会话，或活跃幂等重开（提前 return，压根没走到这里）
+        #   clean       —— 探测成功且 next 为空：上一轮跑完整轮
+        #   interrupted —— 探测成功且 next 非空：停在 super-step 边界，另见 interrupted_at
+        #   probe_failed—— 探测本身抛了：**不可判**，消费方须按最坏情况处理，不得当 clean
         interrupted: tuple[str, ...] | None = None
+        probe = "not_probed"
         if resuming:
             try:
                 interrupted = await session.interrupted_at()
             except Exception:
-                # 探测失败不得挡住 resume 本身（宁可少一条观测量，也不把会话打不开）。
-                logger.exception("zero.open_session 中断探测失败 sid=%s", sid)
+                # 探测失败不得挡住 resume 本身（宁可少一条观测量，也不把会话打不开）；
+                # 但**必须让这条失败可被消费方区分**——这正是旧实现最危险的一格。
+                probe = "probe_failed"
+                logger.exception(
+                    "zero.open_session 中断探测失败 sid=%s：本次**无法判定**上一轮是否被中断。"
+                    "⚠ 探测读的就是那份可能半写的 checkpoint，故失败与半截态故障相关，"
+                    "消费方须按最坏情况处理，不得视同 clean",
+                    sid,
+                )
+            else:
+                probe = "interrupted" if interrupted is not None else "clean"
             if interrupted is not None:
                 logger.warning(
                     "zero.open_session resume 发现上一轮被中断 sid=%s 待执行节点=%s；"
@@ -550,15 +683,43 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                     interrupted,
                 )
         logger.info(
-            "zero.open_session sid=%s persona=%s resume=%s active=%d",
+            "zero.open_session sid=%s persona=%s resume=%s active=%d probe=%s",
             sid,
             persona,
             session_id is not None,
             await registry.count(),
+            probe,
+        )
+        # 🛑 生效门控快照（2026-07-30，兑现 R10）：此前 open 只记 sid/persona/resume/active，
+        # **不记任何门控值** ⇒ 跨仓争议「这轮到底用的哪组门」事后无从裁定。
+        # ⚠ 取值源是 `cfg`（本次真正构造进会话的那份），不是现读 env —— 与 `describe_config`
+        # 带 sid 时同源；记 env 会在「构造后 env 被改」时留下与会话不符的假快照。
+        logger.info(
+            "zero.open_session gates sid=%s workspace=%s gate_fusion=%s exclude_physio=%s "
+            "commensurable=%s ignition_beta=%s canonical_physio=%s facs_ext=%s "
+            "cap=%s max_streams=%s readout=%s",
+            sid,
+            cfg.workspace_enabled,
+            cfg.gate_fusion,
+            cfg.exclude_physio_fusion,
+            cfg.precision_commensurable,
+            cfg.ignition_beta,
+            cfg.canonical_physiology,
+            cfg.facs_extended,
+            cfg.external_prior_precision_cap,
+            cfg.max_external_streams,
+            cfg.affect_readout,
         )
         # 返回体**只增不改**：配套项目按「除 session_id 外容忍并收下额外键、缺键即回落」解析，
-        # 故新增键对现网零回归。`interrupted` 缺席 = 未探测（新建会话）或探测失败。
-        out: dict[str, Any] = {"session_id": sid, "resumed": resuming}
+        # 故新增键对现网零回归。
+        # ⚠ `interrupt_probe` **恒存在**（四态见上）；`interrupted_at` 仅在 probe=="interrupted"
+        # 时出现 —— 判「是否可安全续跑」请读 `interrupt_probe`，
+        # **不要靠 `interrupted_at` 是否缺席**：那正是旧口径把「探测失败」误当「干净」的成因。
+        out: dict[str, Any] = {
+            "session_id": sid,
+            "resumed": resuming,
+            "interrupt_probe": probe,
+        }
         if interrupted is not None:
             out["interrupted_at"] = list(interrupted)
         return out
@@ -599,6 +760,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         #     今天**未经证实**（已向对方标 UNVERIFIED），在答案出来前取消 ainvoke 可能留下脏态、
         #     被下一次同 thread_id 的 resume 读到。宁可不做，也不做成一个会静默污染运行态的超时。
         # 默认 None = 无限等待 = 逐字旧行为（零回归）；秒数按对方 R12「先测再钉」，暂不预设。
+        started = time.perf_counter()
         await _acquire_with_timeout(lock, session_id)
         try:
             # 🛑 拿到锁后**复查在册**（TOCTOU）：`acquire()` 到真正拿到锁之间，
@@ -637,6 +799,35 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 ) from e
         finally:
             lock.release()
+        # ── 轻量事后检查（Zero_MCP 2026-07-30 §5-2 征询，我方采纳）──
+        # 探测此前**只发生在 open_session 的 resume-不活跃分支** ⇒ 污染从第二帧起完全不可观测：
+        # 同一 session 一生只可能出现一次那条 ERROR，之后每一帧都在半截态上继续跑而无任何信号。
+        # 这里在**本轮结束后**看一眼：正常跑完的一轮 next 恒为空，非空即说明这一轮没跑完
+        # （例如本轮内部发生过取消，或上一轮的残留未被推进）。
+        # ⚠ 只记日志、**不改返回体、不拒绝本帧** —— step 是热路径，且「本轮已产出 expression」
+        # 是既成事实，此时拒绝只会让调用方丢掉一份已经算出来的结果。
+        # ⚠ 探测失败同样只吞进日志：它不能让一次成功的 step 变成失败。
+        try:
+            residual = await session.interrupted_at()
+        except Exception:
+            logger.debug("zero.step 事后中断检查失败 sid=%s（不影响本轮结果）", session_id)
+        else:
+            if residual is not None:
+                logger.warning(
+                    "zero.step 本轮结束后仍有待执行节点 sid=%s next=%s；"
+                    "该会话运行态停在 super-step 边界，后续轮次会在其上继续。"
+                    "双方按此日志定位污染起点",
+                    session_id,
+                    residual,
+                )
+        # step 端到端耗时（2026-07-30）：此前**成功路径一行日志都不打**。
+        # 这条同时兑现 R12 的「超时秒数先测再钉」—— 两仓都没有任何 step 耗时数据，
+        # 任何默认秒数今天都只是工程假设。DEBUG 级，避免热路径刷 INFO。
+        logger.debug(
+            "zero.step done sid=%s elapsed_ms=%.1f",
+            session_id,
+            (time.perf_counter() - started) * 1e3,
+        )
         expression = step_out.get("expression") or {}
         return expression
 
@@ -690,6 +881,9 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             "只读回读面：不传 session_id 返回**部署端默认**（env + caps + versions，"
             "供在 open_session 之前决定是否发某类流）；传 session_id 返回**该会话真实生效**的值。"
             "未知 session_id 视同不传。字段集演进看 describe_config_version。"
+            "另回 transport（stdio / streamable-http，规范化后的生效值）+ stateless_http，"
+            "供在运行期确认「stateful + 何种传输」。⚠ 二者是**本 server 进程**的事实"
+            "（进程 env 解析值 + 本进程 FastMCP settings），**不是连接级事实**。"
         ),
         structured_output=False,
     )
@@ -712,9 +906,47 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         （对方 R11 实现警告）。活跃会话的门控构造时固定，回显刚算的 cfg 等于回显
         「本可生效但实际未生效」的值 —— 比不回显更危险：消费方会拿它当真、比对通过、
         实则语义已分叉。
+
+        ── `transport` / `stateless_http` 的**诚实边界**（Zero_MCP 2026-07-30 §3.3-2）──
+        这两键的存在理由：上面那句「HTTP 传输下两进程**不共享 env**，『同名 env 对齐』这条机制
+        结构上不成立」对**传输模式本身**逐字适用 ⇒ 源码 pin 只能保证「源码里是 stateful」，
+        只有本工具能让消费方在运行期、对着真正连上的那个部署确认。
+        🛑 但二者回的都是「**这个 server 进程**的事实」，**不是连接级事实**：
+          · `transport` = 本进程 env（`ZERO_MCP_TRANSPORT`）经 `resolve_transport` 解析出的值，
+            与 `__main__.main` 起传输用的是**同一个符号** ⇒ **无解析口径漂移**
+            （不会两处各判一次别名而分叉）。
+            ⚠ 但**消不掉时序漂移**：本值是本工具**被调用时**现读 env，而传输是**启动时**起的
+            ⇒ 进程启动后若有人改过 `os.environ["ZERO_MCP_TRANSPORT"]`（测试里的 monkeypatch
+            正是这么做的），回读值会与已经起好的那个传输不符。要消掉这半条，
+            得在启动时把解析结果缓存到实例上再回读——本轮**未做**。
+            ⚠ 但 `build_server()` 被测试/程序内直接调用（in-memory client）时**根本没起任何
+            传输**，env 也可能未设 ⇒ 此时它回的是「若按本进程 env 起传输会起哪个」，
+            **不是**「你这条连接实际用的是哪个」。别把它当连接级断言用。
+          · `stateless_http` 读的是**本进程 `FastMCP` 实例的 settings**，不是写死的常量——
+            我方从不传该实参 ⇒ 今天恒 `False`（结构守卫见
+            `tests/test_mcp_server.py::test_fastmcp_construction_does_not_pass_stateless_http`
+            与 `::test_no_env_can_flip_stateless_http`）。读实例而非写死 `False` 是刻意的：
+            万一 SDK 将来改成从它自己的 `FASTMCP_*` env 前缀读该字段（当前版本**不会**，
+            已实测：`FastMCP.__init__` 把 `stateless_http` 作显式形参传进 Settings，
+            故 `FASTMCP_STATELESS_HTTP` 无效），写死的 `False` 会当场变成谎话，而读实例仍诚实。
         """
         session = await registry.get(session_id) if session_id else None
-        cfg = session.config if session is not None else _build_session_config(None)
+        if session is not None:
+            cfg = session.config
+        else:
+            # ⚠ 必须转码：不带 sid 时会跑 `_build_session_config(None)`，部署端把
+            # `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` / `ZERO_MAX_EXTERNAL_STREAMS` /
+            # `ZERO_MCP_IGNITION_BETA` 写坏时抛的是 `ServerEnvError` —— 不转码就会**裸穿**、
+            # wire 上没有 `[zero:...]` 令牌，消费方查表落空。
+            # 其它三个入口（open_session / step 的锁 / purge）都做了这层，**只有本工具漏了**
+            # ——与我方在 `_acquire_with_timeout` 注释里批判的那条死码是同型失效。
+            try:
+                cfg = _build_session_config(None)
+            except ServerEnvError as e:
+                raise _tool_error(
+                    ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+                    f"部署端 env 不合法，无法回读默认门控：{e}",
+                ) from e
         return {
             "describe_config_version": DESCRIBE_CONFIG_VERSION,
             "session_id": session_id,
@@ -734,11 +966,40 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             "external_prior_schema_version": EXTERNAL_PRIOR_SCHEMA_VERSION,
             "governance_gated_flags": sorted(_MCP_GOVERNANCE_GATED_FLAGS),
             "error_codes": sorted(ZERO_ERROR_CODES),
+            # ── 生效传输（Zero_MCP 2026-07-30 §3.3-2）；诚实边界见上方 docstring ──
+            # 🛑 同源：`resolve_transport` 也是 `__main__.main` 的判据，此处**不重抄解析**。
+            "transport": resolve_transport(),
+            # 读实例 settings，不写死 False —— 判据要取在真正决定行为的那个对象上。
+            "stateless_http": mcp.settings.stateless_http,
             # 第二批（对方已接受后置）：显式回 null，**不省略键**——省略会让「未实现」
             # 与「探测失败」不可区分，正是对方第 3 条形制要求要避开的。
             "sample_sigma_cap": cfg.sample_sigma_cap,
             "affect_readout": cfg.affect_readout,
             "weights_version": None,  # sidecar 今天无读取方，见跨仓件
+            # ── 实际生效的存储后端（Zero_MCP 2026-07-30 §E.13）──
+            # 对方要在观察期确认「这个部署是不是全内存」，原本的做法是显式设两个 env
+            # 再在件里报出所设的值。🛑 那证明不了事实：`build_graph_store` /
+            # `build_semantic_store` / `build_checkpointer` 在依赖缺失或值无法识别时
+            # **一律静默回退**内存档 ⇒ env 值与实际后端不是一一对应。这与我方刚修掉的
+            # purge「假成功」是同一条（判据取在名字上而不是取在真正决定行为的那个对象上）。
+            # ⇒ 这里回报**实际构造出的类名**，取自会话持有的实例、不重新构造（回读面无副作用）。
+            # ⚠ 不带 sid 时三者一律 `null`：进程级没有「那个实例」，而现构造会产生副作用
+            # （sqlite 建目录开连接 / graphiti 连 Neo4j）⇒ 按「不可知项显式回 null」处置，
+            # 不回 env 字面量充数——那会让对方以为拿到了事实。
+            # 🛑 `semantic_store_impl` 三态、不是两态：语义后端**默认关闭**（工厂回 None），
+            # 而「关闭」与「不可知」若都回 null 就不可区分 —— 正是对方形制第 3 条要避开的那条。
+            # 故：不可知 → null（无 sid）；已解析且关闭 → `"disabled"`；开启 → 实际类名。
+            "memory_store_impl": type(session.memory.store).__name__ if session else None,
+            "semantic_store_impl": (
+                None
+                if session is None
+                else (
+                    "disabled"
+                    if session.memory.semantic is None
+                    else type(session.memory.semantic).__name__
+                )
+            ),
+            "checkpointer_impl": type(session.checkpointer).__name__ if session else None,
         }
 
     @mcp.tool(
@@ -757,11 +1018,48 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         不自动清理 —— 它只提供「被要求删除时能删掉」的能力。双方已确认该能力的落地
         **不依赖**那两项定性。
 
-        实现：先 `close_session` 走一遍（释放连接、摘牌，幂等），再删 checkpoint。
+        🛑 **删除必须发生在会话自己的 saver 上、且在 `aclose()` 之前**（2026-07-30 修）：
+        初版走 `build_checkpointer()` **新建**一个 saver 再删，三处都错——
+        ① sqlite 下每次 purge 泄漏一条 aiosqlite 连接；
+        ② memory 下删的是个**新建的空 saver**，回 `purged=True` 却什么都没删（假成功）；
+        ③ postgres 下 `NotImplementedError` **裸穿**、不带机读码。
+
+        `purged=False` 是**如实回报**、不是失败：`ok` 表示「请求已被正确处理」，
+        `purged` 表示「是否真删掉了持久副本」，两者语义不同，请勿合并判断。
         """
-        await close_session(session_id)
-        purged = await _purge_thread_state(session_id)
+        session, lock = await registry.acquire(session_id)
+        if session is None or lock is None:
+            # 不在册：可能已 close、或 server 重启后从未开过——但持久后端上数据可能仍在，
+            # 这正是「按 id 删一个不活跃会话」的合法用法，不能当幂等 no-op 打发掉。
+            purged, detail = await _purge_detached_thread(session_id)
+            logger.info("zero.purge_session sid=%s purged=%s（不在册）", session_id, purged)
+            return {
+                "ok": True,
+                "purged": purged,
+                "backend": _checkpoint_backend(),
+                "detail": detail,
+            }
+
+        await registry.close(session_id)  # 先摘牌止住新活（同 close_session 的理由）
+        try:
+            await _acquire_with_timeout(lock, session_id)
+        except ToolError:
+            # ⚠ 与 `close_session` 的处置**有意不同**：close 超时可以回 ok（会话已摘牌、
+            # 不再接新活，连接晚点回收无伤）；但 purge 是**调用方显式要求的破坏性动作**，
+            # 静默不删比报错危险得多 —— 上抛，让调用方知道「没删成，请重试」。
+            logger.warning("zero.purge_session 等锁超时 sid=%s：未执行删除", session_id)
+            raise
+        try:
+            purged = await _delete_thread(session.checkpointer, session_id)
+        finally:
+            await session.aclose()  # 删完再关连接（顺序不能反：关了就删不动）
+            lock.release()
         logger.info("zero.purge_session sid=%s purged=%s", session_id, purged)
-        return {"ok": True, "purged": purged}
+        return {
+            "ok": True,
+            "purged": purged,
+            "backend": _checkpoint_backend(),
+            "detail": "已在该会话自身的 checkpointer 上按 thread_id 删除",
+        }
 
     return mcp

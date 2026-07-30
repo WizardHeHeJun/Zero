@@ -349,6 +349,79 @@ class TestCouplingValidation:
         assert MIN_SIGMA <= sig_c[1] <= MAX_SAMPLE_SIGMA, f"sigma_a 越界: {sig_c[1]}"
 
 
+class TestLayersValidation:
+    """layers≥3 → ValueError（硬拒不静默降级），与 coupling>1 同一纪律。
+
+    缺陷形态（2026-07-30 实测）：v1 只实现两层，而 `layers` 在 `hierarchical_fuse` 里
+    **只被用作 `layers == 1` 的判别**，从不作层数递推 ⇒ `layers=3 / 7 / 10**9` 与
+    `layers=2` **逐字同结果**（含 `SessionConfig` 构造期放行、字段原值回读）。
+    而 `.env.example` 的 `ZERO_HPC_LAYERS` 明写「层数 1-2」。
+    这与 R11 那族「对外回报值 ≠ 实际生效语义」同型：配置面收下一个引擎不兑现的值，
+    消费方拿它当真（以为开了 4 层预测编码），无任何一侧会报错。
+    """
+
+    def test_layers_3_raises_value_error(self) -> None:
+        """layers=3 → ValueError（改前：静默等同 layers=2）。"""
+        with pytest.raises(ValueError, match="layers"):
+            hierarchical_fuse(_NAMED_MIXED, layers=3, coupling=0.5)
+
+    def test_layers_huge_raises_value_error(self) -> None:
+        """layers=10**9 → ValueError（改前：静默等同 layers=2，不是慢、是根本没跑）。"""
+        with pytest.raises(ValueError, match="layers"):
+            hierarchical_fuse(_NAMED_MIXED, layers=10**9, coupling=0.5)
+
+    def test_layers_2_boundary_ok(self) -> None:
+        """layers=2（已实现的最大层数）不报错。"""
+        assert hierarchical_fuse(_NAMED_MIXED, layers=2, coupling=0.5) is not None
+
+    def test_layers_1_still_bypasses_without_validation(self) -> None:
+        """layers=1 走退化旁路、不进校验 —— 与 coupling 的校验位置一致（关掉就不校验）。
+
+        🛑 这条锁的是**校验位置**：guard 必须在退化旁路**之后**。放到之前会让
+        `layers=3, coupling=0.0`（= HPC 明确关闭）也抛错，那是把「没启用的旋钮的值」
+        当错误，且会破 `TestDegenerateA` 的平层零回归。
+        """
+        assert hierarchical_fuse(_NAMED_MIXED, layers=3, coupling=0.0) == fuse_terms(
+            _plain(_NAMED_MIXED)
+        )
+
+    def test_session_config_rejects_layers_3(self) -> None:
+        """SessionConfig(hierarchical_layers=3) 构造期即拒（改前：接受并原值回读）。
+
+        构造期拦是第二道：`hierarchical_fuse` 的 guard 在 coupling=0 时不生效，
+        且失败点前移后归责是 config-invalid 而非每步 step 的 config-incompatible
+        （同 2026-07-29 给 coupling 加 Field 约束的理由）。
+        """
+        from pydantic import ValidationError
+
+        from src.orchestration.runner import SessionConfig
+
+        with pytest.raises(ValidationError):
+            SessionConfig(hierarchical_layers=3, hierarchical_coupling=0.5)
+
+    def test_session_config_accepts_layers_2(self) -> None:
+        """SessionConfig(hierarchical_layers=2) 仍接受（上界是 2，不是 1）。"""
+        from src.orchestration.runner import SessionConfig
+
+        assert (
+            SessionConfig(hierarchical_layers=2, hierarchical_coupling=0.5).hierarchical_layers == 2
+        )
+
+    def test_env_hpc_layers_3_fails_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ZERO_HPC_LAYERS=3 → build_chat_driver 报错，不静默给一个 2 层引擎。
+
+        env 是这个值唯一的真实来源（config-only-via-env），所以这条才是用户真会撞到的那条。
+        """
+        monkeypatch.setenv("ZERO_HPC_LAYERS", "3")
+        monkeypatch.setenv("ZERO_HPC_COUPLING", "0.5")
+        monkeypatch.delenv("ZERO_OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ZERO_OPENAI_MODEL", raising=False)
+        from src.orchestration.chat_driver import build_chat_driver
+
+        with pytest.raises(Exception, match="layers|hierarchical"):
+            build_chat_driver(thread="test-hpc-layers-3")
+
+
 # ---------------------------------------------------------------------------
 # 7. 边界：L0 空 / L1 空 → fallback fuse_terms(all)
 # ---------------------------------------------------------------------------
