@@ -185,6 +185,13 @@ class AppraisalAgent:
         #            src_flag=True（text 参与融合，供中间带哑火消费）
         #   不复用 fuse_terms / hierarchical_fuse（守来源正交红线）。
         #
+        # ⚠ 分支可达性按入口而异（2026-07-30 议会 D5a，三席现场核验）：
+        #   `orchestration.chat_driver` 从不注入 Stimulus.control_appraisal ⇒ ctrl 恒 None ⇒
+        #   chat 路径只走分支1/2，**分支4 从未被触发**，ZERO_TEXT_COPING_PRECISION(π_t) 在该路径下
+        #   是 inert 参数（分支2 是 cp=clamp(text) 直通覆盖，不经精度加权、无跨轮平滑）。
+        #   仅 `mcp_server.mapping` 会注入 control_appraisal 使分支4 可达。
+        #   ⇒ 任何「低精度先验阻尼」类表述必须限定 scope，勿跨入口套用。
+        #
         # ⚠ 已知局限（神经席约束7；不粉饰）：
         #   text_coping_prior 学自 EmoBank SAM Dominance，为感受状态代理（主观量），
         #   而 control_appraisal 是次级评价过程量（Smith & Ellsworth 1985 controllability）；

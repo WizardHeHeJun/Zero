@@ -21,7 +21,7 @@
   （完整 ACT-R 需 chunk activation 历史，此处仅用 access_count+age 近似）。
 
 Davis & Zhong 2017: https://doi.org/10.1016/j.neuron.2017.05.039
-McGaugh 2004 (Science): https://doi.org/10.1126/science.1090293
+McGaugh 2004 (Annu Rev Neurosci): https://doi.org/10.1146/annurev.neuro.27.070203.144157
 """
 
 from __future__ import annotations

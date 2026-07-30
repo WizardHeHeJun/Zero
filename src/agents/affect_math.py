@@ -660,6 +660,11 @@ def _decode_facs_extended(
       AU26（下颌落）：随 arousal 主驱 + 正 valence 轻压制升（恐惧/惊讶共有；无象限守卫，
         cap 因东亚惊讶少用 AU26 保守；议会 D·通用 AU 不进 coping 判别）。
       区分性 AU 仅在 (v<0, a≥0) 象限激活（象限守卫）：
+        ⚠ 该唤醒必要条件是**乘性门**（a≤0 则判别 AU 恒 0），与 chat 面为治 seeking 吸引盆而设的
+          arousal 压制（INTENSITY_FLOOR/AROUSAL_BASELINE/HABITUATION_TAU）叠加后，实测对抗域
+          AU23 均值仅 0.009。两组设计各自结案、从未联合验证。低唤醒愤怒亚型确有实证
+          （Kuppens et al. 2007，DOI:10.1080/02699930600859219）。改动本守卫或上述 arousal 旋钮
+          之前须先跑议会 D3 的联合可达性网格（先判定属参数标定还是机制缺陷，勿直接调参）。
         AU23（口轮匝肌唇紧）：coping>0→高（愤怒对抗准备；Carver & Harmon-Jones 2009）。
           ⚠ 跨文化注：Cordaro 2018 跨文化核心愤怒为 AU4+AU7，AU23 未入核心（~29% 出现率）；
           此占位依 Ekman & Friesen 1978 + Scherer CPM 设计，待真权重从数据学习后修正。
