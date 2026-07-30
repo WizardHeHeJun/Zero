@@ -940,9 +940,9 @@ async def test_describe_config_version_bumped_with_contract_change() -> None:
 
     # ⚠ 下界必须随每轮 bump 一起收紧，否则本断言不是 tripwire、只是注释：
     # 实测把 DESCRIBE_CONFIG_VERSION 改回 2 时，旧的 `>= 2` 下界让**全套 1850 条全绿**。
-    assert DESCRIBE_CONFIG_VERSION >= 3, (
-        "本轮 describe_config 新增 transport / stateless_http 两键（契约变化），须 bump 到 ≥3；"
-        "上一轮的理由是 open_session 增了 interrupt_probe 且其取值集合是新契约"
+    assert DESCRIBE_CONFIG_VERSION >= 4, (
+        "本轮 describe_config 新增 memory_store_impl / semantic_store_impl / checkpointer_impl "
+        "三键（契约变化），须 bump 到 ≥4；上一轮的理由是新增 transport / stateless_http 两键"
     )
     async with connect(build_server()) as client:
         await client.initialize()
@@ -1209,6 +1209,82 @@ async def test_describe_config_reflects_session_not_current_env(
         )
         assert no_sid["resolved_for_session"] is False
         assert no_sid["precision_commensurable"] is False
+
+
+async def test_describe_config_reports_actual_backend_impls() -> None:
+    """带 sid 时回报**实际构造出的后端类名**（默认部署 = 全内存）。
+
+    存在理由（Zero_MCP 2026-07-30 §E.13）：对方要在观察期确认「这个部署是不是全内存」，
+    原方案是显式设 `ZERO_MEMORY_BACKEND` / `ZERO_SEMANTIC_BACKEND` 再在件里报所设的值。
+    那证明不了事实 —— 见下一条测试。
+    """
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        d = json.loads(
+            getattr(
+                (await client.call_tool("zero.describe_config", {"session_id": sid})).content[0],
+                "text",
+                "",
+            )
+        )
+        assert d["memory_store_impl"] == "InMemoryGraphStore"
+        assert d["checkpointer_impl"] == "InMemorySaver"
+        # 三态而非两态：语义后端默认关闭，「关闭」必须与「不可知」可区分（形制第 3 条）。
+        assert d["semantic_store_impl"] == "disabled", (
+            "语义关闭回了 null —— 与「无 sid 不可知」不可区分，正是形制第 3 条要避开的"
+        )
+
+
+async def test_describe_config_backend_impl_is_not_env_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 本组最要紧的一条：判据取在**实际构造出的对象**上，不是 env 字面量。
+
+    造法：把 `ZERO_MEMORY_BACKEND` 设成一个无法识别的值。三个工厂对无法识别的值
+    **一律静默回退内存档**（`build_graph_store` 末尾无条件 `return InMemoryGraphStore()`），
+    故实际后端仍是 InMemory，而 env 字面量是那个垃圾值。
+    ⇒ 若实现改成回显 env（或按 env 名映射类名），本条立刻红。
+
+    这与 `_purge_detached_thread` 改判据是同一条纪律：**判据不得取在名字/文本上**。
+    真实部署里的对应形态是 `ZERO_MEMORY_BACKEND=neo4j` 缺驱动、
+    `ZERO_CHECKPOINT_BACKEND=sqlite` 缺 db extra —— 都会静默回退，
+    此处用「无法识别的值」造同一效果，是为了不依赖测试环境装没装驱动。
+    """
+    monkeypatch.setenv("ZERO_MEMORY_BACKEND", "definitely-not-a-real-backend")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+        d = json.loads(
+            getattr(
+                (await client.call_tool("zero.describe_config", {"session_id": sid})).content[0],
+                "text",
+                "",
+            )
+        )
+        assert d["memory_store_impl"] == "InMemoryGraphStore", (
+            f"回了 {d['memory_store_impl']!r} —— 疑似回显 env 字面量而非实际构造出的类"
+        )
+
+
+async def test_describe_config_backend_impls_null_without_sid() -> None:
+    """不带 sid 时三键**在场且为 null**：进程级没有「那个实例」，且现构造有副作用。
+
+    🛑 不得回 env 字面量充数 —— 那会让消费方以为拿到了事实。
+    也不得省略键（形制第 2 条：省略会让「未实现」与「探测失败」不可区分）。
+    """
+    async with connect(build_server()) as client:
+        await client.initialize()
+        d = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        for key in ("memory_store_impl", "semantic_store_impl", "checkpointer_impl"):
+            assert key in d, f"{key} 被省略了 —— 形制第 2 条要求不省略键"
+            assert d[key] is None, f"{key} 无 sid 时回了 {d[key]!r}，应为 null（不可知）"
 
 
 async def test_describe_config_shape_meets_consumer_requirements() -> None:

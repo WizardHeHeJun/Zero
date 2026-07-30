@@ -140,7 +140,10 @@ _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
 # 2 → 3（Zero_MCP 2026-07-30 §3.3-2）：新增 `transport` / `stateless_http` 两键。按上面第 ①
 # 类（增删键）本可不 bump（不影响既有键的解释），但这两键正是对方要用来**换掉一整套取消模型
 # 适用边界判定**的输入 —— 拿不准就 bump 的那一档，故 bump。
-DESCRIBE_CONFIG_VERSION = 3
+# 3 → 4（Zero_MCP 2026-07-30 §E.13）：新增 `memory_store_impl` / `semantic_store_impl` /
+# `checkpointer_impl` 三键。同属第 ① 类，但同样 bump：对方要拿它们判定「本次观察期是否全内存」
+# ——即数据留存问题的事实基础，误读的代价是把一个落盘部署当成全内存部署上报。
+DESCRIBE_CONFIG_VERSION = 4
 
 # ── 生效传输模式：**唯一**解析点 ────────────────────────────────────────────
 # 🛑 `__main__.main` 与 `zero.describe_config` **共用**本符号，任何第二处都不得重抄这段解析。
@@ -973,6 +976,30 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             "sample_sigma_cap": cfg.sample_sigma_cap,
             "affect_readout": cfg.affect_readout,
             "weights_version": None,  # sidecar 今天无读取方，见跨仓件
+            # ── 实际生效的存储后端（Zero_MCP 2026-07-30 §E.13）──
+            # 对方要在观察期确认「这个部署是不是全内存」，原本的做法是显式设两个 env
+            # 再在件里报出所设的值。🛑 那证明不了事实：`build_graph_store` /
+            # `build_semantic_store` / `build_checkpointer` 在依赖缺失或值无法识别时
+            # **一律静默回退**内存档 ⇒ env 值与实际后端不是一一对应。这与我方刚修掉的
+            # purge「假成功」是同一条（判据取在名字上而不是取在真正决定行为的那个对象上）。
+            # ⇒ 这里回报**实际构造出的类名**，取自会话持有的实例、不重新构造（回读面无副作用）。
+            # ⚠ 不带 sid 时三者一律 `null`：进程级没有「那个实例」，而现构造会产生副作用
+            # （sqlite 建目录开连接 / graphiti 连 Neo4j）⇒ 按「不可知项显式回 null」处置，
+            # 不回 env 字面量充数——那会让对方以为拿到了事实。
+            # 🛑 `semantic_store_impl` 三态、不是两态：语义后端**默认关闭**（工厂回 None），
+            # 而「关闭」与「不可知」若都回 null 就不可区分 —— 正是对方形制第 3 条要避开的那条。
+            # 故：不可知 → null（无 sid）；已解析且关闭 → `"disabled"`；开启 → 实际类名。
+            "memory_store_impl": type(session.memory.store).__name__ if session else None,
+            "semantic_store_impl": (
+                None
+                if session is None
+                else (
+                    "disabled"
+                    if session.memory.semantic is None
+                    else type(session.memory.semantic).__name__
+                )
+            ),
+            "checkpointer_impl": type(session.checkpointer).__name__ if session else None,
         }
 
     @mcp.tool(

@@ -601,6 +601,15 @@ class ConversationSession:
         self.session_id = session_id if session_id is not None else thread_id
         self.user_id = user_id
         self.group_id = group_id
+        # 🛑 持住这个 client：`zero.describe_config` 要回报**实际构造出的后端类**，
+        # 而不是 `ZERO_MEMORY_BACKEND` / `ZERO_SEMANTIC_BACKEND` 的 env 字面量。
+        # 理由与 `_purge_detached_thread` 改判据是同一条（2026-07-30 已实证）：
+        # 两个工厂在依赖缺失时都**静默回退**（`neo4j` 缺驱动 → InMemoryGraphStore；
+        # `sqlite_vec` 缺 openai → None；且**任何无法识别的值**也落 InMemory / None）
+        # ⇒ env 值与实际后端并非一一对应，拿 env 值当「已确认全内存」是假成功。
+        # 存实例而非现构造：describe_config 若自己 build 一次，sqlite 会建目录/开连接、
+        # graphiti 会连 Neo4j —— 回读面不得有副作用（同 purge 那条连接泄漏的教训）。
+        self.memory = client
         self.checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
         self.graph = build_graph(
             checkpointer=self.checkpointer,
