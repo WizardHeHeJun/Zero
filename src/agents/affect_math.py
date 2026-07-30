@@ -354,6 +354,7 @@ def hierarchical_fuse(
       - L0 空 → fallback fuse_terms(all)（等价 layers=1）
       - L1 空 → fallback fuse_terms(all)（保分母非零）
       - coupling > 1.0 → raise ValueError（硬拒不 clamp；>1 破坏凸组合 → 类 seeking 单侧锁定）
+      - layers > 2 → raise ValueError（v1 只实现两层；≥3 会与 2 同结果，硬拒不静默降级）
 
     有界性/稳定性（数学席证）：
       μ_core 是 μ_L1e 与 μ_L0 的精度加权凸组合（w≤1 → w²·π_L0/π_core≤1），
@@ -369,6 +370,19 @@ def hierarchical_fuse(
         return fuse_terms(all_terms)
 
     # ── 入口校验（硬拒不 clamp；coupling==0.0 已被上方退化旁路吃掉，此处 coupling>0）──
+    # 🛑 `layers` 必须在这里校验，理由与 coupling 同：v1 **只实现两层**，本函数从不做
+    # 层数递推 —— `layers` 全程只被上方 `layers == 1` 用过一次。不校验的话 layers=3/7/10**9
+    # 与 layers=2 **逐字同结果**（2026-07-30 实测），而 `.env.example` 的 ZERO_HPC_LAYERS
+    # 明写「层数 1-2」⇒ 配置面收下一个引擎不兑现的值、两侧都不报错，消费方以为开了 4 层
+    # 预测编码。这与 R11 那族「回报值 ≠ 生效语义」同型，故同样硬拒、不静默降级。
+    # 位置刻意在退化旁路**之后**：layers≥3 但 coupling==0.0 = HPC 明确关闭，
+    # 不为「没启用的旋钮的值」抛错（与 coupling>1 在 layers==1 时不抛错一致）。
+    if layers > 2:
+        raise ValueError(
+            f"layers={layers} 超出已实现层数（v1 = 2 层：L0 感觉-唤醒 / L1 核心情感）；"
+            f"本函数不做层数递推，≥3 会与 layers=2 同结果而非真的多层 —— 故硬拒不静默降级。"
+            f"请将 ZERO_HPC_LAYERS 设为 1（平层）或 2（启用 HPC）。"
+        )
     if coupling < 0.0 or coupling > 1.0:
         raise ValueError(
             f"coupling={coupling} 超出语义范围 [0, 1]（design w∈(0,1]）；"

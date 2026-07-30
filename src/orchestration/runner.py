@@ -78,9 +78,15 @@ class SessionConfig(BaseModel):
     # ⚠ 构造期约束（2026-07-29 补）：此前两者**均无 Field 约束**，`coupling>1` 能构造成功
     # ⇒ `open_session` 通过、**每一步 step 崩**在 hierarchical_fuse 的运行期 raise 上，
     # 而活跃会话的 config 不可变 ⇒ client 无法自救，且错误被贴成「内核执行失败」而非「配置越界」。
-    # 语义边界见上方注释：layers≥1；coupling∈[0,1]（>1 由 hierarchical_fuse 硬拒、不 clamp）。
+    # 语义边界见上方注释：layers∈[1,2]；coupling∈[0,1]（>1 由 hierarchical_fuse 硬拒、不 clamp）。
     # 把失败点从**每步运行期**前移到**构造期**，归责随之从 config-incompatible 变成 config-invalid。
-    hierarchical_layers: int = Field(default=1, ge=1)
+    # ⚠ `le=2` 是 2026-07-30 补的：此前是 `ge=1` 无上界，而 v1 只实现两层、`hierarchical_fuse`
+    # 从不做层数递推 ⇒ layers=3/7/10**9 与 2 **逐字同结果**，字段却原值回读、MCP overrides
+    # 也照收（`_build_session_config` 按 `model_fields` 泛化放行）⇒ 消费方以为开了 4 层。
+    # `.env.example` 的 ZERO_HPC_LAYERS 早已明写「层数 1-2」，是执行侧没跟上文档。
+    # 两道防线各有必要：`hierarchical_fuse` 的 guard 在 coupling=0 时按设计不生效，
+    # 而本约束覆盖不经该函数的构造路径（含 MCP overrides）。
+    hierarchical_layers: int = Field(default=1, ge=1, le=2)
     hierarchical_coupling: float = Field(default=0.0, ge=0.0, le=1.0)
     # ── P3 1-B · HPA 皮质醇慢回路旋钮（默认全关=零回归；config-only-via-env）──
     # cortisol_enabled=False 总门 → 现路径逐字不变。
