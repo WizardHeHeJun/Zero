@@ -944,8 +944,18 @@ def ignite(
     12 条软门格（4 present × 3 n_external × soft_beta=20.0）+ 门关硬门路径上的
     `::test_d7_gap_hard_gate_high_salience_physio`。两者都是**双向**断言，收口那天会红在
     「缺口已被堵上」而非「缺口仍在」，照消息把 `_D7_GAP_OPEN` 翻成 False 即可。
-    ⚠ 堵缺口当天须 ping Zero_MCP：其 `test_soft_gate_bypasses_physio_exclusion` 锚在
-    `_select_fired` 函数体上，我方若只改 `ignite()`，其守卫**不会变红**而是静默失去刻画能力。
+    ⚠ 堵缺口当天仍须 ping Zero_MCP，但**理由已变**（2026-07-30 据对方来件订正）：
+    此前这里写「其 `test_soft_gate_bypasses_physio_exclusion` 锚在 `_select_fired` 函数体上
+    ⇒ 我方只改 `ignite()` 时它不会变红而是静默失去刻画能力」——**该描述已过期**：
+    对方 2026-07-29 已按我方建议把**主锚点移到 `ignite()` 的门判之前**（即本收口方案的落点），
+    `_select_fired` 那两条降级为**副锚点**保留（覆盖「把过滤下沉进 helper」这条另一种修法），
+    并配了两条正控防断言退化成恒真。⇒ **收口时不必再为对方的锚点位置做额外动作。**
+
+    🛑 但仍有**一格盲点**（对方如实交底、我方照记，不声称已覆盖）：若把过滤抽成
+    **不透明 helper**（形如 `streams = _drop_physio(streams)`，开关从模块级读、**不作实参传**）
+    并在门判前调用，对方守卫**看不见**（其 11 态判别力矩阵该格**实测为绿**）。
+    ⇒ 收口若采用不透明 helper 形态，**ping 是唯一的跨仓信号**；采用显式传参形态则对方会红。
+    写了盲点不等于覆盖了盲点——这句照抄对方原话，因为它同样适用于我方自己的守卫。
 
     ⚠ **本函数的两个返回值恒对齐**（同一次筛选产出、一一对应）——调用方可安全
     `zip(..., strict=True)`。这是 BLOCK 1 的实质保证；不需要第三个返回值，见 design D13。
