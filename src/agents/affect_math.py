@@ -810,9 +810,34 @@ def fast_survival_prior(
 
 
 def stream_salience(mu: tuple[float, float], precision: tuple[float, float]) -> float:
-    """显著网络（前岛叶+dACC）的门控分数：精度加权的偏离中性幅度 |μ|·Π̄。
+    """门控分数：偏离中性的幅度 × 平均精度，`|μ|·Π̄`。偏离越远、精度越高 → 越该进入全局广播。纯函数。
 
-    偏离中性越远、精度越高 → 越显著、越该进入全局广播。纯函数。
+    ── 引文归属（议会 2026-07-30 订正：此前锚点错位）──
+    两个乘子出自**两套不同**的理论传统，此前整条公式被挂在显著网络文献名下，是错的：
+      · `hypot(μ)`（离中性距离 = 强度）—— core affect 的强度定义
+        （Russell 2003, https://doi.org/10.1037/0033-295X.110.1.145）。
+      · `Π̄`（精度作为门控权重）—— 主动推理的「注意即精度推断」
+        （Feldman & Friston 2010, https://doi.org/10.3389/fnhum.2010.00215；
+        内感受侧见 Barrett & Simmons 2015 EPIC, https://doi.org/10.1038/nrn3950）。
+      · 「显著网络（前岛叶+dACC）」（Menon & Uddin 2010,
+        https://doi.org/10.1007/s00429-010-0262-0）是这套计算的**神经解剖底物**，
+        该文给的是「做行为/内稳态相关性检测」的功能定位，**并未给出**本公式；
+        故不得再把 `|μ|·Π̄` 记作「= 显著网络门控分数（Menon & Uddin）」。
+      · 亦**不**对应 Scherer CPM 的 relevance/novelty check——那问的是「与目标是否相关」，
+        不是「测得准不准」。
+
+    ── ⚠ 两条已知简化（议会 2026-07-30 记录，本轮不改数值行为）──
+    1. **非 canonical 形式**：自由能原则下的显著性是**逐维**精度加权预测误差（`Σ_d Π_d·ε_d²`），
+       而本式把「多大」（`hypot`，两维等权、不看各自精度）与「多确信」（`mean(Π)`，算术平均）
+       解耦成两个标量相乘 ⇒ 丢了「某一维精度很高时该维应主导显著性」这一性质。
+    2. 🛑 **`mean_precision` 对结构性一维流有约 2.83× 的隐藏折扣**：
+       对两维精度都为 Πa 的「公平」二维流，最坏 salience = `√2·Πa`；
+       而 physio 流经 M2 后 Πv 恒为 MIN_PRECISION ⇒ 最坏 salience = `0.5·Πa`，二者相差 `2√2 ≈ 2.83`
+       （`√2` 来自维度缺失、`2` 来自把近零分量也计入平均）。
+       该折扣是**公式副作用、不是有意设计的跨流公平性保证**，也不是 `SALIENCE_THRESHOLD` 的反推来源
+       （它与 `0.5/0.18 ≈ 2.78` 的接近是巧合）。
+       ⚠ **若日后把 `mean_precision` 改成 `max` 或按有效维度数归一化，该折扣会静默消失且无测试报警**
+       —— 改本函数前请重新核算这个折扣是否还成立。
     """
     deviation = math.hypot(mu[0], mu[1])
     mean_precision = 0.5 * (precision[0] + precision[1])
@@ -1212,7 +1237,8 @@ def cortisol_trigger(
 # ── 外部多模态先验流展开（议会 2026-07-15 M1–M6；PRP 外部多模态先验流注入口）──
 # ExternalPrior 类型注解 import 见文件顶部 TYPE_CHECKING 块（同层·叶子协议·无反向依赖）。
 # 生理流前缀集合（M2·议会生物席强制）：以任一前缀开头的流名视为生理信号流，
-# 无条件覆写 Πv=MIN_PRECISION（EDA/HRV/瞳孔/SCR 对效价盲，Kreibig 2010）。
+# 无条件覆写 Πv=MIN_PRECISION —— 依据是「**单一通道原始读数**区分效价的能力有限」，
+# 见 expand_external_priors docstring 的 M2 段（议会 2026-07-30 已订正该处的机制表述与引用方向）。
 _PHYSIO_PREFIXES: tuple[str, ...] = ("physio", "eda", "hrv", "pupil", "scr")
 
 
@@ -1243,7 +1269,22 @@ def expand_external_priors(
 
     M2（生物席强制·唯一「失真必改」）：name 以 _PHYSIO_PREFIXES 任一前缀开头
     （小写比较）→ 无条件覆写 Πv = MIN_PRECISION，即便 MCP 给了有意义值也归零。
-    依据：EDA/HRV/瞳孔只编码交感唤醒输出、对效价盲（Kreibig 2010）；
+    依据（议会 2026-07-30 订正两处，原文有两个错，结论不变）：
+      · ❌ 原写「EDA/HRV/瞳孔**只编码交感**唤醒输出」——**机制说错了**：
+        RMSSD 是**迷走/副交感**张力指标（Shaffer & Ginsberg 2017,
+        https://doi.org/10.3389/fpubh.2017.00258；Appelhans & Luecken 2006,
+        https://doi.org/10.1037/1089-2680.10.3.229），瞳孔受**交感+副交感双重**调制，
+        只有 EDA（外泌汗腺）是交感单支。三者的共同点是**弱效价特异性**，不是「都是交感」。
+      · ❌ 原文把 Kreibig 2010 整篇当作「生理对效价盲」的靠山——**引用方向反了**：
+        该综述的核心论点恰恰是**反对**「未分化唤醒」模型、
+        主张 *considerable ANS response specificity*。
+      · ✅ 站得住的窄 claim 是：「**单一通道的原始读数**区分效价的能力有限」
+        （EDA 侧最对题的是 Bradley, Codispoti, Cuthbert & Lang 2001,
+        https://doi.org/10.1037/1528-3542.1.3.276 —— 电导随**唤醒**变、效价由面部通道携带；
+        另见 Mauss & Robinson 2009, https://doi.org/10.1080/02699930802204677）。
+      · ⚠ 诚实附注：HRV **并非严格对效价盲**——Kreibig 2010 自己报告负性情绪普遍伴 HRV 降低、
+        而正性情绪的影响含混，即存在一小块与威胁评价挂钩的不对称信息。
+        判定为「简化」而非「失真」：该残留信息在 HRV 实测 σ≈1.4–1.8 的信噪比下量不出来。
     给 valence 精度 = 主动注入偏差（design.md §二·生物席强制·收敛 a）。
 
     返回与 `affect_core` 里 streams 装配处（`if state.workspace_enabled:` 分支内）
@@ -1252,7 +1293,10 @@ def expand_external_priors(
 
     引文：Kreibig S.D. (2010). Biol. Psychol. 84(3):394-421.
     https://doi.org/10.1016/j.biopsycho.2010.03.010
-    设计决策见 design.md M1–M6（议会 2026-07-15）。
+    ⚠ 保留该条只为可追溯（它是 M2 最初的立项引文），但**它支持的不是「生理对效价盲」**——
+    引用方向的订正与真正对题的文献见上方 M2 的「依据」段（议会 2026-07-30）。
+    设计决策见 design.md M1–M6（议会 2026-07-15）；本轮订正见
+    notes/2026-07-30-design-options-precision-criterion-vs-ignition-threshold.md 的「议会裁定」段。
     """
     # M6：流数上界
     if len(external_priors) > max_streams:
