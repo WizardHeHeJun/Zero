@@ -1285,6 +1285,70 @@ async def test_purge_memory_backend_reports_purged_false_honestly(
         assert "如实回报" in d["detail"]
 
 
+async def test_purge_judges_by_actual_saver_not_env_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 `ZERO_CHECKPOINT_BACKEND=sqlite` 但驱动缺失回退 InMemory ⇒ 必须仍回 `purged=False`。
+
+    `build_checkpointer` 在 sqlite **缺 db extra** 时会**告警回退 InMemorySaver**。
+    若按 **env 名**判后端，这种部署会走「持久后端」分支 ⇒ 在回退出的**空** saver 上
+    `adelete_thread` ⇒ 又回 `purged=True`
+    —— 正是刚修掉的那个「假成功」**换了个门回来**。
+    判据必须取在**实际构造出的 saver 类型**上。改回按 env 名判，本用例即红。
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    import src.storage.checkpointer as ck
+
+    monkeypatch.setenv("ZERO_CHECKPOINT_BACKEND", "sqlite")
+    # 模拟「缺 db extra」：_sqlite_saver 返回 None ⇒ build_checkpointer 回退 InMemorySaver
+    monkeypatch.setattr(ck, "_sqlite_saver", lambda serde: None)
+    assert isinstance(ck.build_checkpointer(), InMemorySaver), (
+        "前提不成立：未发生回退，本用例失去判别力"
+    )
+
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.purge_session", {"session_id": "never-existed"})
+        d = json.loads(getattr(r.content[0], "text", ""))
+        assert d["purged"] is False, (
+            "env 写 sqlite 但实际回退 InMemory 时回了 purged=True —— 假成功"
+        )
+        assert "回退" in d["detail"], "须点明这是驱动缺失回退，否则运维看不出为什么没删成"
+
+
+async def test_describe_config_bad_env_carries_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """不带 sid 时部署端 env 坏值必须带机读码，不得裸穿。
+
+    该路径会跑 `_build_session_config(None)`，坏 env 抛的是 `ServerEnvError`；
+    其它三个入口都做了转码，**只有本工具漏过** —— 与 `_UNKNOWN_SESSION_MARKER` 那条死码同型。
+    """
+    monkeypatch.setenv("ZERO_EXTERNAL_PRIOR_PRECISION_CAP", "0.8x")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        r = await client.call_tool("zero.describe_config", {})
+        assert r.isError is True
+        assert _wire_code(getattr(r.content[0], "text", "")) == "deploy-env-invalid"
+
+
+async def test_open_session_description_documents_interrupt_probe() -> None:
+    """对外元数据必须与返回体一致：`list_tools` 的 description 要提 `interrupt_probe`。
+
+    它是 client 能读到的契约。代码改了、description 没改 = 契约两张皮；
+    更糟的是旧文案宣传的正是「靠 interrupted_at 缺席判断」这个已被消灭的口径。
+    """
+    async with connect(build_server()) as client:
+        await client.initialize()
+        tools = {t.name: (t.description or "") for t in (await client.list_tools()).tools}
+        desc = tools["zero.open_session"]
+        assert "interrupt_probe" in desc
+        for state in ("not_probed", "clean", "interrupted", "probe_failed"):
+            assert state in desc, f"四态未在对外 description 中列全：缺 {state}"
+        assert "不要靠 interrupted_at 是否缺席" in desc
+
+
 async def test_purge_unsupported_backend_carries_error_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,9 +1,12 @@
-"""zero-link MCP **server**：把 `ConversationSession` 包成三工具（边界适配层，三层之外）。
+"""zero-link MCP **server**：把 `ConversationSession` 包成五个工具（边界适配层，三层之外）。
 
 对齐 MCP 侧 client 契约（`D:\\Zero_MCP\\notes\\2026-07-15-zero-link-client-ready-to-zero.md`）：
-- `zero.open_session(persona?, config?) -> {"session_id": str}`
+- `zero.open_session(persona?, config?, session_id?)`
+  `-> {"session_id", "resumed", "interrupt_probe"}`
 - `zero.step(session_id, stim, external_priors?) -> <expression 子 dict>`
 - `zero.close_session(session_id) -> {"ok": true}`
+- `zero.describe_config(session_id?) -> <生效门控回读面>`（只读；不传 sid = 部署端默认）
+- `zero.purge_session(session_id) -> {"ok", "purged", "backend", "detail"}`（删持久运行态）
 错误一律 `ToolError`（FastMCP 转成 `CallToolResult.isError=true`，消息进 `content[0].text`）。
 
 红线守则：本模块**不反向依赖**内核内部（只经 `ConversationSession` 公开 `step`）、
@@ -168,14 +171,19 @@ async def _purge_detached_thread(thread_id: str) -> tuple[bool, str]:
     —— **数据删除 API 的假成功**，而 memory 正是默认后端。
     memory 后端的运行态本就随 `ConversationSession` 对象消亡，close 即等效清除。
     """
-    backend = _checkpoint_backend()
-    if backend == "memory":
-        return False, (
-            "memory 后端：运行态随会话对象消亡、无持久副本可删；"
-            "会话不在册即已无数据。purged=False 是如实回报，不是失败"
-        )
+    from langgraph.checkpoint.memory import InMemorySaver
+
     from src.storage.checkpointer import build_checkpointer
 
+    backend = _checkpoint_backend()
+    # 🛑 **判据必须是「实际构造出来的 saver 是什么」，不是「env 名写的是什么」**
+    # （2026-07-30 文档清扫只读核出、我方实证确认）：
+    # `build_checkpointer` 在 `sqlite` **缺 db extra** 时会**告警回退 InMemorySaver**。
+    # 若按 env 名判，这种部署会走「持久后端」分支 ⇒ 在回退出的**空** InMemorySaver 上
+    # adelete_thread ⇒ 又回 `purged=True`。
+    # ⚠ 这正是本函数刚修掉的那个「假成功」**换了个门回来** ——
+    # 与我方前两次事故（字符串搜把登记表算成产出点 / AST 守卫扫全模块）同族：
+    # **判据取在了名字/文本上，而不是取在真正决定行为的那个对象上。**
     try:
         saver = build_checkpointer()
     except NotImplementedError as e:
@@ -185,6 +193,24 @@ async def _purge_detached_thread(thread_id: str) -> tuple[bool, str]:
             ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
             f"checkpoint 后端 {backend!r} 尚未接线，无法执行 purge：{e}",
         ) from e
+    if isinstance(saver, InMemorySaver):
+        # 走到这里有两种情形，处置相同：env 就写的 memory；或写了 sqlite/postgres 但驱动缺失回退。
+        detail = (
+            "无持久副本可删（运行态随会话对象消亡，会话不在册即已无数据）；"
+            "purged=False 是如实回报、不是失败"
+        )
+        if backend != "memory":
+            detail += (
+                f"。⚠ env 写的是 {backend!r} 但实际构造出的是 InMemorySaver"
+                "——多为缺 db extra 导致的回退，请检查部署依赖"
+            )
+            logger.warning(
+                "purge: ZERO_CHECKPOINT_BACKEND=%s 但实际 saver 是 InMemorySaver（驱动缺失回退），"
+                "thread_id=%s 无持久副本可删",
+                backend,
+                thread_id,
+            )
+        return False, detail
     try:
         purged = await _delete_thread(saver, thread_id)
     finally:
@@ -353,7 +379,7 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     （如共情系数 L1 上界 `SessionConfig._check_empathy_l1`），坏值 fail-fast → 上层转 ToolError。
 
     **议会解锁门（A5·A6·2026-07-21）**：`_MCP_GOVERNANCE_GATED_FLAGS` 中的字段
-    （`text_coping_enabled`/`coping_potential_enabled`）**不受 overrides 覆写**，
+    （现 **8 项**，以该 frozenset 为准、勿抄本注释）**不受 overrides 覆写**，
     只由 `ZERO_MCP_TEXT_COPING_ENABLED`/`ZERO_MCP_COPING_ENABLED` env 治理——防 client
     经 config 旁路生产门控（「生产关·MCP 开」治理漏洞）。非门控字段（如 `contagion_alpha`）
     仍可正常 override。
@@ -514,10 +540,13 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         name="zero.open_session",
         description=(
             "建/重开一个 Zero 情感引擎会话（建图/checkpointer 一次）。"
-            "返回 {session_id, resumed}；resume 且探测到上一轮被中途取消时另带 "
-            "{interrupted_at: [待执行节点名]}——该会话运行态停在 super-step 边界，"
-            "续跑会从此处继续而非重跑整轮。传 session_id 则按旧 id 重开"
-            "（跨 server 重启续会话·须持久后端）；不传则新铸。"
+            "返回 {session_id, resumed, interrupt_probe}。"
+            "interrupt_probe 恒存在，四态：not_probed（新建 / 活跃幂等重开）· "
+            "clean（上一轮跑完整轮）· interrupted（停在 super-step 边界，另带 "
+            "interrupted_at=[待执行节点名]）· probe_failed（探测本身失败=**不可判**，"
+            "请按最坏情况处理、不得视同 clean）。"
+            "⚠ 判「能否安全续跑」请读 interrupt_probe，**不要靠 interrupted_at 是否缺席**。"
+            "传 session_id 则按旧 id 重开（跨 server 重启续会话·须持久后端）；不传则新铸。"
         ),
         structured_output=False,
     )
@@ -813,7 +842,22 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         实则语义已分叉。
         """
         session = await registry.get(session_id) if session_id else None
-        cfg = session.config if session is not None else _build_session_config(None)
+        if session is not None:
+            cfg = session.config
+        else:
+            # ⚠ 必须转码：不带 sid 时会跑 `_build_session_config(None)`，部署端把
+            # `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` / `ZERO_MAX_EXTERNAL_STREAMS` /
+            # `ZERO_MCP_IGNITION_BETA` 写坏时抛的是 `ServerEnvError` —— 不转码就会**裸穿**、
+            # wire 上没有 `[zero:...]` 令牌，消费方查表落空。
+            # 其它三个入口（open_session / step 的锁 / purge）都做了这层，**只有本工具漏了**
+            # ——与我方在 `_acquire_with_timeout` 注释里批判的那条死码是同型失效。
+            try:
+                cfg = _build_session_config(None)
+            except ServerEnvError as e:
+                raise _tool_error(
+                    ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
+                    f"部署端 env 不合法，无法回读默认门控：{e}",
+                ) from e
         return {
             "describe_config_version": DESCRIBE_CONFIG_VERSION,
             "session_id": session_id,
