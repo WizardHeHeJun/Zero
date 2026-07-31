@@ -502,6 +502,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_EPISODE_SALIENCE_MIN` | 0.15 | 情景写入的显著度门 `salience=precision×\|rpe\|`（含时间/约定内容旁路强写） |
 | `ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD` | 0 | 低唤醒高语义补偿 `salience+=0.3·\|value\|`（`1` 开启） |
 | `ZERO_EPISODE_DEDUP_MAX` | 0.92 | 情景写入去重余弦阈（高于此视为近义跳过） |
+| `ZERO_IDENTITY_FACT_BYPASS` | 开 | 身份自陈（姓名 / 职业）绕过上面的显著度门直接写入。中性自我介绍不产生奖励预测误差，`salience = precision × \|rpe\|` 恒为 0，会被主门结构性丢弃——实测 100 轮对话里姓名与职业 100% 丢失，下游随即以虚构细节填补。判据是纯确定性的四段正则（自指主语 → 身份谓词 → 闭合职业/姓名宾语 → 疑问排除），不经任何模型判断；宁漏勿误，任一段不确定即交回主门。设 `0` 关闭即逐字回到旧行为 |
 
 **④ 实验性 v1：社会认知 / 生理节律 / 层级融合**（三项研究级方向，**默认全关、行为不变**；确定性热路径纯标量无 LLM/torch）
 
