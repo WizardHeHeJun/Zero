@@ -1,4 +1,4 @@
-# Zero — 情感引擎驱动的 AI 数字人
+﻿# Zero — 情感引擎驱动的 AI 数字人
 
 > 让机器**带着情绪**说话。Zero 以一套**情感引擎**为内核、以 **LLM** 为语言外壳：每一句话先被读成情绪、在引擎里按人类情感动力学演化，再由语言与表情把这份情绪自然地漏出来——不是让模型"扮演"情绪，而是让情绪真实地参与生成。
 
@@ -267,6 +267,33 @@ python -m scripts.run_pipeline                                    # 端到端：
 >
 > **布尔类旋钮一律写 `1` / `0`**——各模块对 `on` / `off` / `yes` / `no` 这类写法的识别并不完全一致，个别变量遇到认不出的值会按「开」处理。下面各表标「`1` 开启」的就照写 `1`，要关就写 `0` 或整行注释掉。
 
+### 读取时机与常见陷阱
+
+`.env.example` 当前按**全能力验证态**赋值（真通道权重 + 情感第三维 + 人格卡 + 记忆巩固均已开启，权重文件须在 `artifacts/` 下）。整份粘贴后须改 `ZERO_OPENAI_API_KEY` 与 `ZERO_OPENAI_MODEL` 两行；要回到零依赖占位态，把「真通道解码器注入」「情感第三维」「文本情感回归」三节整节注释掉即可。
+
+**哪些入口会读 `.env`**——库代码从不读，只有入口脚本加载，因此并非每条命令都吃这份配置：
+
+| 入口 | 读 `.env`？ |
+| --- | --- |
+| `python main.py`（默认对话）· `python main.py --llm` | ✅ 读 |
+| `python main.py --trace` · `--workspace` | ❌ **不读**（`scripts/cli_modes.py` 只在 `run_llm` 里加载），配置须在 shell 导出 |
+| `python -m src.mcp_server` | ❌ **不读**，`ZERO_MCP_*` 一律须在 shell 导出 |
+| `python -m tools.reset_db` | ✅ 读（按你配置的路径清库） |
+
+**应用日志的目录与级别读不到 `.env`**：`setup_logging()` 在 `main()` 里先跑，`_load_dotenv()` 在 `_chat_repl()` 里后跑，所以 `ZERO_LOG_DIR` / `ZERO_LOG_LEVEL` 写进 `.env` 只对**对话日志**（`setup_conversation_log`，在 dotenv 之后初始化）生效。排障要开 DEBUG 请在 shell 导出 `ZERO_LOG_LEVEL=DEBUG`。
+
+**留空 ≠ 关闭**，本仓两种相反行为都存在，按变量而定：
+
+- 路径类（`ZERO_CHECKPOINT_DB` / `ZERO_GRAPH_DB` / `ZERO_SEMANTIC_DB`）**不要留空**——空串会被解析成仓库根目录。
+- `ZERO_HABITUATION_TAU=` 留空会 `float("")` **启动即崩**（要关请写 `0`）；而 `ZERO_AROUSAL_GAIN_CAP=` 留空是合法的「不设上限」。
+- 选了 `ZERO_SEMANTIC_BACKEND=sqlite_vec` 会连带读取 `ZERO_RECALL_SIM_MIN` / `ZERO_EPISODE_DEDUP_MAX` / `ZERO_EPISODE_MAX_PER_KEY`，这三项留空即启动失败。
+
+**几处「设了却与预期不符」**：
+
+- `ZERO_ATTITUDE_SETPOINT_A` 是 **env 优先**，设了就顶掉人格卡的气质基线（方向与 `ZERO_VA_COUPLING_*` 相反——那两个是 persona 优先）。用带 `setpoint` 的人格卡时应注释掉它。
+- `ZERO_FACS_MODEL_PATH` 指向的权重键数须与 `ZERO_FACS_EXTENDED` 一致：仓库自带的 `facs_decoder_ext_v2.pt` 是 13 键，必须同时 `ZERO_FACS_EXTENDED=true`，否则启动即 `size mismatch` 报错（5 vs 13）。
+- `ZERO_MCP_*` 与无前缀的同名变量互不覆盖，两条入口各读各的；`ZERO_FACS_EXTENDED` / `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER` 例外，两侧共用无前缀那一份。
+
 ### 运行后端
 
 运行态 Checkpointer 与 长期记忆图谱**各自独立选后端**，可任意组合；默认都在内存，落盘 / 真后端按需开。
@@ -390,8 +417,9 @@ python -m scripts.run_pipeline                                    # 端到端：
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
 | `ZERO_CONSOLIDATION_ENABLED` | 关 | 主门；开启后会话结束触发睡眠巩固 + 分层幂律遗忘（关=整体不动） |
-| `ZERO_CONSOLIDATION_D_SESSION` · `_D_USER` | 0.8 · 0.3 | 分层幂律遗忘指数：短期 SESSION 快衰 / 长期 USER 慢衰 |
-| `ZERO_CONSOLIDATION_SALIENCE_THRESHOLD` · `_COUNT_MIN` | 0.25 · 3 | 短期→长期升迁门：显著度阈 + 最低强化次数（防偶发事件伪装成长期记忆） |
+| `ZERO_CONSOLIDATION_D_USER` | 0.3 | 长期 USER 作用域情景的分层幂律遗忘指数 |
+| `ZERO_CONSOLIDATION_D_SESSION` | 0.8 | 短期 SESSION 作用域的衰减指数。⚠ **当前对话管线只产 USER 作用域情景**（两处 `write_episode` 均为 `Scope.USER`），而升迁逻辑只收 `scope=="session"`，故本项与下一行两项设了不生效 |
+| `ZERO_CONSOLIDATION_SALIENCE_THRESHOLD` · `_COUNT_MIN` | 0.25 · 3 | 短期→长期升迁门：显著度阈 + 最低强化次数（防偶发事件伪装成长期记忆）。⚠ 同上，当前管线下 SESSION→USER 升迁不会发生 |
 | `ZERO_CONSOLIDATION_TIMEOUT` | 30.0 | 会话结束巩固的超时秒（超时降级告警、不影响对话） |
 | `ZERO_ACTR_ENABLED` · `ZERO_ACTR_B_SCALE` | 关 · 3.0 | 用 ACT-R 频率激活替换召回排序的新近项（关=用幂律时序衰减）；`_B_SCALE` 越小、频率的影响越强 |
 
@@ -506,8 +534,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
-| `ZERO_LOG_DIR` | `logs` | 日志目录（应用日志与人读对话日志共用） |
-| `ZERO_LOG_LEVEL` | `INFO` | 文件与项目 logger 级别；排障设 `DEBUG` 看每轮 `e*`、记忆读写、LLM 请求详情 |
+| `ZERO_LOG_DIR` | `logs` | 日志目录。⚠ 写进 `.env` 只对人读对话日志生效；应用日志目录在 dotenv 加载前已定，须在 shell 导出 |
+| `ZERO_LOG_LEVEL` | `INFO` | 文件与项目 logger 级别；排障设 `DEBUG` 看每轮 `e*`、记忆读写、LLM 请求详情。⚠ **写进 `.env` 无效**（`setup_logging` 先于 dotenv 加载），须在 shell 导出 |
 | `ZERO_CONVERSATION_LOG` | 开 | 每轮对话落人读日志 `logs/conversation-<时间戳>-<pid>.log`（user/Zero 原文 + 引擎 trace）；设 `0` 关且不落任何对话内容 |
 | `ZERO_LOG_CONSOLE` | 开 | 是否同时往控制台（stderr）打日志；设 `0` 只落文件、不刷屏 |
 | `ZERO_LOG_CONSOLE_PLAIN` | 开 | 控制台用极简格式（只打正文）；设 `0` 改用与文件相同的完整格式（时间戳 + 级别 + 模块名） |

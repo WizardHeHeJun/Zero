@@ -86,7 +86,17 @@ class SupervisorAgent:
                 key=state.session_id,
             )
             value = state.value_estimate if state.value_estimate is not None else 0.0
-            # 显著度门 salience=precision×|rpe|（rpe=None→0.5 保守；McGaugh 2004 唤醒×意外度）
+            # 显著度门 salience=precision×|rpe|（rpe=None→0.5 保守）。两个因子分属不同调制系统，
+            # 不共用一条引文：precision 项对应杏仁核-NE 唤醒调制（McGaugh 2004，
+            # DOI:10.1146/annurev.neuro.27.070203.144157）；|rpe| 项对应多巴胺价值预测误差
+            # （Bromberg-Martin et al. 2010，DOI:10.1016/j.neuron.2010.11.022）。
+            # ⚠ 已知失真（2026-07-30 议会 4/5 席，不粉饰）：McGaugh 是**调制假说**——描述唤醒对
+            # 已发生编码的巩固强度做连续增益，从不主张无该信号即不编码（反证 Cahill et al. 1995,
+            # Nature 377:295-296：杏仁核损毁者对中性段落记忆正常）。而此处把它用作**二元不可逆
+            # 写入门**，且 salience 是乘性 AND 门——|rpe|=0 是测度为正的整个超平面，再高的 precision
+            # 也被归零，身份自陈类中性事实（姓名/职业/计划）因此必然丢失。同一 salience 在
+            # memory.consolidation.EbbinghausDecay 里作连续调制（a_eff=a×salience**κ）才是忠实用法。
+            # 修复方向见议会 D1：仿下方 _is_commitment 先例增设确定性身份自陈旁路（须走完整 PRP）。
             salience = (state.affect_precision or 0.0) * (
                 abs(state.rpe) if state.rpe is not None else 0.5
             )
