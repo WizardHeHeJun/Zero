@@ -64,6 +64,22 @@ _NEUTRAL_PERSONA = Persona()
 # L3 种子记忆的写入显著度：取高于召回注入门（ZERO_RECALL_INJECT_MIN 默认 0.5 → Hill 归一需
 # precision≳30）的量级，使「预置共同记忆」首轮即能被召回并升入对话注意力预算（对应 supervisor
 # 富 episode 的 affect_precision ~28–72 区间）。纯常量、与 ATTITUDE_RATE 等同属引擎参数。
+# ⚠ 该常量「一钱多用」（议会 2026-07-31 D4：先例不免检——
+#   与 supervisor.IDENTITY_MEMORY_PRECISION 同构、同耦合）：
+#   `precision=` 是**共享字段**，被三处消费，而本处只论证了第一处——
+#     ① 召回注入门（chat_driver 的 inject_min 判定）：只需落在门限哪一侧，覆写安全；
+#     ② 召回排序（memory_recall._rank_episodes 的 importance 维）：数值直接进线性加权和，
+#        实测本覆写带来 **+0.1153 固定加成**（占三维总权重 11.5%，等价于 sim 高出 0.34）；
+#     ③ 遗忘调制（consolidation.EbbinghausDecay 的 a_eff = a×salience^κ）：数值直接进幂函数，
+#        实测 a_eff **×1.604**，且是振幅项、不随 Δt 衰减。
+#   ②③ 两处方向与设计意图一致（种子记忆本就该更易召回、更慢遗忘），
+#   但它们是经由一个语义为「后验方差倒数」的量实现的 —— 是效果导向的**代理**，非机制忠实
+#   （数学席判 Stevens 1946 尺度类型误用：只对阈值判定安全的覆写扩散进了要求基数尺度的公式）。
+#   正解是独立的 importance 信号（比照本仓 `first_contact=True` 标记 + 独立系数的先例），
+#   已 DEFERRED 至独立 PRP（议会 D5）；⚠ 若届时实现，**只能走 content 内文本 tag，
+#   不得给 episodes 表加 DB 列**（议会 D1·BLOCK：GraphitiGraphStore 无结构化列钩子，
+#   加列会造成两后端能力分叉）。
+#   改动本常量会同时改变上述三处行为，回归锁见 tests/test_precision_shared_field_coupling.py。
 SEED_MEMORY_PRECISION = 40.0
 
 

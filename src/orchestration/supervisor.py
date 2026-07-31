@@ -214,6 +214,21 @@ def _is_identity_disclosure(text: str) -> tuple[str, str] | None:
 # chat_driver.SEED_MEMORY_PRECISION 同值同源（那条注释亦写明「取高于召回注入门」）。
 # ⚠ 这是「人为抬高情感精度以换召回优先级」，属科学决策边界；沿用同源先例而非新发明，
 #   若议会要独立裁定该做法的适用范围，改这一个常量即可。
+# ⚠ 该常量「一钱多用」（议会 2026-07-31 WARN-2 → D2/D4，已披露非隐藏）：
+#   `precision=` 是**共享字段**，被三处消费，而本处只论证了第一处——
+#     ① 召回注入门（chat_driver 的 inject_min 判定）：只需落在门限哪一侧，覆写安全；
+#     ② 召回排序（memory_recall._rank_episodes 的 importance 维）：数值直接进线性加权和，
+#        实测本覆写带来 **+0.1153 固定加成**（占三维总权重 11.5%，等价于 sim 高出 0.34）；
+#     ③ 遗忘调制（consolidation.EbbinghausDecay 的 a_eff = a×salience^κ）：数值直接进幂函数，
+#        实测 a_eff **×1.604**，且是振幅项、不随 Δt 衰减。
+#   ②③ 两处方向与设计意图一致（身份/种子事实本就该更易召回、更慢遗忘），
+#   但它们是经由一个语义为「后验方差倒数」的量实现的 —— 是效果导向的**代理**，非机制忠实
+#   （数学席判 Stevens 1946 尺度类型误用：只对阈值判定安全的覆写扩散进了要求基数尺度的公式）。
+#   正解是独立的 importance 信号（比照本仓 `first_contact=True` 标记 + 独立系数的先例），
+#   已 DEFERRED 至独立 PRP（议会 D5）；⚠ 若届时实现，**只能走 content 内文本 tag，
+#   不得给 episodes 表加 DB 列**（议会 D1·BLOCK：GraphitiGraphStore 无结构化列钩子，
+#   加列会造成两后端能力分叉）。
+#   改动本常量会同时改变上述三处行为，回归锁见 tests/test_precision_shared_field_coupling.py。
 IDENTITY_MEMORY_PRECISION = 40.0
 
 

@@ -194,16 +194,30 @@ async def test_mutation_a1_assertion_itself_goes_red(monkeypatch: pytest.MonkeyP
         _assert_identity_written(store, "我叫林川")
 
 
-def test_mutation_a2_loosened_object_segment_would_break_negatives() -> None:
-    """(a2) 实现级变异：把宾语段放宽成任意字符，负样本立刻被误收。
+def test_mutation_a2_loosened_object_segment_breaks_negatives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(a2) 实现级变异：把 **shipped 的** 职业正则换成「字符类捕获」的宽松版，负样本立刻被误收。
 
-    证明段 3 的闭集**确实在起判别作用**，而不是恰好没被触发。
+    ⚠ 必须 monkeypatch 生产模块里的那个对象、再调真 `_is_identity_disclosure`——
+    首版是在测试里现造一份宽松正则自己 search，那验证的是"这类正则会误收"这个通用陈述，
+    与 shipped 代码零耦合（code-reviewer WARN-3）。
     """
     import re
 
-    loose = re.compile(rf"我{sup._SELF_ADVERB}(?:是|在|做)[^，,。.！!？?]{{0,10}}?(.+)")
-    wrongly_caught = [t for t in IDENTITY_NEGATIVES if loose.search(t) and "什么" not in t]
-    assert wrongly_caught, "放宽宾语段后本应误收若干负样本，否则该段没有判别力"
+    baseline = [t for t in IDENTITY_NEGATIVES if _is_identity_disclosure(t) is not None]
+    assert baseline == [], f"变异前不应有误报，实际 {baseline}"
+
+    monkeypatch.setattr(
+        sup,
+        "_IDENTITY_JOB_RE",
+        re.compile(rf"我{sup._SELF_ADVERB}(?:是|在|做)[^，,。.！!？?]{{0,10}}?([一-龥]{{2,4}})"),
+    )
+    caught = [t for t in IDENTITY_NEGATIVES if _is_identity_disclosure(t) is not None]
+    assert caught, (
+        "把职业段从闭集换成字符类后本应误收若干负样本；若仍为空，说明该段并非负样本被拒的原因，"
+        "本用例测的不是它宣称要测的东西"
+    )
 
 
 def test_mutation_a2_without_question_segment_false_positive_returns(
