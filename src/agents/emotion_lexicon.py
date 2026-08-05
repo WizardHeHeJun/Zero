@@ -14,8 +14,11 @@ torch-free / API-free，不动 affect_math.text_label 以保零回归）：
 4. 情绪时间包络（ECM internal memory）：`intensity_envelope` 给一句话内的情绪强度一条
    句首满、句尾衰减的 sigmoid 包络。
 
-本模块只依赖标准库 math/os 与同层 affect_math.clamp（os 仅 `suggest_affect_words`
-的死区默认值读 `ZERO_PUSH_NEUTRAL_DEADZONE` 用，见该函数 docstring）。
+本模块只依赖标准库 math/os 与同层 affect_math.clamp。
+⚠ `push_neutral_deadzone_default` 读 env（`ZERO_PUSH_NEUTRAL_DEADZONE`）是本模块
+**唯一**的 env 例外——为让三个调用点对同一实证 bug 统一受控而下沉（透传参数需穿
+LanguageAgent/AffectState/SessionConfig 三层，代价失衡）。其余函数保持纯函数、
+只收显式参数；**不要以此为先例**再往本模块加 env 读，需要确定性时显式传 bool。
 """
 
 from __future__ import annotations
