@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import random
+import re
 from typing import Any
 
 from src.agents.affect_math import clamp
@@ -217,9 +218,42 @@ _FACT_BOUNDARY_ADDENDUM = (
     "（如「（停顿两秒）」「（笑）」「（叹气）」「（看向窗外）」），不写小说式的叙述句，"
     "不描写你并不存在的身体和不存在的场景。"
     "情绪只通过**遣词、语气、句子长短、说与不说**体现，不通过描写动作体现。"
-    "这条规则对**每一句**独立生效：如果你发现更早的回合里已经溜出去过括号动作，"
-    "那是错的，不是许可——不要模仿历史里你自己的旧格式，从当前这句起就写干净的。"
 )
+
+# ── 舞台说明的机械执行层（事实化模式）────────────────────────────────────────────
+# ④臂（人设卡+事实化）100 轮实测：上面的反扮演**禁令**前 31 轮有效，轮 32 首次滑出
+# 「（无奈地）」后，旧回合进历史 → 模型模仿自己 → 滚雪球（81-90 段密度最高）。
+# 「劝」挡不住自我模仿，于是把规则从 prompt 下沉为**确定性代码**：converse 返回前剥离，
+# 剥离后才进对话历史 —— 历史里永远不出现第一个滑出，雪球机制物理消失。
+# （用户 2026-08-05 方向要求：行为尽量原生/少提示词修饰；此为第一层「代码替代 prompt」。）
+
+# 内联剥离只认「神态/动作」词，避免误伤正当的括号补充（如「（指上周那次）」）。
+_STAGE_ACTION_HINT_RE = re.compile(
+    "笑|叹|顿|皱|挑眉|白眼|耸|摊手|点头|摇头|沉默|语气|语调|声音|嘴角|认真|无奈|认命|"
+    "平静|冷冷|轻声|低声|一愣|僵|看向|转身|起身|深吸|揉|眯"
+)
+_PAREN_SPAN_RE = re.compile(r"[（(][^（）()\n]{1,40}[）)]")
+# 行首（含回复开头）的括号段：对话开场白位置的括号几乎必为舞台说明，无条件剥。
+_LINE_LEADING_PARENS_RE = re.compile(r"(?m)^[ \t]*(?:[（(][^（）()\n]{1,40}[）)][ \t]*)+")
+
+
+def strip_stage_directions(text: str) -> str:
+    """确定性剥离舞台说明（「（无奈地）」「（冷笑了一声）」类括号动作/神态）。
+
+    两条规则：行首括号段无条件剥；行内括号段仅当命中神态/动作词表时剥
+    （`_STAGE_ACTION_HINT_RE`，保守白名单——漏杀可接受、误杀不可接受）。
+    纯函数、确定性；全剥空时回退原文（绝不产出空回复）。
+    仅事实化模式的 converse 路径调用；默认路径逐字零回归。
+    """
+
+    def _inline(m: re.Match[str]) -> str:
+        return "" if _STAGE_ACTION_HINT_RE.search(m.group(0)) else m.group(0)
+
+    out = _LINE_LEADING_PARENS_RE.sub("", text)
+    out = _PAREN_SPAN_RE.sub(_inline, out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out if out else text.strip()
 
 
 class OpenAILanguageModel:
@@ -370,6 +404,10 @@ class OpenAILanguageModel:
                 model=self.model, temperature=temperature, messages=messages
             )
         reply = (resp.choices[0].message.content or "").strip()
+        if factual:
+            # 机械执行层：剥离舞台说明后才返回（调用方随即写入历史）——历史保持干净，
+            # 自我模仿雪球无从启动（见 strip_stage_directions docstring 的④臂实测记录）。
+            reply = strip_stage_directions(reply)
         logger.debug(
             "converse model=%s msgs=%d push=%s reply_len=%d",
             self.model,
