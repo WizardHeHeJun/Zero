@@ -232,6 +232,29 @@ async def test_open_gate_enumerates_all_five_unknowable_classes(
     assert probe in sys_prompt
 
 
+async def test_boundary_forbids_absence_assertion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """④臂实测残留：记忆缺失时它自信断言「你压根没提过」「我翻遍了聊天记录」。
+
+    旧措辞「找不到，就是没有」反而**授权**了这种断言——历史是被截断的，
+    找不到 ≠ 没发生。锁非对称规则：不引用找不到的，也不断言其不存在。
+    """
+    sys_prompt = await _system_prompt(monkeypatch, factual="1")
+    assert "找不到只说明「你找不到」" in sys_prompt
+    assert "不许断言「你没说过」" in sys_prompt
+    assert "你没有翻记录的能力" in sys_prompt, "虚构核验动作（翻遍了聊天记录）须点名禁止"
+    assert "找不到，就是没有" not in sys_prompt, "旧措辞授权断言否定，必须移除"
+
+
+async def test_boundary_antimimic_clause(monkeypatch: pytest.MonkeyPatch) -> None:
+    """④臂实测残留：反扮演禁令前 31 轮有效，轮 32 首次滑出后被自我模仿滚雪球击穿
+
+    （轮 32 首现「（无奈地）」→ 81-90 段密度最高）。锁「逐句独立生效、旧滑出不是许可」款。
+    """
+    sys_prompt = await _system_prompt(monkeypatch, factual="1")
+    assert "不要模仿历史里你自己的旧格式" in sys_prompt
+    assert "那是错的，不是许可" in sys_prompt
+
+
 # ---------------------------------------------------------------------------
 # 4. 反塌陷：**删的是身份，不是情绪**
 # ---------------------------------------------------------------------------
