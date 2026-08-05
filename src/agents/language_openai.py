@@ -243,9 +243,11 @@ class OpenAILanguageModel:
         #   且不私自推翻阶段 15–17「负面时别讨好」的既有裁定——翻默认前应过设计门。
         raw_gate = os.getenv("ZERO_TEMPER_VALENCE_GATE", "").strip()
         self.temper_gate: float | None = float(raw_gate) if raw_gate else None
-        # 事实化模式（ZERO_FACTUAL_MODE）：构造期一次读，热路径不重读（同 temper_gate）。
-        # False → converse 全部走原常量、不追加边界段 = system prompt 逐字不变（零回归）。
-        self.factual = factual_mode_enabled()
+        # 事实化模式（ZERO_FACTUAL_MODE）不在此缓存，converse 每次调用活读——与 chat_driver
+        # 的 recall_tag / 停播种两处消费点同生命周期（code-reviewer WARN-3·2026-08-05）：
+        # 三个消费点若一处构造期缓存、两处活读，env 在构造后变化（长跑进程热改配置）会出现
+        # 「召回标签已事实化、主 prompt 还是人设化」的半开状态，比全开/全关都糟。
+        # temper_gate 仍构造期缓存：它只有 converse 一个消费点，无跨消费点不一致问题。
         # 词典桥（NRC-VAD 加权解码的 API 侧近似）：开启时把与 e* 最对齐的情绪词注入 compose
         # 提示，二段式 VAD 反推充当 reranker。默认关 → 对既有路径零回归。
         self.use_lexicon = use_lexicon
@@ -300,17 +302,19 @@ class OpenAILanguageModel:
         retrieved: 记忆召回的背景上下文（空串时不注入，prompt 与改前逐字一致 → 零回归）。
         history 末条应为用户最新发言。
         """
+        # 事实化模式每次调用活读（见 __init__ 注释：与 chat_driver 两处消费点统一生命周期）。
+        factual = factual_mode_enabled()
         # 脾气段按 e* 的 valence 门控：未设 ZERO_TEMPER_VALENCE_GATE → gate=None → 无条件注入，
         # 三段拼接与拆分前逐字一致（零回归）；设了阈值（如 -0.15）则仅在心情确实为负且够强时注入，
         # 使语气强度真正由引擎的 e* 驱动，而非由一段固定 prompt 驱动。
-        head = _FACTUAL_SYS_HEAD if self.factual else _CONVERSE_SYS_HEAD
-        temper_src = _FACTUAL_TEMPER_ADDENDUM if self.factual else _TEMPER_ADDENDUM
-        tail = _FACTUAL_SYS_TAIL if self.factual else _CONVERSE_SYS_TAIL
+        head = _FACTUAL_SYS_HEAD if factual else _CONVERSE_SYS_HEAD
+        temper_src = _FACTUAL_TEMPER_ADDENDUM if factual else _TEMPER_ADDENDUM
+        tail = _FACTUAL_SYS_TAIL if factual else _CONVERSE_SYS_TAIL
         temper = temper_src if (self.temper_gate is None or affect[0] <= self.temper_gate) else ""
         sys = (head + temper + tail).format(feeling=affect_label(*affect))
         if self.persona:
             sys = f"{self.persona}\n\n{sys}"  # L1：人设卡前置于情绪行为框架（空串时不变=零回归）
-        if relationship_hint and not self.factual:
+        if relationship_hint and not factual:
             # Q5-B（议会二轮·止血）：关系距离软约束，给 LLM 分寸锚（空串=零回归）。
             # ⚠ 事实化模式下**忽略**：「已经比较熟络」是对共同过去的事实断言，而其唯一依据只是
             # exposure 计数、并无真实往事支撑——与边界段第 5 条（不许断言没发生过的事）正面对撞。
@@ -321,7 +325,7 @@ class OpenAILanguageModel:
         if retrieved:
             sys += (
                 _FACTUAL_RECALL_LEAD.format(retrieved=retrieved)
-                if self.factual
+                if factual
                 else f"\n你还记得以下背景：{retrieved}"
             )
         bias_kwargs: dict[str, Any] = {}
@@ -331,14 +335,18 @@ class OpenAILanguageModel:
             # 于是同一份 prompt 一边说「心情平静」一边要求用暴怒的词，模型只能自己编个立场圆场。
             # 死区把这种轮次的 push 段整段撤掉（words 为空则本就不注入），与 NEUTRAL_RADIUS
             # 的文档语义（「避免给微弱情感强行贴词」）一致。
-            words = suggest_affect_words(affect[0], affect[1], k=6, neutral_deadzone=self.factual)
+            # 事实化开 → 死区必开（属事实化规格）；关 → None 交给 ZERO_PUSH_NEUTRAL_DEADZONE
+            # 全局默认（code-reviewer BLOCK-2/WARN-4：死区不再绑死在事实化模式上）。
+            words = suggest_affect_words(
+                affect[0], affect[1], k=6, neutral_deadzone=True if factual else None
+            )
             if words:
-                push_tpl = _FACTUAL_PUSH_ADDENDUM if self.factual else _PUSH_ADDENDUM
+                push_tpl = _FACTUAL_PUSH_ADDENDUM if factual else _PUSH_ADDENDUM
                 sys += push_tpl.format(words="、".join(words))
                 logit_bias = self._build_logit_bias(affect, words)
                 if logit_bias:
                     bias_kwargs["logit_bias"] = logit_bias
-        if self.factual:
+        if factual:
             # 必须最后拼：最强近因位，且显式压过前置的人设卡与上面的召回/关系段。
             sys += _FACT_BOUNDARY_ADDENDUM
         messages: list[dict[str, str]] = [{"role": "system", "content": sys}]

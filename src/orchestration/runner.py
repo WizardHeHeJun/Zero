@@ -480,6 +480,21 @@ async def run(
                 # gate_fusion / exclude_physio_fusion（议会第三轮 D1/D7）⚠ 二者默认均 True
                 "gate_fusion": gate_fusion,
                 "exclude_physio_fusion": exclude_physio_fusion,
+                # 召回/外部先验 LastValue 每轮防御归零（code-reviewer BLOCK-1·2026-08-05）：
+                # run() 与 ConversationSession.step() 是两条平行入口，归零基准必须同步——
+                # run() 共享 thread_id 跨 stimulus 持久化（docstring 自述的设计目的），而
+                # MemoryRecallAgent.__call__ 只在命中时才写 recalled_*，未命中轮会从
+                # checkpoint 继承上一轮值（step() 侧 2026-07-31 刚修过的同一捏造来源；
+                # 可达路径：scripts/verify_graphiti_local.py + LanguageAgent 的
+                # `if state.recalled_context:` 分支）。external_priors 同为 LastValue：
+                # run() 虽无 state_overrides 注入口，但同 thread_id 曾被会话入口写过即残留。
+                # recalled_disposition 直接偏置 AppraisalAgent 的 prior_mu（核心情感数学，
+                # 不只是 prompt 文本），存储瞬时故障轮残留会把上一轮倾向错灌进本轮评价。
+                "external_priors": [],
+                "recalled_episode_ids": [],
+                "recalled_context": [],
+                "recalled_facts": [],
+                "recalled_disposition": None,
                 "task_complete": False,
             },
             config={"configurable": {"thread_id": thread_id}},
@@ -732,6 +747,12 @@ class ConversationSession:
             # 无关记忆编织进回答（「你上次说……」类捏造的直接来源）。补齐上面三处已有的先例。
             "recalled_context": [],
             "recalled_facts": [],
+            # recalled_disposition 同款条件写入（MemoryRecallAgent 的 `if disposition is not
+            # None:` 分支）——且它比上两个字段更敏感：直接偏置 AppraisalAgent 的 prior_mu
+            # （核心情感数学，不只是 prompt 文本）。固定 (USER, user_id) 查询下通常轮轮命中，
+            # 仅存储瞬时故障（memory.client 降级返回 [] 的韧性路径）才会漏写；归零使该轮
+            # 干净地退化为「无倾向」，而非错用上一轮的（code-reviewer WARN-6·2026-08-05）。
+            "recalled_disposition": None,
         }
         if state_overrides is not None:
             base.update(state_overrides)

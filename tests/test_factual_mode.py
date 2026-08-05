@@ -12,6 +12,13 @@
      实测 e*=(-0.079,+0.037)（`affect_label` 判「平静」）取出「暴怒/愤怒/恐惧」。
   D. 召回残留：`runner` 每轮基准漏归零 `recalled_context`/`recalled_facts`，而
      `MemoryRecallAgent` 只在命中时才写 —— 未命中轮会读到**上一轮**的记忆。
+     ⚠ `ConversationSession.step` 与 `run()` 是**两条平行入口**，归零基准必须同步
+     （run() 共享 thread_id 跨 stimulus 持久化，同一残留可原样复现）；同款条件写入的
+     `recalled_disposition` 直接偏置 appraisal 的 prior_mu，一并归零。
+
+  成因 C 的死区判定下沉在 `suggest_affect_words` 内（env `ZERO_PUSH_NEUTRAL_DEADZONE`
+  全局默认 + 调用点显式 bool 压过），三个调用点（converse/_compose/模板模型）统一受控，
+  不再绑死在事实化模式上。
 
 ⚠ 默认关 = 逐字零回归。**删的是身份，不是情绪**：反塌陷断言（`test_open_gate_keeps_*`）
 专门防后来者为了压捏造把情绪条款一起删掉。
@@ -293,15 +300,42 @@ async def test_open_gate_replaces_first_person_recall_lead(
 # ---------------------------------------------------------------------------
 
 
-def test_deadzone_off_by_default_reproduces_the_contradiction() -> None:
+def test_deadzone_off_by_default_reproduces_the_contradiction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """复现 bug 本体：死区关闭时，`affect_label` 判「平静」的 e* 仍取出暴怒/愤怒/恐惧。
 
     这条是**证明 bug 存在**的用例——它绿说明缺陷仍可复现，不是护栏。
     """
+    monkeypatch.delenv("ZERO_PUSH_NEUTRAL_DEADZONE", raising=False)
     v, a = -0.079, 0.037
     assert affect_label(v, a) == "平静"
     words = suggest_affect_words(v, a, k=6)
     assert "暴怒" in words and "愤怒" in words, "该 e* 应复现「心情平静 vs 用词暴怒」的矛盾"
+
+
+@pytest.mark.parametrize("val", ["1", "true", "yes", "ON"])
+def test_deadzone_env_truthy_enables_global_default(
+    monkeypatch: pytest.MonkeyPatch, val: str
+) -> None:
+    """`ZERO_PUSH_NEUTRAL_DEADZONE` 是三个调用点共用的全局默认——不依赖事实化模式。"""
+    monkeypatch.setenv("ZERO_PUSH_NEUTRAL_DEADZONE", val)
+    assert suggest_affect_words(-0.079, 0.037, k=6) == []
+
+
+@pytest.mark.parametrize("val", ["", "0", "false", "off", "no", "2"])
+def test_deadzone_env_falsy_keeps_off(monkeypatch: pytest.MonkeyPatch, val: str) -> None:
+    """⚠ 同 `ZERO_FACTUAL_MODE`：`not in ("", "0")` 式解析会把 `=false` 判成开，逐个钉死。"""
+    monkeypatch.setenv("ZERO_PUSH_NEUTRAL_DEADZONE", val)
+    assert suggest_affect_words(-0.079, 0.037, k=6) != []
+
+
+def test_deadzone_explicit_arg_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """调用点显式传 bool 时压过 env（事实化模式即显式 True，需确定性时显式 False）。"""
+    monkeypatch.setenv("ZERO_PUSH_NEUTRAL_DEADZONE", "1")
+    assert suggest_affect_words(-0.079, 0.037, k=6, neutral_deadzone=False) != []
+    monkeypatch.delenv("ZERO_PUSH_NEUTRAL_DEADZONE", raising=False)
+    assert suggest_affect_words(-0.079, 0.037, k=6, neutral_deadzone=True) == []
 
 
 def test_deadzone_on_returns_empty_inside_radius() -> None:
@@ -369,6 +403,48 @@ async def test_runner_step_zeros_recalled_context_and_facts() -> None:
 
     assert captured["recalled_context"] == [], "未归零 → 未命中轮会读到上一轮的召回"
     assert captured["recalled_facts"] == []
+    # 同款条件写入的 disposition：残留会把上一轮倾向错灌进本轮 appraisal 的 prior_mu
+    assert captured["recalled_disposition"] is None
+
+
+async def test_runner_run_zeros_recall_lastvalue_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`run()` 与 `step()` 是两条平行入口，归零基准必须同步。
+
+    run() 共享 thread_id 跨 stimulus 持久化（docstring 自述的设计目的），
+    MemoryRecallAgent 只在命中时才写 → 未命中轮从 checkpoint 继承上一轮值，
+    与 step() 已修的捏造来源同机制。同样真抓 `ainvoke` 入参，不查源码字符串。
+    """
+    from src.orchestration import runner as runner_mod
+    from src.orchestration.state import AffectState, Stimulus
+
+    calls: list[dict[str, Any]] = []
+
+    class _FakeGraph:
+        async def ainvoke(self, base: dict[str, Any], config: Any = None) -> AffectState:
+            calls.append(dict(base))
+            return AffectState()
+
+    monkeypatch.setattr(runner_mod, "build_graph", lambda **kwargs: _FakeGraph())
+    monkeypatch.setattr(runner_mod, "build_checkpointer", lambda *args, **kwargs: None)
+
+    await runner_mod.run(
+        [
+            Stimulus(name="s1", goal_congruence=0.0, intensity=0.3),
+            Stimulus(name="s2", goal_congruence=0.0, intensity=0.3),
+        ],
+        thread_id="t1",
+        memory=object(),  # type: ignore[arg-type]  # FakeGraph 不触存储，占位即可
+        recall_enabled=True,
+        language_enabled=True,
+    )
+
+    assert len(calls) == 2
+    for base in calls:
+        assert base["recalled_context"] == [], "run() 未归零 → 与 step() 已修的残留同机制"
+        assert base["recalled_facts"] == []
+        assert base["recalled_episode_ids"] == []
+        assert base["recalled_disposition"] is None
+        assert base["external_priors"] == []
 
 
 async def test_runner_step_overrides_still_win() -> None:
