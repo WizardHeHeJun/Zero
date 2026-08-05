@@ -291,6 +291,10 @@ def test_strip_stage_directions_keeps_legit_line_leading() -> None:
         strip_stage_directions("（我这边没有时钟）具体几号我说不准。")
         == "（我这边没有时钟）具体几号我说不准。"
     )
+    # 6. 复核 PASS 附带打磨：裸「指」收窄同「注[:：]」——「指甲缝」不是指称引导，照剥；
+    #    真指称（指第一回）仍保留。
+    assert strip_stage_directions("（指甲缝里有血）先别慌。") == "先别慌。"
+    assert strip_stage_directions("（指第一回）那次算数。") == "（指第一回）那次算数。"
 
 
 def test_strip_stage_directions_inline_action_vs_content() -> None:
