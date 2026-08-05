@@ -37,6 +37,7 @@ from src.agents.emotion_lexicon import (
 )
 from src.agents.emotion_lexicon import appraise_text as lexicon_appraise
 from src.agents.language import ConversationModel
+from src.agents.language_openai import factual_mode_enabled
 from src.agents.models.composite import (
     CompositeChannelDecoder,
     FacsModel,
@@ -107,11 +108,19 @@ def _u_shape_history(history: list[dict[str, str]], k: int, n: int) -> list[dict
     return history[:k] + history[-(n - k) :]
 
 
+# 事实化模式下替换「（记忆片段）」的标签（ZERO_FACTUAL_MODE）。这些 system 条目被插到窗口
+# **最前**、紧跟主 system prompt，是全 prompt 里位置最强的记忆断言——原标签不标出处、
+# 不标可靠度，模型会当成亲历往事；且 supervisor 写入的 gist 是「你说：…」（那里「你」指
+# 用户），进 system 帧后「你」按惯例指模型自己，故标签里顺带纠正人称。每条一次，须短。
+FACTUAL_RECALL_TAG = "（检索到的旧记录·未必相关·「你说：」= 用户说的）"
+
+
 def _inject_recalled_as_system(
     window: list[dict[str, str]],
     recalled_facts: list[Fact],
     inject_min: float,
     importance_scale: float = 30.0,
+    recall_tag: str = "（记忆片段）",
 ) -> list[dict[str, str]]:
     """把高 importance 召回 episode 以 system 条目插入 window 头部，进 LLM 注意力预算竞争（D1）。
 
@@ -124,7 +133,7 @@ def _inject_recalled_as_system(
     if not recalled_facts:
         return window
     system_entries: list[dict[str, str]] = [
-        {"role": "system", "content": f"（记忆片段）{f.content}"}
+        {"role": "system", "content": f"{recall_tag}{f.content}"}
         for f in recalled_facts
         if normalized_importance(f.content, importance_scale) >= inject_min
     ]
@@ -509,7 +518,11 @@ class ChatDriver:
             # （覆盖最初契约性陈述）。仍是 env 可调的纯切片，不改 U 形算法。
             window = _u_shape_history(self.history, self.primacy_k, self.window_n)
             window = _inject_recalled_as_system(
-                window, recalled_facts, self.inject_min, self.importance_scale
+                window,
+                recalled_facts,
+                self.inject_min,
+                self.importance_scale,
+                FACTUAL_RECALL_TAG if factual_mode_enabled() else "（记忆片段）",
             )
             # Q5-B（议会二轮·止血）：关系距离标签（按曝光轮次三档，对齐议会 N_up 3-5/10-15）注入
             # LLM 软约束别越距离。ZERO_RELATIONSHIP_STAGE_HINT 默认关 → 空串 → converse 零回归。
@@ -618,6 +631,12 @@ class ChatDriver:
         if self.seeded:
             return
         self.seeded = True
+        # 事实化模式下**不播种**：seed_memories 是「预灌共同经历」的设计通道，
+        # 而 SEED_MEMORY_PRECISION=40.0 归一后 0.571 > inject_min 0.5 必过注入门，
+        # 且「这是设定、不是真事」的信息在链路上全程丢失 —— 开着「禁止捏造」还留这条路，
+        # 等于一边关门一边发钥匙。
+        if factual_mode_enabled():
+            return
         if not (self.first_contact and self.persona.seed_memories and self.memory is not None):
             return
         now = datetime.now(UTC)

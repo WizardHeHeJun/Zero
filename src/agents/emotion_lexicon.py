@@ -14,12 +14,17 @@ torch-free / API-free，不动 affect_math.text_label 以保零回归）：
 4. 情绪时间包络（ECM internal memory）：`intensity_envelope` 给一句话内的情绪强度一条
    句首满、句尾衰减的 sigmoid 包络。
 
-本模块只依赖标准库 math 与同层 affect_math.clamp。
+本模块只依赖标准库 math/os 与同层 affect_math.clamp。
+⚠ `push_neutral_deadzone_default` 读 env（`ZERO_PUSH_NEUTRAL_DEADZONE`）是本模块
+**唯一**的 env 例外——为让三个调用点对同一实证 bug 统一受控而下沉（透传参数需穿
+LanguageAgent/AffectState/SessionConfig 三层，代价失衡）。其余函数保持纯函数、
+只收显式参数；**不要以此为先例**再往本模块加 env 读，需要确定性时显式传 bool。
 """
 
 from __future__ import annotations
 
 import math
+import os
 from typing import Literal
 
 from src.agents.affect_math import clamp
@@ -281,17 +286,46 @@ def affect_logit_bias(
     return out
 
 
+def push_neutral_deadzone_default() -> bool:
+    """`suggest_affect_words` 死区的全局默认（`ZERO_PUSH_NEUTRAL_DEADZONE`）。
+
+    仅 1/true/yes/on 为开，其余（含 false/off/no）为关——同 `factual_mode_enabled`
+    的白名单解析，不用 `not in ("", "0")`（那会把 `=false` 判成开，pitfalls 有记）。
+    默认关 = 三个调用点（`OpenAILanguageModel.converse` / `OpenAILanguageModel._compose` /
+    `_TemplateLanguageModel.generate`）逐字零回归。
+    """
+    return os.getenv("ZERO_PUSH_NEUTRAL_DEADZONE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def suggest_affect_words(
     valence: float,
     arousal: float,
     *,
     k: int = 5,
     lexicon: dict[str, tuple[float, float]] | None = None,
+    neutral_deadzone: bool | None = None,
 ) -> list[str]:
     """取与 e*=(valence, arousal) 最对齐的前 k 个情绪词（供提示注入 / 重排）。
 
     按 ⟨φ(w), e*⟩ 降序；同分时按词稳定排序保证确定性。
+
+    `neutral_deadzone=True` 时，`r < NEUTRAL_RADIUS` 返回 `[]`——即本模块开头
+    NEUTRAL_RADIUS 文档所述的「避免给微弱情感强行贴词」。
+    `None`（默认）→ 取 `push_neutral_deadzone_default()`（env `ZERO_PUSH_NEUTRAL_DEADZONE`，
+    默认关=逐字零回归）；显式传 bool 的调用点压过 env（事实化模式即显式传 True）。
+    判定下沉到本函数而非各调用点各自读 env（code-reviewer BLOCK-2·2026-08-05）：
+    否则 `_compose`/`_TemplateLanguageModel` 等其它调用者对同一 bug 免疫无门。
+    ⚠ 代价：None 路径读 env，函数不再严格纯——需确定性复现时显式传 bool。
+
+    ⚠ 为何需要这个开关：内积排序只看**方向**、不看模长，而 e* 模长趋零时方向纯属噪声。
+    实测 e*=(-0.079, +0.037)（r=0.087，`affect_label` 据死区判「平静」）会取出
+    「暴怒、愤怒、恐惧、厌恶、焦虑、恼火」——于是调用方拼出的提示会一边声明「心情平静」、
+    一边要求用暴怒的词。2026-07-31 的 100 轮实跑里，56 个「平静」轮中「暴怒」被取中 21 次。
     """
+    if neutral_deadzone is None:
+        neutral_deadzone = push_neutral_deadzone_default()
+    if neutral_deadzone and math.hypot(valence, arousal) < NEUTRAL_RADIUS:
+        return []
     table = lexicon if lexicon is not None else SEED_VAD_LEXICON
     e_star = (valence, arousal)
     ranked = sorted(table.items(), key=lambda kv: (-_affect_dot(kv[1], e_star), kv[0]))

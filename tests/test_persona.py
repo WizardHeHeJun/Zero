@@ -153,15 +153,29 @@ async def test_l1_persona_prepended_to_system_prompt() -> None:
 
 
 async def test_l1_no_persona_system_prompt_byte_identical() -> None:
-    """persona 空（默认）→ system prompt 与改前逐字相等（零回归强断言）。"""
+    """persona 空（默认）→ system prompt 与改前逐字相等（零回归强断言）。
+
+    2026-07-31：`_CONVERSE_SYS` 被拆成 HEAD + [TEMPER] + TAIL 三段（脾气段按 e* 的 valence
+    门控，见 ZERO_TEMPER_VALENCE_GATE）。本断言的**意图不变**——未设门控时三段拼接必须与
+    拆分前逐字相同；这里改成拼接三段来比对，而不是放宽断言。
+    """
     from src.agents.emotion_lexicon import affect_label
-    from src.agents.language_openai import _CONVERSE_SYS, OpenAILanguageModel
+    from src.agents.language_openai import (
+        _CONVERSE_SYS_HEAD,
+        _CONVERSE_SYS_TAIL,
+        _TEMPER_ADDENDUM,
+        OpenAILanguageModel,
+    )
 
     client = _CapturingClient()
     lm = OpenAILanguageModel(client=client, model="x")  # persona 默认 ""
+    assert lm.temper_gate is None, "本用例前提：未设门控，脾气段应无条件注入"
     await lm.converse([{"role": "user", "content": "hi"}], (0.0, 0.0))
     system_content = client.chat.completions.calls[0]["messages"][0]["content"]
-    assert system_content == _CONVERSE_SYS.format(feeling=affect_label(0.0, 0.0))
+    expected = (_CONVERSE_SYS_HEAD + _TEMPER_ADDENDUM + _CONVERSE_SYS_TAIL).format(
+        feeling=affect_label(0.0, 0.0)
+    )
+    assert system_content == expected
 
 
 # ---------------------------------------------------------------------------
