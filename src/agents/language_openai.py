@@ -247,6 +247,48 @@ _KEEP_LEADING_RE = re.compile(
 )
 
 
+def strip_stage_directions_with_segments(text: str) -> tuple[str, list[str]]:
+    """同 `strip_stage_directions`，但**额外返回被剥掉的括号内文本**。
+
+    加这个返回值是为了让舞台说明**不再被白白丢弃**：有了 Live2D 皮套后，模型自发写的
+    「（点了点头）」是一条真实可执行的行为意图，应路由给动作层
+    （`behavior_intent.stage_direction_intents`），可见文本仍然照常剥干净。
+    ⚠ 路由是**闭集白名单**：只有能映射进 12 词的才生效，「我帮你关灯了」这类对物理世界的
+    行动宣称仍旧丢弃——阶段 63 那条边界不因有了身体而放宽。
+
+    Returns:
+        (剥离后文本, 被剥掉的片段列表)。片段**不含**两端括号，按出现顺序。
+
+    Note:
+        全剥空回退原文时**返回空片段列表**——此时文本实际未变，若仍报告片段，就会出现
+        「舞台说明还留在可见文本里、同时又驱动了形象」的双重表达。不变式：
+        **片段列表 == 真正从文本里拿掉的东西**。
+    """
+    segments: list[str] = []
+
+    def _strip_line_leading(line: str) -> str:
+        while True:
+            m = _LEADING_SEGMENT_RE.match(line)
+            if m is None or _KEEP_LEADING_RE.match(m.group(1)):
+                return line
+            segments.append(m.group(1))
+            line = line[m.end() :]
+
+    def _inline(m: re.Match[str]) -> str:
+        if _STAGE_ACTION_HINT_RE.search(m.group(0)):
+            segments.append(m.group(0).strip("（）()"))
+            return ""
+        return m.group(0)
+
+    out = "\n".join(_strip_line_leading(line) for line in text.split("\n"))
+    out = _PAREN_SPAN_RE.sub(_inline, out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    if not out:
+        return text.strip(), []  # 回退原文 ⇒ 实际什么都没拿掉 ⇒ 不报告片段
+    return out, segments
+
+
 def strip_stage_directions(text: str) -> str:
     """确定性剥离舞台说明（「（无奈地）」「（冷笑了一声）」类括号动作/神态）。
 
@@ -256,23 +298,12 @@ def strip_stage_directions(text: str) -> str:
     误删的编号/免责语是伤害（code-reviewer WARN·2026-08-05）。
     纯函数、确定性；全剥空时回退原文（绝不产出空回复）。
     仅事实化模式的 converse 路径调用；默认路径逐字零回归。
+
+    实现委托给 `strip_stage_directions_with_segments` 并丢弃片段——**单一实现**，
+    避免两份剥离逻辑随时间漂移（本函数的返回值逐字不变，既有调用点零回归）。
     """
-
-    def _strip_line_leading(line: str) -> str:
-        while True:
-            m = _LEADING_SEGMENT_RE.match(line)
-            if m is None or _KEEP_LEADING_RE.match(m.group(1)):
-                return line
-            line = line[m.end() :]
-
-    def _inline(m: re.Match[str]) -> str:
-        return "" if _STAGE_ACTION_HINT_RE.search(m.group(0)) else m.group(0)
-
-    out = "\n".join(_strip_line_leading(line) for line in text.split("\n"))
-    out = _PAREN_SPAN_RE.sub(_inline, out)
-    out = re.sub(r"[ \t]+\n", "\n", out)
-    out = re.sub(r"\n{3,}", "\n\n", out).strip()
-    return out if out else text.strip()
+    cleaned, _ = strip_stage_directions_with_segments(text)
+    return cleaned
 
 
 class OpenAILanguageModel:

@@ -35,6 +35,7 @@ import math
 import os
 import time
 import uuid
+import zlib
 from collections.abc import Callable
 from typing import Any
 
@@ -114,6 +115,9 @@ ZERO_ERROR_CODE_DEPLOY_ENV_INVALID = "deploy-env-invalid"
 # 先登记是为了让消费方的分类表一次到位，不必等我方落地再改一轮。
 ZERO_ERROR_CODE_TIMEOUT_LOCK = "timeout-lock"
 ZERO_ERROR_CODE_TIMEOUT_STEP = "timeout-step"
+# 动作通道未启用（未配 ZERO_MOTION_ENABLED）。⚠ 必须 kebab-case——消费方提取正则是
+# `[a-z][a-z0-9-]*`，**下划线会让提取当场失败**（motion_disabled 曾是设计草案里的写法）。
+ZERO_ERROR_CODE_MOTION_DISABLED = "motion-disabled"
 
 ZERO_ERROR_CODES: frozenset[str] = frozenset(
     {
@@ -125,8 +129,16 @@ ZERO_ERROR_CODES: frozenset[str] = frozenset(
         ZERO_ERROR_CODE_DEPLOY_ENV_INVALID,
         ZERO_ERROR_CODE_TIMEOUT_LOCK,
         ZERO_ERROR_CODE_TIMEOUT_STEP,
+        ZERO_ERROR_CODE_MOTION_DISABLED,
     }
 )
+
+# ── 动作通道（zero.motion）契约常量 ──────────────────────────────────────────
+# 对面轨迹通道的硬上限（Zero_MCP `vts_behavior.py` 的 TRAJECTORY_MAX_*，按符号名对齐）。
+# 越界会被对面 rejected，故我方在产出侧就保证不越界，而不是靠"建议 fps"。
+MOTION_MAX_SEGMENT_MS = 10_000
+MOTION_MAX_KEYFRAMES = 600
+MOTION_DEFAULT_FPS = 20.0
 
 # 兼容别名：旧名仍导出，值不变（配套项目现有断言含 "unknown-session" 子串者不受影响）。
 _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
@@ -476,6 +488,17 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     return SessionConfig(**base)
 
 
+def _motion_enabled() -> bool:
+    """动作通道门控（`ZERO_MOTION_ENABLED`，默认关）。
+
+    刻意**不复用** `_maybe_expression_decoder` 那条注入通路：那条会把 decoder 塞进
+    `build_graph` / `ConversationSession.__init__` 的构造签名，而动作通道脱离 step 节奏、
+    由 `zero.motion` 独立拉取，不参与 (v,a) 动力学。走独立门控使「未开启时 step 返回体
+    逐字不变」从"需测试验证的断言"降为"改动面不相交、结构上自动成立"。
+    """
+    return _env_flag("ZERO_MOTION_ENABLED", False)
+
+
 def _maybe_expression_decoder() -> ChannelDecoder | None:
     """env 门控注入真通道解码器：`ZERO_FACS_MODEL_PATH` / `ZERO_PROSODY_MODEL_PATH` /
     `ZERO_PHYSIOLOGY_MODEL_PATH` 皆未设 → None（占位路径，无需 torch）。三通道**独立门控**：
@@ -553,6 +576,11 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
     """
     registry = registry if registry is not None else SessionRegistry()
     decoder = _maybe_expression_decoder()
+    # 动作相位簿记：`session_id → PhaseState`，与 `SessionRegistry.locks` 平行持有。
+    # 刻意**不放** ConversationSession / AffectState / checkpointer——相位与 (v,a) 动力学
+    # 无关，只是渲染续接用的标量；放进运行态会被持久化、也会污染节点契约。
+    # 仿 registry.locks 的生命周期：会话关闭时一并清理（见 close_session / purge_session）。
+    _motion_phases: dict[str, Any] = {}
     # HTTP 传输的监听配置（stdio 下无害·仅 streamable-http 生效）：host/port/path 走 env，
     # 便于给 MCP 侧稳定 endpoint（默认 127.0.0.1:8000/mcp，与 FastMCP 默认一致）。
     # port 非法值 fail-fast 指向 env 名（与 _build_session_config 的 _env_number 同口径）。
@@ -832,6 +860,85 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         return expression
 
     @mcp.tool(
+        name="zero.motion",
+        description=(
+            "拉取一段动作轨迹：返回 {keyframes:[{t_ms, params}], events:[…], phase_ms}。"
+            "keyframes 直接可投 params_animate（t_ms 从 0 起算、键集一致、≤10s/600 帧）；"
+            "events 为离散行为意图（12 词），由**你方**转投 behavior_trigger。"
+            "只读引擎当前情感状态，不推进内核。未开 ZERO_MOTION_ENABLED 时报 motion-disabled。"
+        ),
+        structured_output=False,
+    )
+    async def motion(
+        session_id: str,
+        duration_ms: int = 1000,
+        reply_text: str = "",
+    ) -> dict[str, Any]:
+        """动作通道：情绪直驱/意志调控的连续轨迹 + 主管判断的离散行为意图。
+
+        三层驱动见 `PRP/motion/design.md` §0.5：① 情绪直驱与 ② 意志调控走 `keyframes`
+        （双通路；调节开启时应渲染 `voluntary`），③ 主管判断走 `events`。
+
+        `reply_text` 可选——传入本轮回复文本即可让第 ③ 层做词法判定；不传则只出轨迹。
+        ⚠ `events` 需要**你方**主动转投 `behavior_trigger`：我方不假设你会解析本返回体，
+        这一条在跨仓契约里已明确（决策在我方、执行在你方）。
+        """
+        if not _motion_enabled():
+            raise _tool_error(
+                ZERO_ERROR_CODE_MOTION_DISABLED,
+                "动作通道未启用；部署端设 ZERO_MOTION_ENABLED=true 后重试",
+            )
+        session = await registry.get(session_id)
+        if session is None:
+            raise _tool_error(
+                ZERO_ERROR_CODE_UNKNOWN_SESSION,
+                f"未知 session_id={session_id!r}；请先调 zero.open_session",
+            )
+        from src.agents.behavior_intent import (
+            lexical_intents,
+            merge_intents,
+            stage_direction_intents,
+        )
+        from src.agents.language_openai import strip_stage_directions_with_segments
+        from src.agents.motion_synth import PhaseState, generate_dual
+
+        # 契约边界：段长 clamp 而非 fail-fast（对齐对面「换皮套不炸」的宽容取向），
+        # 帧数由**显式算术**保证——不靠"建议 fps"。
+        span = max(1, min(int(duration_ms), MOTION_MAX_SEGMENT_MS))
+        fps = min(MOTION_DEFAULT_FPS, (MOTION_MAX_KEYFRAMES - 1) * 1000.0 / span)
+
+        # 只读引擎情感（不推进图）；尚未 step 过 → (None, None, leak) → 走 idle 基线。
+        sample, regulated, leak = session.last_affect()
+        affect = sample if sample is not None else (0.0, 0.0)
+        # ⚠ 种子用 crc32 而非内置 hash()：CPython 对 str 的 hash **每进程随机化**
+        # （PYTHONHASHSEED），用它会让「同 session_id → 同轨迹」跨重启不成立，
+        # 破坏本模块声明的确定性（G5）。crc32 是稳定的。
+        phase_in = _motion_phases.get(session_id) or PhaseState(
+            noise_seed=zlib.crc32(session_id.encode("utf-8"))
+        )
+        heads, phase_out = generate_dual(
+            affect, regulated, float(span), phase_in, voluntary_leak=leak, fps=fps
+        )
+        _motion_phases[session_id] = phase_out  # per-session 相位：跨拉取续接不跳变
+
+        # ③ 主管判断层：词法 + 舞台说明路由（闭集白名单，物理世界宣称照旧丢弃）
+        events: list[dict[str, Any]] = []
+        if reply_text:
+            _, segments = strip_stage_directions_with_segments(reply_text)
+            intents = merge_intents(lexical_intents(reply_text), stage_direction_intents(segments))
+            events = [
+                {"name": i.name, "intensity": i.intensity, "direction": i.direction}
+                for i in intents
+            ]
+
+        return {
+            "keyframes": heads["voluntary"],  # 调节开启时观察者看到的是随意头
+            "spontaneous": heads["spontaneous"],  # 对照：不压制会是什么样
+            "events": events,
+            "phase_ms": phase_out.elapsed_ms,
+        }
+
+    @mcp.tool(
         name="zero.close_session",
         description="释放一个会话；未知 id 幂等。返回 {'ok': true}（client 忽略返回值）。",
         structured_output=False,
@@ -852,6 +959,9 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         #    该竞态的另一半由 `zero.step` 的「拿到锁后复查在册」兜住
         #    （报 unknown-session 而非被误贴成 config-incompatible）。
         await registry.close(session_id)  # 表内移除 → 后续 step 同 id 回 unknown-session
+        # 动作相位随会话一并释放：不清会在长跑进程里按会话数无界增长（每条几十字节，
+        # 但会话可以无限多）。摘牌后清即可——后续同 id 拉取会重新起相位。
+        _motion_phases.pop(session_id, None)
         try:
             await _acquire_with_timeout(lock, session_id)
         except ToolError:
