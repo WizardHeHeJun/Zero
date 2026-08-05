@@ -65,7 +65,7 @@
           "fillColor": "#F0F4FC", "borderColor": "#5178C6", "borderWidth": 2, "borderRadius": 10,
           "children": [
             { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "🗣️ 语言", "bold": true, "fontSize": 14, "color": "#1F2329" } ], "textAlign": "center" },
-            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "OpenAILanguageModel.converse\n人设卡前置于 _CONVERSE_SYS（仅对话路径）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
+            { "type": "text", "width": "fit-content", "height": "fit-content", "text": [ { "content": "OpenAILanguageModel.converse\n人设卡前置于对话 system prompt（仅对话路径）", "fontSize": 11, "color": "#646A73" } ], "textAlign": "center" }
           ]
         },
         {

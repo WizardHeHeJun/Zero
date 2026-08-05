@@ -287,11 +287,22 @@ def suggest_affect_words(
     *,
     k: int = 5,
     lexicon: dict[str, tuple[float, float]] | None = None,
+    neutral_deadzone: bool = False,
 ) -> list[str]:
     """取与 e*=(valence, arousal) 最对齐的前 k 个情绪词（供提示注入 / 重排）。
 
     按 ⟨φ(w), e*⟩ 降序；同分时按词稳定排序保证确定性。
+
+    `neutral_deadzone=True` 时，`r < NEUTRAL_RADIUS` 返回 `[]`——即本模块开头
+    NEUTRAL_RADIUS 文档所述的「避免给微弱情感强行贴词」。**默认 False 保持逐字零回归。**
+
+    ⚠ 为何需要这个开关：内积排序只看**方向**、不看模长，而 e* 模长趋零时方向纯属噪声。
+    实测 e*=(-0.079, +0.037)（r=0.087，`affect_label` 据死区判「平静」）会取出
+    「暴怒、愤怒、恐惧、厌恶、焦虑、恼火」——于是调用方拼出的提示会一边声明「心情平静」、
+    一边要求用暴怒的词。2026-07-31 的 100 轮实跑里，56 个「平静」轮中「暴怒」被取中 21 次。
     """
+    if neutral_deadzone and math.hypot(valence, arousal) < NEUTRAL_RADIUS:
+        return []
     table = lexicon if lexicon is not None else SEED_VAD_LEXICON
     e_star = (valence, arousal)
     ranked = sorted(table.items(), key=lambda kv: (-_affect_dot(kv[1], e_star), kv[0]))

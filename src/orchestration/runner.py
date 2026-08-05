@@ -725,6 +725,13 @@ class ConversationSession:
             # 导致 Supervisor 对已过期 episode 重复更新 access_count。
             # 仿 external_priors 归零先例。
             "recalled_episode_ids": [],
+            # recalled_context / recalled_facts 每轮显式归零（2026-07-31 修）：
+            # 同为 LastValue channel，而 MemoryRecallAgent.__call__ **只在 `if recalled:` 为真时**
+            # 才写这两个键 —— 本轮语义检索不命中（如「外面还在下雨吗」这类无关联提问）时，
+            # checkpoint 会把**上一轮**的召回原样留着，ChatDriver 照读照注，模型遂被要求把一段
+            # 无关记忆编织进回答（「你上次说……」类捏造的直接来源）。补齐上面三处已有的先例。
+            "recalled_context": [],
+            "recalled_facts": [],
         }
         if state_overrides is not None:
             base.update(state_overrides)
