@@ -250,15 +250,47 @@ async def test_boundary_forbids_absence_assertion(monkeypatch: pytest.MonkeyPatc
 
 
 def test_strip_stage_directions_line_leading() -> None:
-    """行首括号段无条件剥（对话开场白位置的括号几乎必为舞台说明）。"""
+    """行首括号段逐段剥（排除表外的开场白括号即舞台说明——实跑 105/105）。"""
     from src.agents.language_openai import strip_stage_directions
 
     assert strip_stage_directions("（无奈地）我真不知道。") == "我真不知道。"
     assert strip_stage_directions("（笑）（叹了口气）行。") == "行。"
     assert strip_stage_directions("（嘴角微扬）\n\n林川。做后端开发的。") == "林川。做后端开发的。"
     # 行首规则的独特价值：词表**漏掉**的新动作词（「鬼脸」不在 _STAGE_ACTION_HINT_RE），
-    # 行内规则不剥、只有无条件行首规则能兜——这条样例专门驱红「行首规则被删」的变异。
+    # 行内规则不剥、只有行首规则能兜——这条样例专门驱红「行首规则被删」的变异。
     assert strip_stage_directions("（做了个鬼脸）我真不知道。") == "我真不知道。"
+    # 实跑 105 条里词表覆盖不到的环境音式舞台说明，同样靠行首规则兜。
+    assert strip_stage_directions("（筷子碰碗边的轻响）嗯。") == "嗯。"
+
+
+def test_strip_stage_directions_keeps_legit_line_leading() -> None:
+    """code-reviewer WARN 的 5 类构造误伤逐条免疫（行首排除表）。
+
+    行首与行内两层取向对齐：宁漏勿误——误删编号/免责语/引用是伤害，漏网舞台说明只是瑕疵。
+    """
+    from src.agents.language_openai import strip_stage_directions
+
+    # 1/2. 列表编号（阿拉伯 + 中文）整行保留
+    assert (
+        strip_stage_directions("（1）我觉得可以试试。\n（2）反正也没别的选择。")
+        == "（1）我觉得可以试试。\n（2）反正也没别的选择。"
+    )
+    assert (
+        strip_stage_directions("（一）先做这个。\n（二）再做那个。")
+        == "（一）先做这个。\n（二）再做那个。"
+    )
+    # 3. 整行引用用户原话（指称词开头）
+    assert (
+        strip_stage_directions("你上次说的是：\n（这个我不同意）\n我今天想聊别的。")
+        == "你上次说的是：\n（这个我不同意）\n我今天想聊别的。"
+    )
+    # 4. 混合段：舞台说明剥掉、正当强调语保留（逐段判定，遇保留段即停）
+    assert strip_stage_directions("（笑）（这是重点）没问题。") == "（这是重点）没问题。"
+    # 5. 边界段自己教的免责话术（第一人称开头）绝不能被机械层删掉
+    assert (
+        strip_stage_directions("（我这边没有时钟）具体几号我说不准。")
+        == "（我这边没有时钟）具体几号我说不准。"
+    )
 
 
 def test_strip_stage_directions_inline_action_vs_content() -> None:

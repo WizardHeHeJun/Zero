@@ -233,23 +233,42 @@ _STAGE_ACTION_HINT_RE = re.compile(
     "平静|冷冷|轻声|低声|一愣|僵|看向|转身|起身|深吸|揉|眯"
 )
 _PAREN_SPAN_RE = re.compile(r"[（(][^（）()\n]{1,40}[）)]")
-# 行首（含回复开头）的括号段：对话开场白位置的括号几乎必为舞台说明，无条件剥。
-_LINE_LEADING_PARENS_RE = re.compile(r"(?m)^[ \t]*(?:[（(][^（）()\n]{1,40}[）)][ \t]*)+")
+# 行首（含回复开头）的括号段：对话开场白位置的括号在四臂 400 轮实跑里 105/105 全为
+# 舞台说明（零列表编号/零正当引用）。但 code-reviewer 构造用例证实「无条件剥」存在
+# 真实误伤面（列表编号「（1）」、整行引用用户原话、「（我这边没有时钟）」这类边界段
+# 自己教的免责话术）——故行首规则带**排除表**：编号 / 第一人称 / 指称词开头的保留。
+# 实跑 105 条中唯一以「你」开头的（「（你听到他深吸一口气…）」）含「深吸」，
+# 由行内词表层兜住——两层叠防下 105/105 仍全剥、5 类构造误伤全免。
+_LEADING_SEGMENT_RE = re.compile(r"^[ \t]*[（(]([^（）()\n]{1,40})[）)][ \t]*")
+_KEEP_LEADING_RE = re.compile(
+    r"^\s*(?:[0-9一二三四五六七八九十a-zA-Z]{1,3}\s*$"  # 纯编号：（1）（一）（a）
+    r"|[我你这那]"  # 第一/二人称与指称词开头：免责话术、引用、强调语
+    r"|指|注[:：]|即|例如|比如)"  # 显式指称/注释引导词
+)
 
 
 def strip_stage_directions(text: str) -> str:
     """确定性剥离舞台说明（「（无奈地）」「（冷笑了一声）」类括号动作/神态）。
 
-    两条规则：行首括号段无条件剥；行内括号段仅当命中神态/动作词表时剥
-    （`_STAGE_ACTION_HINT_RE`，保守白名单——漏杀可接受、误杀不可接受）。
+    两层规则：行首括号段逐段剥、但命中 `_KEEP_LEADING_RE` 排除表（编号/人称/指称）
+    即停止该行的行首处理；行内括号段仅当命中神态/动作词表（`_STAGE_ACTION_HINT_RE`，
+    保守白名单）时剥。两层取向一致：宁漏勿误——漏网的舞台说明是瑕疵，
+    误删的编号/免责语是伤害（code-reviewer WARN·2026-08-05）。
     纯函数、确定性；全剥空时回退原文（绝不产出空回复）。
     仅事实化模式的 converse 路径调用；默认路径逐字零回归。
     """
 
+    def _strip_line_leading(line: str) -> str:
+        while True:
+            m = _LEADING_SEGMENT_RE.match(line)
+            if m is None or _KEEP_LEADING_RE.match(m.group(1)):
+                return line
+            line = line[m.end() :]
+
     def _inline(m: re.Match[str]) -> str:
         return "" if _STAGE_ACTION_HINT_RE.search(m.group(0)) else m.group(0)
 
-    out = _LINE_LEADING_PARENS_RE.sub("", text)
+    out = "\n".join(_strip_line_leading(line) for line in text.split("\n"))
     out = _PAREN_SPAN_RE.sub(_inline, out)
     out = re.sub(r"[ \t]+\n", "\n", out)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
