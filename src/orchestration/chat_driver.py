@@ -114,6 +114,26 @@ def _u_shape_history(history: list[dict[str, str]], k: int, n: int) -> list[dict
 # 用户），进 system 帧后「你」按惯例指模型自己，故标签里顺带纠正人称。每条一次，须短。
 FACTUAL_RECALL_TAG = "（检索到的旧记录·未必相关·「你说：」= 用户说的）"
 
+# 截断事实（事实化模式）：④臂实测的「断言否定」残留（「你压根没提过」——实际说过、
+# 只是掉出窗外）根因是模型不知道自己看到的历史被裁剪过。与其在边界段教它一套话术，
+# 不如告知一条**事实**（截掉了多少条），让「找不到≠没说过」自己推出来——
+# 代码替代 prompt 的第二处（第一处见 language_openai.strip_stage_directions）。
+_TRUNCATION_FACT = (
+    "（系统事实：这段对话更早还有 {dropped} 条消息在你的可见窗口之外——"
+    "看不到 ≠ 没发生；找不到时只说「我找不到」，别断言「你没说过」。）"
+)
+
+
+def _with_truncation_fact(window: list[dict[str, str]], total_len: int) -> list[dict[str, str]]:
+    """历史被窗裁剪且事实化模式开时，把截断事实注为首条 system 消息。纯函数。
+
+    dropped = total_len - len(window)；未裁剪或模式关 → 原样返回（零回归）。
+    """
+    dropped = total_len - len(window)
+    if dropped <= 0 or not factual_mode_enabled():
+        return window
+    return [{"role": "system", "content": _TRUNCATION_FACT.format(dropped=dropped)}, *window]
+
 
 def _inject_recalled_as_system(
     window: list[dict[str, str]],
@@ -517,6 +537,8 @@ class ChatDriver:
             # 第 22 轮追问时已不在上下文（Murdock 1962 中央位置遗忘）。提到 40(≈20 轮)、primacy 5
             # （覆盖最初契约性陈述）。仍是 env 可调的纯切片，不改 U 形算法。
             window = _u_shape_history(self.history, self.primacy_k, self.window_n)
+            # 截断事实先于召回注入：dropped 的计数基于纯历史切片，不掺 system 条目。
+            window = _with_truncation_fact(window, len(self.history))
             window = _inject_recalled_as_system(
                 window,
                 recalled_facts,

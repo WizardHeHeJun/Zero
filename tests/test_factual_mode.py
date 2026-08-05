@@ -67,17 +67,21 @@ NEGATIVE = (-0.30, 0.10)
 
 
 class _CapturingClient:
-    """捕获 chat.completions.create 收到的 messages，不发网络请求。"""
+    """捕获 chat.completions.create 收到的 messages，不发网络请求。
+
+    `reply_text` 可配置假回复（默认 "ok"）——剥离器测试用它注入含舞台说明的文本。
+    """
 
     def __init__(self) -> None:
         self.captured: dict[str, Any] = {}
+        self.reply_text = "ok"
         outer = self
 
         class _Completions:
             async def create(self, **kwargs: Any) -> Any:
                 outer.captured = kwargs
                 return SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=outer.reply_text))]
                 )
 
         self.chat = SimpleNamespace(completions=_Completions())
@@ -230,6 +234,123 @@ async def test_open_gate_enumerates_all_five_unknowable_classes(
     """五类不可知信息逐条在场（日期/天气/对方环境/自身生平/对方说过的话）。"""
     sys_prompt = await _system_prompt(monkeypatch, factual="1")
     assert probe in sys_prompt
+
+
+async def test_boundary_forbids_absence_assertion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """④臂实测残留：记忆缺失时它自信断言「你压根没提过」「我翻遍了聊天记录」。
+
+    旧措辞「找不到，就是没有」反而**授权**了这种断言——历史是被截断的，
+    找不到 ≠ 没发生。锁非对称规则：不引用找不到的，也不断言其不存在。
+    """
+    sys_prompt = await _system_prompt(monkeypatch, factual="1")
+    assert "找不到只说明「你找不到」" in sys_prompt
+    assert "不许断言「你没说过」" in sys_prompt
+    assert "你没有翻记录的能力" in sys_prompt, "虚构核验动作（翻遍了聊天记录）须点名禁止"
+    assert "找不到，就是没有" not in sys_prompt, "旧措辞授权断言否定，必须移除"
+
+
+def test_strip_stage_directions_line_leading() -> None:
+    """行首括号段逐段剥（排除表外的开场白括号即舞台说明——实跑 105/105）。"""
+    from src.agents.language_openai import strip_stage_directions
+
+    assert strip_stage_directions("（无奈地）我真不知道。") == "我真不知道。"
+    assert strip_stage_directions("（笑）（叹了口气）行。") == "行。"
+    assert strip_stage_directions("（嘴角微扬）\n\n林川。做后端开发的。") == "林川。做后端开发的。"
+    # 行首规则的独特价值：词表**漏掉**的新动作词（「鬼脸」不在 _STAGE_ACTION_HINT_RE），
+    # 行内规则不剥、只有行首规则能兜——这条样例专门驱红「行首规则被删」的变异。
+    assert strip_stage_directions("（做了个鬼脸）我真不知道。") == "我真不知道。"
+    # 实跑 105 条里词表覆盖不到的环境音式舞台说明，同样靠行首规则兜。
+    assert strip_stage_directions("（筷子碰碗边的轻响）嗯。") == "嗯。"
+
+
+def test_strip_stage_directions_keeps_legit_line_leading() -> None:
+    """code-reviewer WARN 的 5 类构造误伤逐条免疫（行首排除表）。
+
+    行首与行内两层取向对齐：宁漏勿误——误删编号/免责语/引用是伤害，漏网舞台说明只是瑕疵。
+    """
+    from src.agents.language_openai import strip_stage_directions
+
+    # 1/2. 列表编号（阿拉伯 + 中文）整行保留
+    assert (
+        strip_stage_directions("（1）我觉得可以试试。\n（2）反正也没别的选择。")
+        == "（1）我觉得可以试试。\n（2）反正也没别的选择。"
+    )
+    assert (
+        strip_stage_directions("（一）先做这个。\n（二）再做那个。")
+        == "（一）先做这个。\n（二）再做那个。"
+    )
+    # 3. 整行引用用户原话（指称词开头）
+    assert (
+        strip_stage_directions("你上次说的是：\n（这个我不同意）\n我今天想聊别的。")
+        == "你上次说的是：\n（这个我不同意）\n我今天想聊别的。"
+    )
+    # 4. 混合段：舞台说明剥掉、正当强调语保留（逐段判定，遇保留段即停）
+    assert strip_stage_directions("（笑）（这是重点）没问题。") == "（这是重点）没问题。"
+    # 5. 边界段自己教的免责话术（第一人称开头）绝不能被机械层删掉
+    assert (
+        strip_stage_directions("（我这边没有时钟）具体几号我说不准。")
+        == "（我这边没有时钟）具体几号我说不准。"
+    )
+    # 6. 复核 PASS 附带打磨：裸「指」收窄同「注[:：]」——「指甲缝」不是指称引导，照剥；
+    #    真指称（指第一回）仍保留。
+    assert strip_stage_directions("（指甲缝里有血）先别慌。") == "先别慌。"
+    assert strip_stage_directions("（指第一回）那次算数。") == "（指第一回）那次算数。"
+
+
+def test_strip_stage_directions_inline_action_vs_content() -> None:
+    """行内括号只剥神态/动作词命中的；正当补充（如指代说明）保留。"""
+    from src.agents.language_openai import strip_stage_directions
+
+    assert strip_stage_directions("我说过（冷笑了一声）不去。") == "我说过不去。"
+    assert strip_stage_directions("上周那次（指第一回）算数。") == "上周那次（指第一回）算数。"
+
+
+def test_strip_stage_directions_never_returns_empty() -> None:
+    """全剥空时回退原文——绝不产出空回复。"""
+    from src.agents.language_openai import strip_stage_directions
+
+    assert strip_stage_directions("（沉默）") == "（沉默）"
+
+
+async def test_converse_strips_stage_directions_when_factual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """④臂实测：反扮演禁令被「模仿自己旧回合」击穿（轮 32 首滑出→滚雪球）。
+
+    机械执行层：事实化模式下 converse 返回前剥离舞台说明——调用方随即把返回值写进
+    历史，故历史保持干净、雪球无从启动。默认路径逐字零回归（不剥）。
+    """
+    monkeypatch.setenv("ZERO_FACTUAL_MODE", "1")
+    monkeypatch.delenv("ZERO_TEMPER_VALENCE_GATE", raising=False)
+    client = _CapturingClient()
+    client.reply_text = "（认命地）林川，睡觉。"
+    lm = OpenAILanguageModel(model="test-model", client=client)
+    reply = await lm.converse(HISTORY, CALM)
+    assert reply == "林川，睡觉。"
+
+    monkeypatch.delenv("ZERO_FACTUAL_MODE", raising=False)
+    reply_off = await lm.converse(HISTORY, CALM)
+    assert reply_off == "（认命地）林川，睡觉。", "默认路径不剥（零回归）"
+
+
+def test_truncation_fact_injected_only_when_factual_and_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """④臂「断言否定」的根因处置：告知截断**事实**而非教话术。
+
+    仅「事实化开 且 真发生裁剪」时注入首条 system；其余路径原样返回（零回归）。
+    """
+    from src.orchestration.chat_driver import _with_truncation_fact
+
+    window = [{"role": "user", "content": "hi"}]
+    monkeypatch.setenv("ZERO_FACTUAL_MODE", "1")
+    out = _with_truncation_fact(window, total_len=41)
+    assert len(out) == 2 and out[0]["role"] == "system"
+    assert "40 条消息" in out[0]["content"]
+    assert "看不到 ≠ 没发生" in out[0]["content"]
+    assert _with_truncation_fact(window, total_len=1) == window, "未裁剪不注入"
+    monkeypatch.delenv("ZERO_FACTUAL_MODE", raising=False)
+    assert _with_truncation_fact(window, total_len=41) == window, "模式关不注入（零回归）"
 
 
 # ---------------------------------------------------------------------------
