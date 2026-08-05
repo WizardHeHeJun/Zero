@@ -106,6 +106,7 @@ async def test_open_step_close_roundtrip() -> None:
             "zero.close_session",
             "zero.describe_config",
             "zero.purge_session",
+            "zero.motion",  # 动作通道（2026-08-05）：独立拉取，不参与 step 节奏
         }
 
         r = await client.call_tool("zero.open_session", {})
@@ -1815,6 +1816,7 @@ async def test_http_transport_roundtrip() -> None:
                     "zero.close_session",
                     "zero.describe_config",
                     "zero.purge_session",
+                    "zero.motion",  # 动作通道（2026-08-05）
                 }
                 sid = json.loads(
                     (await session.call_tool("zero.open_session", {})).content[0].text

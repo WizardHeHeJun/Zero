@@ -625,6 +625,11 @@ class ConversationSession:
         # 存实例而非现构造：describe_config 若自己 build 一次，sqlite 会建目录/开连接、
         # graphiti 会连 Neo4j —— 回读面不得有副作用（同 purge 那条连接泄漏的教训）。
         self.memory = client
+        # 只读快照缓存（动作层用；`step` 收尾写、`last_affect` 读）。纯实例属性——
+        # 不进 StateGraph / checkpointer / AffectState，随会话生灭，不跨重启。
+        self.last_affect_sample: tuple[float, float] | None = None
+        self.last_regulated_affect: tuple[float, float] | None = None
+        self.last_voluntary_coping_leak: float = 1.0
         self.checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
         self.graph = build_graph(
             checkpointer=self.checkpointer,
@@ -761,7 +766,30 @@ class ConversationSession:
             config={"configurable": {"thread_id": self.thread_id}},
         )
         state = result if isinstance(result, AffectState) else AffectState(**result)
+        # 只读快照缓存（动作层用）：把本轮的情感读数留一份在实例上，供 `last_affect()`
+        # **不推进图**地取用。刻意只存两个标量对、不存整份 state——动作层只需要 e\*，
+        # 存整份等于把 mood/prior_mu 等无关内部字段暴露给边界层。
+        # 不进 StateGraph、不进 checkpointer、不进 AffectState：纯实例属性，随会话生灭。
+        self.last_affect_sample = state.affect_sample
+        self.last_regulated_affect = state.regulated_affect
+        self.last_voluntary_coping_leak = state.voluntary_coping_leak
         return _state_to_entry(stim.name, state)
+
+    def last_affect(self) -> tuple[tuple[float, float] | None, tuple[float, float] | None, float]:
+        """返回上一轮的 `(affect_sample, regulated_affect, voluntary_coping_leak)`。
+
+        供动作层按自己的节奏拉取轨迹时读当前情感状态——**只读、不推进引擎**，
+        与 `interrupted_at` 同属「不跑图、只看一眼」的访问先例。
+        本会话尚未 step 过时返回 `(None, None, 默认 leak)`，调用方据此走 idle 基线。
+
+        为什么不让调用方直接读 `graph.aget_state`：那会把整份运行态（mood/prior_mu/
+        coping_potential_state…）交给边界层，属过度暴露；这里只给动作层真正需要的三项。
+        """
+        return (
+            self.last_affect_sample,
+            self.last_regulated_affect,
+            self.last_voluntary_coping_leak,
+        )
 
     async def interrupted_at(self) -> tuple[str, ...] | None:
         """上一轮是否被**中途取消**过：返回待执行节点名元组；未被中断返回 `None`。
