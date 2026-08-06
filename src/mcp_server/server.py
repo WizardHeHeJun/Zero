@@ -900,7 +900,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             stage_direction_intents,
         )
         from src.agents.language_openai import strip_stage_directions_with_segments
-        from src.agents.motion_synth import PhaseState, generate_dual
+        from src.agents.motion_synth import PhaseState, generate_dual, initial_blink_ms
 
         # 契约边界：段长 clamp 而非 fail-fast（对齐对面「换皮套不炸」的宽容取向），
         # 帧数由**显式算术**保证——不靠"建议 fps"。
@@ -913,8 +913,9 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         # ⚠ 种子用 crc32 而非内置 hash()：CPython 对 str 的 hash **每进程随机化**
         # （PYTHONHASHSEED），用它会让「同 session_id → 同轨迹」跨重启不成立，
         # 破坏本模块声明的确定性（G5）。crc32 是稳定的。
+        seed = zlib.crc32(session_id.encode("utf-8"))
         phase_in = _motion_phases.get(session_id) or PhaseState(
-            noise_seed=zlib.crc32(session_id.encode("utf-8"))
+            noise_seed=seed, next_blink_ms=initial_blink_ms(seed)
         )
         heads, phase_out = generate_dual(
             affect, regulated, float(span), phase_in, voluntary_leak=leak, fps=fps
