@@ -76,6 +76,34 @@ def test_angles_stay_within_range() -> None:
             assert abs(_params(frame)[key]) <= ANGLE_RANGE_DEG
 
 
+def test_clamp_never_actually_fires() -> None:
+    """🛑 clamp 是**安全上限**，正常运行不该触发——触发即波形顶部被削平（失真+满幅）。
+
+    2026-08-06 端到端实测踩到：此前噪声基幅误用 ANGLE_RANGE_DEG，arousal≥+0.5 时输出
+    恰好等于 ±30.00，即 clamp 在削波。上一条「不越界」测试**抓不到这个**——被削平的
+    波形当然不越界。这条查的是「有没有贴着上限」，是那次教训的锚点。
+    """
+    for arousal in (-1.0, -0.5, 0.0, 0.5, 1.0):
+        frames, _ = generate(0.0, arousal, 5000.0, PhaseState(noise_seed=11))
+        peak = max(abs(_params(f)[k]) for f in frames for k in _ANGLE_KEYS)
+        assert peak < ANGLE_RANGE_DEG * 0.9, f"arousal={arousal} 峰值 {peak:.2f}° 贴近 clamp 上限"
+
+
+def test_idle_amplitude_is_humanlike() -> None:
+    """待机幅度须落在人类量级：静息姿态摆动约 ±1~3°、强调性头动约 ±5~15°。
+
+    没有这条，「摆动 sd=15°、范围 ±27°」这种剧烈摇头也能全绿——2070 条测试当初就没抓到，
+    是端到端真跑才发现的。
+    """
+    calm, _ = generate(0.0, -0.9, 5000.0, PhaseState(noise_seed=21))
+    calm_peak = max(abs(_params(f)[k]) for f in calm for k in _ANGLE_KEYS)
+    assert calm_peak < 4.0, f"平静态峰值 {calm_peak:.2f}° 过大（应接近静息摆动量级）"
+
+    excited, _ = generate(0.0, 0.9, 5000.0, PhaseState(noise_seed=21))
+    exc_peak = max(abs(_params(f)[k]) for f in excited for k in _ANGLE_KEYS)
+    assert 3.0 < exc_peak < 20.0, f"高唤醒峰值 {exc_peak:.2f}° 不在强调性头动量级"
+
+
 # ── 连续性（G2 / G3）────────────────────────────────────────────────────────
 
 
@@ -188,6 +216,19 @@ def test_blink_openness_within_unit_range() -> None:
     for frame in frames:
         assert 0.0 <= _params(frame)[PARAM_EYE_OPEN_L] <= 1.0
         assert _params(frame)[PARAM_EYE_OPEN_L] == _params(frame)[PARAM_EYE_OPEN_R]
+
+
+def test_initial_blink_is_seed_dispersed() -> None:
+    """首次眨眼时刻随种子分散——固定默认会让每个新会话开头都恰好静止同样久。
+
+    确定性不变：同 seed 同结果。
+    """
+    from src.agents.motion_synth import BLINK_IBI_MEAN_S, initial_blink_ms
+
+    values = {initial_blink_ms(s) for s in range(20)}
+    assert len(values) > 15  # 真的分散了，不是常数
+    assert all(0.0 < v <= BLINK_IBI_MEAN_S * 1000.0 for v in values)
+    assert initial_blink_ms(7) == initial_blink_ms(7)  # 同种子可复现
 
 
 def test_blink_actually_happens() -> None:

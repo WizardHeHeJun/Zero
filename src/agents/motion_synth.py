@@ -33,11 +33,12 @@ from dataclasses import dataclass, replace
 # 静息呼吸 12–20 次/分 = 0.2–0.33Hz。取中位，**与低频姿态漂移分开建模**——两者共用一套
 # 参数会让呼吸感消失或把漂移变成假呼吸。
 BREATH_HZ = 0.27
-BREATH_AMPLITUDE = 0.006  # 呼吸对头部的机械耦合幅度很小（文献称 "weak head movements"）
+# 呼吸对头部的机械耦合幅度很小（文献称 "weak head movements"，被用作非接触呼吸监测信号）
+BREATH_AMPLITUDE_DEG = 0.2
 
 # 低频姿态漂移（postural sway）：远慢于呼吸的独立带
 SWAY_HZ = 0.07
-SWAY_AMPLITUDE = 0.02
+SWAY_AMPLITUDE_DEG = 0.6
 
 # 生理性震颤 3–10Hz 是**非目标**频段（虚拟形象尺度不可见）；噪声基频上限刻意留在其下，
 # 防合成器噪声误入该带。
@@ -67,7 +68,16 @@ PARAM_ANGLE_Z = "FaceAngleZ"
 PARAM_EYE_OPEN_L = "EyeOpenLeft"
 PARAM_EYE_OPEN_R = "EyeOpenRight"
 
-# VTS 角度参数惯例值域（度）；合成结果按此 clamp，防越界被对面拒收。
+# 情感调制噪声的**基幅**（度，对应调制系数 =1.0 即中性）。
+# ⚠ 2026-08-06 端到端实测修正：此前直接用 `ANGLE_RANGE_DEG` 当基幅是**错的**——
+# value_noise∈[-1,1] × gain(0.25~1.75) × 30° 最大到 ±52°，被 clamp 削平顶部，
+# 实测 arousal≥+0.5 时数值恰好等于 ±30.00 ⇒ **clamp 真的在触发 = 波形失真 + 满幅摇头**。
+# 参照量级：静息姿态摆动/呼吸耦合约 ±1~3°，说话时强调性头动约 ±5~15°。
+# 取 8° 使：深度平静 ≈ ±1°（几乎只有呼吸）· 中性 ≈ ±5° · 高唤醒 ≈ ±8°，clamp 不再触发。
+NOISE_AMPLITUDE_DEG = 8.0
+
+# VTS 角度参数的**安全上限**（度）：只作 clamp 防越界被对面拒收。
+# 🛑 正常运行**不应触发**——触发即意味着波形顶部被削平（见上）。有测试守这条。
 ANGLE_RANGE_DEG = 30.0
 
 
@@ -85,6 +95,9 @@ class PhaseState:
 
     elapsed_ms: float = 0.0
     noise_seed: int = 0
+    # ⚠ 默认值是**固定**的 3.5s ⇒ 每个新会话开头都恰好 3.5 秒不眨眼（2026-08-06 演示中
+    # 3 秒片段一次都没眨到才发现）。构造时应传 `initial_blink_ms(seed)` 让它随会话分散；
+    # 保留固定默认是为了测试可复现。
     next_blink_ms: float = BLINK_IBI_MEAN_S * 1000.0
     blink_burst_pending: bool = False
 
@@ -108,6 +121,14 @@ def _hash01(seed: int, index: int) -> float:
     x = (x * 0x2545F491) & 0xFFFFFFFF
     x ^= x >> 13
     return (x & 0xFFFFFF) / float(0x1000000)
+
+
+def initial_blink_ms(seed: int) -> float:
+    """按种子分散首次眨眼时刻 ∈ (0, IBI 均值]，避免每个新会话开头都恰好静止同样久。
+
+    确定性（同 seed 同结果），故不破坏可复现性。
+    """
+    return BLINK_IBI_MEAN_S * 1000.0 * (0.15 + 0.85 * _hash01(seed ^ 0xB1B1, 0))
 
 
 def _smoothstep(t: float) -> float:
@@ -226,19 +247,20 @@ def generate(
         absolute_ms = phase_in.elapsed_ms + local_ms
         t = absolute_ms / 1000.0
 
-        # 呼吸带与漂移带分开：两者共用参数会让呼吸感消失
-        breath = BREATH_AMPLITUDE * math.sin(2.0 * math.pi * BREATH_HZ * t)
-        sway = SWAY_AMPLITUDE * math.sin(2.0 * math.pi * SWAY_HZ * t)
+        # 呼吸带与漂移带分开：两者共用参数会让呼吸感消失。两者均以**度**为单位直接给出，
+        # 不随情感调制缩放——呼吸和体态摆动是持续的生理背景，不因情绪激动而成倍放大。
+        breath_deg = BREATH_AMPLITUDE_DEG * math.sin(2.0 * math.pi * BREATH_HZ * t)
+        sway_deg = SWAY_AMPLITUDE_DEG * math.sin(2.0 * math.pi * SWAY_HZ * t)
 
         # 三轴各取一路独立噪声（种子偏移不同），频率随 speed 调制、幅度随 amplitude 调制。
         # onset_sharpness 经一个更高频的次谐波体现"起始更猛"，对应 jerk 构念。
         freq = NOISE_BASE_HZ * mod.speed
-        gain = mod.amplitude * amplitude_scale
-        axis_values: list[float] = []
+        gain_deg = mod.amplitude * amplitude_scale * NOISE_AMPLITUDE_DEG
+        axis_deg: list[float] = []
         for axis in range(3):
             base = value_noise(t, seed=phase.noise_seed + axis * 101, frequency=freq)
             sharp = value_noise(t, seed=phase.noise_seed + axis * 101 + 7, frequency=freq * 2.5)
-            axis_values.append(gain * (base + mod.onset_sharpness * 0.35 * sharp))
+            axis_deg.append(gain_deg * (base + mod.onset_sharpness * 0.35 * sharp))
 
         openness, phase = _blink_openness(absolute_ms, phase)
 
@@ -247,16 +269,12 @@ def generate(
                 "t_ms": int(round(local_ms)),
                 "params": {
                     PARAM_ANGLE_X: _clamp(
-                        (axis_values[0] + sway) * ANGLE_RANGE_DEG, -ANGLE_RANGE_DEG, ANGLE_RANGE_DEG
+                        axis_deg[0] + sway_deg, -ANGLE_RANGE_DEG, ANGLE_RANGE_DEG
                     ),
                     PARAM_ANGLE_Y: _clamp(
-                        (axis_values[1] + breath) * ANGLE_RANGE_DEG,
-                        -ANGLE_RANGE_DEG,
-                        ANGLE_RANGE_DEG,
+                        axis_deg[1] + breath_deg, -ANGLE_RANGE_DEG, ANGLE_RANGE_DEG
                     ),
-                    PARAM_ANGLE_Z: _clamp(
-                        axis_values[2] * ANGLE_RANGE_DEG, -ANGLE_RANGE_DEG, ANGLE_RANGE_DEG
-                    ),
+                    PARAM_ANGLE_Z: _clamp(axis_deg[2], -ANGLE_RANGE_DEG, ANGLE_RANGE_DEG),
                     PARAM_EYE_OPEN_L: openness,
                     PARAM_EYE_OPEN_R: openness,
                 },
