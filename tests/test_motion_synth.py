@@ -20,6 +20,7 @@ from src.agents.motion_synth import (
     Modulation,
     PhaseState,
     generate,
+    initial_blink_ms,
     modulation_from_affect,
     value_noise,
 )
@@ -161,6 +162,18 @@ def test_calm_state_is_not_frozen() -> None:
     assert spread > 0.05
 
 
+def test_calm_state_is_visibly_moving() -> None:
+    """⚠ 平静 ≠ 石化：低唤醒下也须有**肉眼可见**的姿态调整（真机实测标定）。
+
+    2026-08-06 踩到：改「移动-驻留」结构后，低唤醒的周期被拉到 6 秒以上，采样点几乎全落
+    在驻留平台，实测峰值仅 0.57° —— 皮套上看着完全静止。上面那条 `spread > 0.05` 的
+    松阈值**抓不到**（0.57° 远大于 0.05）。本条按可见性设阈。
+    """
+    frames, _ = generate(0.0, -0.85, 8000.0, PhaseState(noise_seed=2))
+    peak = max(abs(_params(f)[k]) for f in frames for k in _ANGLE_KEYS)
+    assert peak > 1.2, f"平静态峰值仅 {peak:.2f}°，皮套上看着像静止"
+
+
 def test_high_arousal_moves_more_than_calm() -> None:
     """高唤醒幅度显著大于平静（G1 的核心可分性，同种子排除噪声差异）。"""
     calm, _ = generate(0.0, -0.8, 5000.0, PhaseState(noise_seed=6))
@@ -235,6 +248,40 @@ def test_blink_actually_happens() -> None:
     """长段里必须真的眨过眼（否则眼睑通道等于没接）。"""
     frames, _ = generate(0.0, 0.0, 20000.0, PhaseState(noise_seed=22))
     assert min(_params(f)[PARAM_EYE_OPEN_L] for f in frames) < 0.5
+
+
+def test_blink_rate_is_calm_not_nervous() -> None:
+    """⚠ 眨眼率须落在安静待机的合理区间——真机观感反馈「频率有点快」后加的守卫。
+
+    2026-08-06 实测踩到两个叠加的实现错误：
+    (1) log-normal 减 σ²/2 修正后**中位数比设定均值短**（设 3.5s 实得 3.05s），
+        我当初按均值设参、未验证实际落点；
+    (2) 成串概率 18% 是拍脑袋定的（文献只称「存在阵发成串」，未给频率），
+        实测每 6 次眨眼含 1 次连眨，8 秒片段里几乎必然被看到。
+    合计眨眼率 19.7 次/分，卡在文献 15~20 的上沿。本条按**实际率**设阈，
+    不再只断言参数值——参数对不代表行为对。
+    """
+    phase = PhaseState(noise_seed=77, next_blink_ms=initial_blink_ms(77))
+    times: list[float] = []
+    for _ in range(12):
+        frames, phase = generate(0.0, 0.0, 8000.0, phase)
+        base = phase.elapsed_ms - 8000.0
+        closed = False
+        for frame in frames:
+            openness = _params(frame)[PARAM_EYE_OPEN_L]
+            if openness < 0.5 and not closed:
+                times.append((base + float(frame["t_ms"])) / 1000.0)  # type: ignore[call-overload]
+                closed = True
+            elif openness >= 0.5:
+                closed = False
+    assert len(times) > 10
+    span = times[-1] - times[0]
+    rate = (len(times) - 1) / span * 60.0
+    assert 10.0 < rate < 17.0, f"眨眼率 {rate:.1f} 次/分不在安静待机区间"
+
+    intervals = [b - a for a, b in zip(times, times[1:], strict=False)]
+    burst_ratio = sum(1 for v in intervals if v < 1.0) / len(intervals)
+    assert burst_ratio < 0.12, f"成串占比 {burst_ratio:.0%} 过高（每几次就连眨一次会很显眼）"
 
 
 def test_blink_intervals_are_not_poisson() -> None:

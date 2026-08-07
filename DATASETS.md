@@ -34,6 +34,50 @@ Stimulus(goal/standard/attitude) → (valence,arousal) → {FACS AU, 文本标�
 
 > **表情通道现状**：13-AU 扩展模型已用 `laion/emonet-face-binary`（CC-BY-4.0，40 类合成脸）+ OpenFace 抽 AU 的 **EULA-free 路径**训出真权重，无需等待下表的 EULA 申请。下表的 AffectNet/DISFA 等仍是**更高保真的逐帧 AU 数据源**（自发表情、真人脸），可作后续升级选项。
 
+### 🟢 待机动作（2026-08-06 核验 · 尚未接入训练管线）
+
+数字人**待机期**头部动作的数据源。⚠ RAVDESS 不适用于此场景——实测其头部角速度包络与
+音频能量包络相关 |r| 中位 0.416、静默段仅占 19–20%，议会三轮判定「约 80% 是言语驱动头动，
+余下是『即将开口』的预备态，没有一段是真正的安静待机」。详见
+[notes/2026-08-06-motion-real-kinematics-route-council.md](notes/2026-08-06-motion-real-kinematics-route-council.md)。
+
+| 数据集 | 内容 | 许可 | 规模 | 判定 |
+| --- | --- | --- | --- | --- |
+| **StayStill** | 50 人 × 3D 待机 BVH，30fps，含头部三轴 | **MIT**（⚠ 论文是 CC BY 4.0，**数据是 MIT**，勿混） | 纯待机 1:41:01 + 头部动作 0:56:54 ≈ **2h38m** | **可用·主选** |
+| **ReActIdle** | 同组，**欺骗协议采集的真自发**待机 + 明确禁言 | MIT | genuine 15.2min + acted 对照 30.6min | **可用·作留出验证集** |
+| ~~IdlePose~~ | 单目 2D 关键点 | 未知 | 未知 | **不可用**：无任何下载入口，且 2D 反解不出头部三轴 |
+| GazeBase | 眼动 1000Hz，含眨眼标签（`lab` 列 −1） | CC BY 4.0 | 322 人 | 仅供**眨眼节律**：被试下巴托固定、无头动、任务刺激驱动 |
+
+- StayStill：[Zenodo 18741736](https://zenodo.org/records/18741736)（368MB，零门槛）·
+  [GitHub](https://github.com/Enekoassets/StayStill) · [arXiv:2605.13693](https://arxiv.org/abs/2605.13693)
+  （SCA 2026 + Computer Graphics Forum 已接收）
+- ReActIdle：[GitHub](https://github.com/Enekoassets/ReActIdle) ·
+  [CAVW 2026, DOI:10.1002/cav.70116](https://doi.org/10.1002/cav.70116)（已出版）
+- GazeBase：[figshare](https://doi.org/10.6084/m9.figshare.12912257) ·
+  [Sci Data](https://doi.org/10.1038/s41597-021-00959-y)
+
+#### ⚠ 接入前必读的四个坑（均为实测发现，论文未写）
+
+1. **头部三轴要复合两个关节**：`freemocap/` 的 `face` 关节**只有 X 轴非零**（Y/Z 恒 0），
+   三轴由 `neck` 承载 ⇒ 头部朝向 = `R_neck ∘ R_face`。只读 `face` 会得到单自由度铰链。
+2. **`lafan/Head` 三通道恒为 0**（全折进 `Neck`）⇒ 读它会得到常量。用 `freemocap/`（未经重定向）。
+3. **ReActIdle 的 BVH 文件头帧率是错的**：写 `Frame Time: 0.041667`（24fps），
+   但按帧数反算论文自报时长得 **30fps**。照抄文件头会引入 25% 时基误差——
+   动作整体放慢，**肉眼极难发现**。
+4. **原始数据未清洗**：Zenodo 是 raw（README 明确要求生成器流程用 raw），含 pose estimation
+   失败段；手部关节有 Euler 解缠爆炸（>1400°），**头部链干净**但整身重定向要注意。
+   另 ReActIdle 的 `010_genuine`/`015_genuine` 头部几乎不动（std 比其余低一个数量级），
+   疑似跟踪失败，占 genuine 总量 22%，**用前必须逐 clip QC**。
+
+#### 已知限界
+
+StayStill 是**表演的**待机（被试知情、被要求"演"等人），非自发。但同组
+[CAVW 2026 对照实验](https://doi.org/10.1002/cav.70116)（123+114 名被试）实测：
+**用户无法区分真实与表演的待机动画**，而**手工制作的（Mixamo）则明显可被区分**
+⇒ 分界线在「录制的 vs 手搓的」，不在「自发 vs 表演」。ReActIdle 的 genuine 片段
+可用于在本项目下游指标上独立复核这一结论。
+另：三个数据集**均无眼球注视与眨眼**，该通道仍是开放缺口。
+
 ### 🟡 需申请 EULA（填表授权，可能数天）
 
 | 数据集 | 提供 | 链接 |
