@@ -179,11 +179,14 @@ async def test_copy_injection_zero_influence_on_core() -> None:
 
 
 def test_core_math_modules_do_not_reference_copy() -> None:
-    """源码级守卫：内核数学/感知/评价模块不得引用 motion_efference——「副本作为一条流
-    参与状态推断」是第二步，须议会 + 完整 PRP（两环耦合稳定性未证明前不得接线）。"""
+    """源码级守卫（第二步设计门 PASS 后收窄口径·2026-08-07）：副本进内核**只允许**经
+    议会裁定的受控入口——`affect_math.behavior_feedback_evidence`（+ `cap_stream_weight`
+    后置封顶）与 `affect_core` workspace 分支的流装配调用点。其余内核模块
+    （appraisal/value/mood/perception）**仍不得**引用 motion_efference：任何绕过受控入口
+    的接线都未经议会评审（稳定性证明只覆盖受控路径）。
+    第一步时期本守卫禁全部六模块（当时第二步未过议会）；本次收窄有据：
+    notes/2026-08-07-behavior-feedback-council.md。"""
     for module in (
-        src.agents.affect_core,
-        src.agents.affect_math,
         src.agents.appraisal,
         src.agents.value,
         src.agents.mood,
