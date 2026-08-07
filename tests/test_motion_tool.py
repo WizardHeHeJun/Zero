@@ -405,3 +405,50 @@ async def test_directive_empty_events_falls_back_to_reply_text(enabled: None) ->
         assert "nod" in [e["name"] for e in result["events"]]
     finally:
         await _call(server, "zero.close_session", session_id=session_id)
+
+
+async def _open_step_motion(server, registry, session_id: str, backend: str):
+    """open(指定 backend + 固定 rng_seed) → step → motion，返回 (payload, 副本快照)。"""
+    await _call(
+        server,
+        "zero.open_session",
+        session_id=session_id,
+        config={"motion_backend": backend, "rng_seed": 42},
+    )
+    try:
+        await _call(
+            server, "zero.step", session_id=session_id, stim={"valence": 0.5, "arousal": 0.6}
+        )
+        payload = _payload(
+            await _call(server, "zero.motion", session_id=session_id, duration_ms=1500)
+        )
+        session = await registry.get(session_id)
+        assert session is not None
+        return payload, session.last_motion_efference
+    finally:
+        await _call(server, "zero.close_session", session_id=session_id)
+
+
+@pytest.mark.asyncio
+async def test_efference_full_link_matches_directive_and_no_leak(enabled: None) -> None:
+    """efference 档 MCP 全链路回归锁（code-reviewer WARN-2 2026-08-07）：
+    `open_session(config={"motion_backend":"efference"}) → step → zero.motion` 的输出
+    须与 "directive" 档**逐字一致**（副本纯增量，拉取侧判据不区分 backend 值），
+    且 `motion_efference` 不得泄漏进任何 MCP 返回体——此前这两条只靠人工走读，无回归锁。
+
+    同一 session_id 先后两开（轨迹种子 = crc32(session_id) 须相同）+ 固定 rng_seed
+    （内核采样确定），两档输出才可逐字比对。
+    """
+    session_id = "efference-vs-directive-e2e"
+    registry = SessionRegistry()
+    server = build_server(registry)
+    directive_payload, directive_copy = await _open_step_motion(
+        server, registry, session_id, "directive"
+    )
+    assert directive_copy is None  # directive 档不写副本（零回归）
+    efference_payload, efference_copy = await _open_step_motion(
+        server, registry, session_id, "efference"
+    )
+    assert efference_payload == directive_payload  # 逐字一致，副本纯增量
+    assert efference_copy is not None  # efference 档经 MCP 全链路确实写了副本
+    assert "motion_efference" not in repr(efference_payload)  # 副本不泄漏进 MCP 返回体

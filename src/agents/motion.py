@@ -40,9 +40,10 @@ MCP 侧连续渲染；本 Agent 每回合产出 motion_directive，`zero.motion`
 
 节点契约：`(state) -> dict`，只返回增量，不原地 mutate（同其它 Worker）。前置字段缺失
 （`affect_sample` 未产出）⇒ 返回 `{}`，不抛异常。门控用单一枚举 `state.motion_backend`
-（"synth" 默认 / "directive" 启用本 Agent，CS 席要求避免多布尔组合爆炸）；默认值使
-`zero.step` 逐字零回归——"synth" 时本 Agent 恒返回 `{}`，`motion_directive` 不出现在
-任何返回体。本 Agent 不写记忆（记忆节流由 Supervisor 统一做）。
+（"synth" 默认 / "directive" 启用本 Agent / "efference" = directive 全部行为 + 额外写
+`motion_efference` 指令级副本，CS 席要求避免多布尔组合爆炸、行为反馈环第一步沿用）；
+默认值使 `zero.step` 逐字零回归——"synth" 时本 Agent 恒返回 `{}`，`motion_directive`
+不出现在任何返回体。本 Agent 不写记忆（记忆节流由 Supervisor 统一做）。
 
 ⚠ **已知未验证组合**（`_events` docstring细说）：`motion_backend="directive"` 与
 `language_enabled=True` 同开时，events 依据图内 `LanguageAgent` 合成的文本路由行为意图，
@@ -55,10 +56,53 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Literal
 
-from src.agents.behavior_intent import lexical_intents, merge_intents, stage_direction_intents
+from src.agents.behavior_intent import (
+    deliberate_behavior_intents,
+    lexical_intents,
+    merge_intents,
+    stage_direction_intents,
+)
 from src.agents.language_openai import strip_stage_directions_with_segments
 from src.agents.motion_synth import Modulation, modulation_from_affect
 from src.orchestration.state import AffectState
+
+
+def _efference_from_directive(directive: dict[str, Any]) -> dict[str, Any]:
+    """把 `motion_directive` 确定性投影成 efference copy（行为反馈环第一步·缺口 A 半步）。
+
+    聚合口径**定死为指令级、回合级**（`AffectState.motion_efference` 注释同款，第二步
+    直接消费此结构）：efference copy 本义即「运动指令副本」——图内只有指令，帧在 MCP
+    拉取侧 20fps 合成、图内不可得；帧级/渲染端回读引入外部非确定性，属未来独立门控。
+    不预设任何聚合标量（幅度/速度/占空比怎么变成先验流是第二步议会议题），只保真
+    本回合实际下达的指令量。
+
+    模块级纯函数（非方法）：供测试独立调用做副本一致性校验与变异验证
+    （把副本改坏，一致性断言要会红）。
+    """
+    return {
+        # 非随意通路（①情绪直驱）实际下达的调制系数
+        "spontaneous": {
+            "amplitude": directive["amplitude"],
+            "speed": directive["speed"],
+            "onset": directive["onset"],
+        },
+        # 随意通路（②意志调控）专属系数；None 沿用 directive["regulated"] 的回退语义
+        # （未开调节/调节没改变什么 → 拉取侧复用顶层系数）
+        "voluntary": dict(directive["regulated"]) if directive["regulated"] else None,
+        "scene": directive["scene"],
+        # ③层离散行为：本回合实际下达了什么。保真全部指令字段——含 source（供第二步
+        # 归因）与 direction（head_tilt/glance 才有值；丢了它，第二步一旦要消费
+        # 「往哪边看/歪」的方向反馈就得返工，code-reviewer WARN-1 2026-08-07）。
+        "events": [
+            {
+                "name": e["name"],
+                "intensity": e["intensity"],
+                "direction": e["direction"],
+                "source": e["source"],
+            }
+            for e in directive["events"]
+        ],
+    }
 
 
 class MotionAgent:
@@ -66,13 +110,14 @@ class MotionAgent:
     离散行为意图 + 韵律引用。
 
     图内位置：`expression` 之后、`supervisor` 之前（动作是表达层产物，且 Supervisor
-    是任务完成/记忆节流节点，应在最后）。仅在 `state.motion_backend == "directive"` 时
-    产出；默认 `"synth"` 时本 Agent 是 no-op——`zero.motion` 拉取侧沿用现有做法：
-    现场读 `session.last_affect()` 自算调制系数，不消费 `motion_directive`。
+    是任务完成/记忆节流节点，应在最后）。在 `state.motion_backend` 为 `"directive"` 或
+    `"efference"` 时产出（后者额外写 `motion_efference` 副本）；默认 `"synth"` 时本 Agent
+    是 no-op——`zero.motion` 拉取侧沿用现有做法：现场读 `session.last_affect()`
+    自算调制系数，不消费 `motion_directive`。
     """
 
     def __call__(self, state: AffectState) -> dict[str, Any]:
-        if state.motion_backend != "directive":
+        if state.motion_backend not in ("directive", "efference"):
             return {}
         affect_sample = state.affect_sample
         if affect_sample is None:
@@ -90,8 +135,19 @@ class MotionAgent:
             "events": events,
             "prosody_ref": None,  # TTS 未接线；见 `_determine_scene` 阻塞说明
         }
-        entry = {"node": "motion", "scene": scene, "n_events": len(events)}
-        return {"motion_directive": directive, "trace": [entry]}
+        n_deliberate = sum(1 for e in events if e["source"] == "deliberate")
+        entry = {
+            "node": "motion",
+            "scene": scene,
+            "n_events": len(events),
+            "n_deliberate": n_deliberate,
+        }
+        out: dict[str, Any] = {"motion_directive": directive, "trace": [entry]}
+        if state.motion_backend == "efference":
+            # 缺口 A 半步：留一份指令级副本进运行态（mood 模式跨回合持久）。
+            # 🛑 只供观测与下游 Agent 读——绝不进 fuse_terms（第二步须议会 + 完整 PRP）。
+            out["motion_efference"] = _efference_from_directive(directive)
+        return out
 
     def _regulated_modulation(
         self,
@@ -142,7 +198,13 @@ class MotionAgent:
         return "idle"
 
     def _events(self, state: AffectState) -> list[dict[str, Any]]:
-        """③ 层离散行为意图：词法规则 + 舞台说明路由（`behavior_intent`，12 词闭集）。
+        """③ 层离散行为意图：deliberate 直达 + 词法规则 + 舞台说明路由（12 词闭集）。
+
+        deliberate 路（③c·行为反馈环第一步缺口 B）：`state.deliberate_intents` 是上游经
+        state_overrides 直接下达的非文本意图源（「先决定做个动作」，不从文本反推），
+        经 `deliberate_behavior_intents` fail-fast 校验后参与合并，优先级最高
+        （deliberate > stage > lexical）。默认空表 ⇒ 本路无贡献 = 零回归。
+        不依赖 `language_text`——文本为空时 deliberate 意图照常下达。
 
         消费 `state.language_text`（本回合图内 `LanguageAgent` 产出，仅在
         `state.language_enabled=True` 时非 None）——与生产聊天路径（`chat_driver` 经
@@ -157,10 +219,12 @@ class MotionAgent:
         正确回落到 `reply_text` 那一路（见 `tests/test_motion_tool.py` 的回落边界测试）。
         这条组合一旦被打开就需要重新设计文本来源的合流点，不是本轮改动范围。
         """
-        if not state.language_text:
-            return []
-        _, segments = strip_stage_directions_with_segments(state.language_text)
-        lexical = lexical_intents(state.language_text)
-        stage = stage_direction_intents(segments)
-        merged = merge_intents(lexical, stage)
+        deliberate = deliberate_behavior_intents(state.deliberate_intents)
+        if state.language_text:
+            _, segments = strip_stage_directions_with_segments(state.language_text)
+            lexical = lexical_intents(state.language_text)
+            stage = stage_direction_intents(segments)
+        else:
+            lexical, stage = [], []
+        merged = merge_intents(lexical, stage, deliberate=deliberate)
         return [asdict(intent) for intent in merged]

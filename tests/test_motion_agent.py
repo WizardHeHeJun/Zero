@@ -168,6 +168,75 @@ def test_events_physical_world_claim_dropped() -> None:
     assert events == []
 
 
+# ── ③c deliberate 非文本意图源（行为反馈环第一步·缺口 B）──────────────────────
+
+
+def test_events_deliberate_without_language_text() -> None:
+    """deliberate 路不依赖文本——文本为空时上游意图照常下达（「先决定做个动作」）。"""
+    state = AffectState(
+        motion_backend="directive",
+        affect_sample=(0.2, 0.1),
+        language_text=None,
+        deliberate_intents=[{"name": "nod", "intensity": 0.7}],
+    )
+    events = agent(state)["motion_directive"]["events"]
+    assert len(events) == 1
+    assert events[0]["name"] == "nod"
+    assert events[0]["intensity"] == 0.7
+    assert events[0]["source"] == "deliberate"
+
+
+def test_events_deliberate_ranks_before_stage_and_lexical() -> None:
+    """合并优先级 deliberate > stage > lexical：显式指令排最前。"""
+    state = AffectState(
+        motion_backend="directive",
+        affect_sample=(0.2, 0.1),
+        language_text="（挑了挑眉）没错，就是这样。",  # stage: brow_raise；lexical: nod
+        deliberate_intents=[{"name": "lean_in"}],
+    )
+    events = agent(state)["motion_directive"]["events"]
+    assert events[0]["name"] == "lean_in"
+    assert events[0]["source"] == "deliberate"
+    assert {e["name"] for e in events} >= {"lean_in", "brow_raise"}
+
+
+def test_events_deliberate_same_name_dedups_over_text_routes() -> None:
+    """同名去重时 deliberate 版本胜出（先入 seen）。"""
+    state = AffectState(
+        motion_backend="directive",
+        affect_sample=(0.2, 0.1),
+        language_text="没错，就是这样。",  # lexical 也会出 nod（intensity 0.5）
+        deliberate_intents=[{"name": "nod", "intensity": 0.9}],
+    )
+    events = agent(state)["motion_directive"]["events"]
+    nods = [e for e in events if e["name"] == "nod"]
+    assert len(nods) == 1
+    assert nods[0]["source"] == "deliberate"
+    assert nods[0]["intensity"] == 0.9
+
+
+def test_deliberate_open_set_name_fails_fast() -> None:
+    """闭集是安全边界：非 12 词（物理世界宣称）fail-fast，不静默丢弃——调用方是代码，
+    静默会藏 bug（与 ③b 对模型产出的静默丢弃刻意不同）。"""
+    state = AffectState(
+        motion_backend="directive",
+        affect_sample=(0.2, 0.1),
+        deliberate_intents=[{"name": "turn_off_light"}],
+    )
+    with pytest.raises(ValueError, match="闭集"):
+        agent(state)
+
+
+def test_deliberate_intensity_out_of_range_fails_fast() -> None:
+    state = AffectState(
+        motion_backend="directive",
+        affect_sample=(0.2, 0.1),
+        deliberate_intents=[{"name": "nod", "intensity": 1.5}],
+    )
+    with pytest.raises(ValueError, match="intensity"):
+        agent(state)
+
+
 def _make_graph():
     return build_graph(build_checkpointer(ALLOWED_CHECKPOINT_TYPES), MemoryClient())
 

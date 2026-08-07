@@ -137,8 +137,9 @@ class SessionConfig(BaseModel):
     voluntary_coping_leak: float = Field(default=1.0, ge=0.0, le=1.0)
     # ── motion_backend：动作层 MotionAgent 门控（PRP/motion/design-agent.md；单一枚举，
     # CS 席要求避免多布尔组合爆炸）。默认 "synth"=MotionAgent no-op（零回归，`zero.motion`
-    # 拉取侧沿用现状现算）；"directive"=MotionAgent 在图内按回合产出 motion_directive。
-    motion_backend: Literal["synth", "directive"] = "synth"
+    # 拉取侧沿用现状现算）；"directive"=MotionAgent 在图内按回合产出 motion_directive；
+    # "efference"=directive 全部行为 + 额外写 motion_efference 指令级副本（行为反馈环第一步）。
+    motion_backend: Literal["synth", "directive", "efference"] = "synth"
 
     # ── 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）──
     # external_priors 本身是每轮 state_overrides 内容（同 interlocutor_affect），不在此收口。
@@ -356,7 +357,7 @@ async def run(
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
     voluntary_coping_leak: float = 1.0,
     # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
-    motion_backend: Literal["synth", "directive"] = "synth",
+    motion_backend: Literal["synth", "directive", "efference"] = "synth",
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
     external_prior_precision_cap: float = 0.8,
     max_external_streams: int = 5,
@@ -605,7 +606,7 @@ class ConversationSession:
         # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
         voluntary_coping_leak: float = 1.0,
         # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
-        motion_backend: Literal["synth", "directive"] = "synth",
+        motion_backend: Literal["synth", "directive", "efference"] = "synth",
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
         external_prior_precision_cap: float = 0.8,
         max_external_streams: int = 5,
@@ -643,6 +644,9 @@ class ConversationSession:
         # last_motion_directive：同上先例，供 MotionAgent 拉取侧（未来）只读消费。
         # motion_backend="synth"（默认）时 MotionAgent no-op，本属性恒为 None。
         self.last_motion_directive: dict[str, Any] | None = None
+        # last_motion_efference：同上先例的只读快照（行为反馈环第一步）。
+        # 仅 motion_backend="efference" 时非 None；观测用，不推进图。
+        self.last_motion_efference: dict[str, Any] | None = None
         self.checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
         self.graph = build_graph(
             checkpointer=self.checkpointer,
@@ -755,6 +759,11 @@ class ConversationSession:
             # state_overrides 若含 text_coping_prior 会覆盖此 None 基准（下方 base.update）。
             "text_coping_prior": None,
             "text_coping_source": False,
+            # deliberate_intents 每轮显式归零（行为反馈环第一步·2026-08-07）：LastValue
+            # channel，不归零会从 checkpoint 恢复上一轮注入的意图 → 同一动作被跨轮重复
+            # 下达（仿 external_priors 归零先例）。state_overrides 若含 deliberate_intents
+            # 会覆盖此空基准（下方 base.update）。
+            "deliberate_intents": [],
             # recalled_episode_ids 每轮显式归零（B 类·记忆巩固·2026-07-22）：
             # LastValue channel，不归零会跨轮残留上一轮召回的 episode id，
             # 导致 Supervisor 对已过期 episode 重复更新 access_count。
@@ -789,6 +798,7 @@ class ConversationSession:
         self.last_regulated_affect = state.regulated_affect
         self.last_voluntary_coping_leak = state.voluntary_coping_leak
         self.last_motion_directive = state.motion_directive
+        self.last_motion_efference = state.motion_efference
         return _state_to_entry(stim.name, state)
 
     def last_affect(self) -> tuple[tuple[float, float] | None, tuple[float, float] | None, float]:

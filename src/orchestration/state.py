@@ -132,8 +132,10 @@ class AffectState(BaseModel):
     #   `zero.motion` 拉取侧已接线消费（`session.last_motion_directive` → `Modulation`
     #   传入 `motion_synth.generate_dual`，2026-08-07）；设计文档 §7「待补」里 events 合流点
     #   移到 MotionAgent 一项已随本次改动完成，同步勾掉。
+    # "efference"（行为反馈环第一步·2026-08-07）→ "directive" 全部行为 **+ 额外写
+    #   motion_efference 副本**（见下）。语义超集：directive 的产出逐字不变，副本纯增量。
     # 由 ZERO_MOTION_BACKEND env → chat_driver/runner → 此字段贯通。
-    motion_backend: Literal["synth", "directive"] = "synth"
+    motion_backend: Literal["synth", "directive", "efference"] = "synth"
     # motion_directive：MotionAgent 产出的小型可序列化结构（同 expression 先例，非大对象）：
     # {amplitude, speed, onset, regulated: {amplitude,speed,onset}|None,
     #  scene: "idle"|"speaking", events: [...], prosody_ref}。顶层三键供 spontaneous
@@ -143,6 +145,28 @@ class AffectState(BaseModel):
     # motion_backend="synth" 时本字段恒为 None（MotionAgent 不写它，无 LastValue 残留风险——
     # 门控是会话级固定值，不会话中途切换，同 facs_extended/canonical_physiology 先例）。
     motion_directive: dict[str, Any] | None = None
+    # ── 行为反馈环·第一步（notes/2026-08-07-behavior-feedback-handoff.md §五）──
+    # deliberate_intents：第③层（语义意图）的**非文本**来源——上游直接下达的离散行为意图，
+    # 形状 [{name, intensity?, direction?}]。此前③层只能从已生成文本反推（词法/舞台说明），
+    # 本字段补上「先决定做个动作」的触发源（缺口 B）。
+    # ⚠ 无任何图节点写此字段——每轮经 state_overrides 注入（external_priors 先例）；
+    # runner.step() 每轮显式归零防 LastValue 残留。MotionAgent._events 消费，
+    # 合并优先级 deliberate > stage > lexical；name 非 12 词闭集在解析处 fail-fast
+    # （behavior_intent.deliberate_behavior_intents）。默认空表=零回归。
+    deliberate_intents: list[dict[str, Any]] = Field(default_factory=list)
+    # motion_efference：本回合运动指令的 efference copy（缺口 A 的「副本」半步）。
+    # 聚合口径**定死为指令级、回合级**（第二步直接消费，改口径=返工）：
+    #   {spontaneous: {amplitude,speed,onset}, voluntary: {...}|None, scene, events}
+    #   ——motion_directive 的确定性投影（motion._efference_from_directive）。
+    #   不做帧级聚合：帧在 MCP 拉取侧 20fps 合成，图内不可得；渲染端回读引入外部
+    #   非确定性，属未来独立门控。efference copy 本义即「运动指令副本」，指令级是本义。
+    # 持久化走 mood 模式：进 Checkpointer、**每轮不归零**（语义=最近一次动作指令，
+    # 下一轮图内任何节点可读）、绝不入图谱。
+    # 🛑 红线：**绝不进 fuse_terms/occ_prior/任何内核数学**——「副本作为一条流参与状态
+    # 推断」是第二步，须议会 + 完整 PRP（两环耦合稳定性未证明前不得接线）；
+    # tests/test_motion_efference.py 有源码级守卫断言 affect_core/affect_math 不引用本字段。
+    # 仅 motion_backend="efference" 时由 MotionAgent 写；其余值恒 None=零回归。
+    motion_efference: dict[str, Any] | None = None
 
     # 观测与作用域：trace 用 reducer 累加，节点只需返回自己的 [entry]（避免每步全量拷贝）
     trace: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)

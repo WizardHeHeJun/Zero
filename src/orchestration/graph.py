@@ -67,7 +67,8 @@ def build_graph(
     mood / language 分别由 `recall_enabled` / `mood_enabled` / `language_enabled` 门控，
     关闭时为 no-op（默认 v1 行为不变）。language 开启时进入 affect↔language 双向收敛
     回路（带 `language_max_iters` 终止上限）。motion 由 `motion_backend` 单一枚举门控
-    （"synth" 默认 no-op / "directive" 产出 `motion_directive`，见 `MotionAgent`）。
+    （"synth" 默认 no-op / "directive" 产出 `motion_directive` / "efference" 再额外写
+    `motion_efference` 指令级副本，见 `MotionAgent`）。
     expression_decoder / language_model：可选注入的真通道解码器/语言模型（鸭子类型，
     编排层不依赖 torch / anthropic）。
     now_fn：时钟注入（默认 time.time）。供 AppraisalAgent 的 HPA 皮质醇更新节点读取

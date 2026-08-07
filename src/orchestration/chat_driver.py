@@ -942,18 +942,21 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     voluntary_coping_leak = float(os.getenv("ZERO_VOLUNTARY_COPING_LEAK", "1.0"))
     # motion_backend：动作层 MotionAgent 门控（PRP/motion/design-agent.md；默认 synth=零回归）。
     # "synth"=MotionAgent no-op（zero.motion 拉取侧现算，不变）；"directive"=图内产出
-    # motion_directive（拉取侧尚未接线消费，见设计文档 §7 待补）。非法值在此 fail-fast
+    # motion_directive（拉取侧尚未接线消费，见设计文档 §7 待补）；"efference"=directive
+    # 全部行为 + 额外写 motion_efference 指令级副本（行为反馈环第一步）。非法值在此 fail-fast
     # （早于 SessionConfig 构造，报错信息直接点名 env 变量；分支写法而非裸赋值是为了让
-    # mypy 把变量类型窄化到 Literal["synth","directive"]，同 ConversationSession 形参签名）。
+    # mypy 把变量类型窄化到 Literal 联合，同 ConversationSession 形参签名）。
     _motion_backend_raw = os.getenv("ZERO_MOTION_BACKEND", "synth")
-    motion_backend: Literal["synth", "directive"]
+    motion_backend: Literal["synth", "directive", "efference"]
     if _motion_backend_raw == "directive":
         motion_backend = "directive"
+    elif _motion_backend_raw == "efference":
+        motion_backend = "efference"
     elif _motion_backend_raw == "synth":
         motion_backend = "synth"
     else:
         raise ValueError(
-            f"ZERO_MOTION_BACKEND 须为 synth|directive，当前值={_motion_backend_raw!r}"
+            f"ZERO_MOTION_BACKEND 须为 synth|directive|efference，当前值={_motion_backend_raw!r}"
         )
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）。
     # external_priors 本身每轮由 state_overrides 注入（MCP 侧），不在此读取。

@@ -55,7 +55,8 @@ class BehaviorIntent:
         name: 12 词之一（保证在 `BEHAVIOR_VOCABULARY` 内）。
         intensity: 0–1 幅度。
         direction: 需要方向的行为（`head_tilt`/`glance`）才有值，否则 None。
-        source: `"lexical"`（③a）或 `"stage"`（③b），供观测与调参归因，不影响执行。
+        source: `"lexical"`（③a）/ `"stage"`（③b）/ `"deliberate"`（③c 上游直达），
+            供观测与调参归因，不影响执行。
     """
 
     name: str
@@ -104,6 +105,56 @@ def lexical_intents(reply: str) -> list[BehaviorIntent]:
 _MAX_LEXICAL = 2
 
 
+# ── ③c 非文本意图源（行为反馈环第一步·缺口 B）────────────────────────────────
+# 上游经 state_overrides 直接下达的行为意图（「先决定做个动作」，不从已生成文本反推）。
+# 与 ③a/③b 的关键差异：调用方是**代码**不是模型——静默丢弃会藏调用方 bug，
+# 故非闭集名在此 fail-fast（external_priors 的 M3/M6 先例：错误指向传参方，改传参就能好）。
+# ③b 对模型产出的舞台说明仍保持静默丢弃（那边「丢弃是预期行为」，见 stage_direction_intents）。
+
+
+def deliberate_behavior_intents(payload: list[dict[str, object]]) -> list[BehaviorIntent]:
+    """③c：解析并校验上游下达的行为意图，产出 `source="deliberate"` 的 `BehaviorIntent`。
+
+    Args:
+        payload: `[{name, intensity?, direction?}]`（`AffectState.deliberate_intents` 原样）。
+
+    Returns:
+        校验通过的意图列表，顺序保持输入序。
+
+    Raises:
+        ValueError: name 不在 12 词闭集，或 intensity 出 [0,1]——fail-fast 指向调用方传参
+            错误。闭集是安全边界：放行「关灯」「走过去」等物理世界宣称 = 让数字人重新
+            宣称它做不到的事（模块 docstring）。
+    """
+    intents: list[BehaviorIntent] = []
+    for item in payload:
+        name = item.get("name")
+        if not isinstance(name, str) or name not in BEHAVIOR_VOCABULARY:
+            raise ValueError(
+                f"deliberate 行为意图 name={name!r} 不在 12 词闭集 "
+                f"{sorted(BEHAVIOR_VOCABULARY)}（闭集是安全边界，调用方传参错误）"
+            )
+        intensity_raw = item.get("intensity", 0.5)
+        if not isinstance(intensity_raw, (int, float)) or not 0.0 <= float(intensity_raw) <= 1.0:
+            raise ValueError(
+                f"deliberate 行为意图 {name!r} 的 intensity={intensity_raw!r} 须在 [0,1]"
+            )
+        direction_raw = item.get("direction")
+        if direction_raw is not None and not isinstance(direction_raw, str):
+            raise ValueError(
+                f"deliberate 行为意图 {name!r} 的 direction={direction_raw!r} 须为 str 或缺省"
+            )
+        intents.append(
+            BehaviorIntent(
+                name,
+                intensity=float(intensity_raw),
+                direction=direction_raw,
+                source="deliberate",
+            )
+        )
+    return intents
+
+
 # ── ③b 舞台说明 → 行为闭集映射 ──────────────────────────────────────────────
 # 键是 strip_stage_directions 会剥掉的那类动作/神态词；值是 12 词之一。
 # ⚠ 只列**皮套真能做**的。「关灯」「走过去」「递给你」等对物理世界的行动宣称**刻意不列**，
@@ -150,16 +201,21 @@ def stage_direction_intents(segments: list[str]) -> list[BehaviorIntent]:
 
 
 def merge_intents(
-    lexical: list[BehaviorIntent], stage: list[BehaviorIntent], *, limit: int = 3
+    lexical: list[BehaviorIntent],
+    stage: list[BehaviorIntent],
+    *,
+    deliberate: list[BehaviorIntent] | None = None,
+    limit: int = 3,
 ) -> list[BehaviorIntent]:
-    """合并两路意图并去重。**舞台说明优先**——它是模型的显式表达意图，比词法推断更可信。
+    """合并各路意图并去重，优先级 **deliberate > stage > lexical**——上游显式指令最可信，
+    其次模型的显式表达意图（舞台说明），词法推断垫底。
 
-    节流交 MCP 执行侧（冷却/通道仲裁已在对面实现）；此处只做同名去重与条数上限，
-    防单轮投递过多。
+    `deliberate` 缺省 None＝旧两路行为逐字不变（向后兼容）。节流交 MCP 执行侧
+    （冷却/通道仲裁已在对面实现）；此处只做同名去重与条数上限，防单轮投递过多。
     """
     merged: list[BehaviorIntent] = []
     seen: set[str] = set()
-    for intent in [*stage, *lexical]:
+    for intent in [*(deliberate or []), *stage, *lexical]:
         if intent.name in seen:
             continue
         if intent.name not in BEHAVIOR_VOCABULARY:
