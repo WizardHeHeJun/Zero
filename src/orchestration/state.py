@@ -160,8 +160,10 @@ class AffectState(BaseModel):
     #   ——motion_directive 的确定性投影（motion._efference_from_directive）。
     #   不做帧级聚合：帧在 MCP 拉取侧 20fps 合成，图内不可得；渲染端回读引入外部
     #   非确定性，属未来独立门控。efference copy 本义即「运动指令副本」，指令级是本义。
-    # 持久化走 mood 模式：进 Checkpointer、**每轮不归零**（语义=最近一次动作指令，
-    # 下一轮图内任何节点可读）、绝不入图谱。
+    # 持久化走 mood 模式：进 Checkpointer、**每轮不归零**、绝不入图谱。语义 =
+    # **恰好上一回合**的动作指令或 None（staleness 修正·议会 CS 席 2026-08-07：efference 档下
+    # MotionAgent 无产出的回合显式写 None，motion 是无条件边节点每轮必跑 ⇒ 不存在更旧残留；
+    # 配套 runner.step() 拒绝逐轮切换 motion_backend）。下一轮图内任何节点可读。
     # 🛑 红线：**绝不进 fuse_terms/occ_prior/任何内核数学**——「副本作为一条流参与状态
     # 推断」是第二步，须议会 + 完整 PRP（两环耦合稳定性未证明前不得接线）；
     # tests/test_motion_efference.py 有源码级守卫断言 affect_core/affect_math 不引用本字段。

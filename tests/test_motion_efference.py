@@ -225,15 +225,30 @@ async def test_deliberate_intents_zeroed_each_turn() -> None:
     assert not any(e["source"] == "deliberate" for e in session.last_motion_directive["events"])
 
 
-async def test_copy_persists_across_turn_without_writer() -> None:
-    """mood 模式持久：MotionAgent 不写的回合（本轮门切 synth），副本保留上一回合值——
-    「最近一次动作指令」语义，供下一轮图内节点读。"""
-    session = ConversationSession(thread_id="eff-persist", motion_backend="efference", rng_seed=7)
+async def test_backend_switch_via_overrides_fails_fast() -> None:
+    """staleness 次修正（议会 CS 席 2026-08-07）：motion_backend 是会话级固定门控，
+    state_overrides 逐轮切换会破坏副本「恰好上一回合」语义——护栏 fail-fast 指向调用方。
+    （本测试前身 test_copy_persists_across_turn_without_writer 验证的「陈旧值被静默保留」
+    正是被本护栏封掉的行为。）"""
+    session = ConversationSession(thread_id="eff-guard", motion_backend="efference", rng_seed=7)
     await session.step(Stimulus(name="s1", goal_congruence=0.6, intensity=0.8))
-    copy_turn1 = session.last_motion_efference
-    assert copy_turn1 is not None
+    with pytest.raises(ValueError, match="motion_backend"):
+        await session.step(
+            Stimulus(name="s2", goal_congruence=-0.3, intensity=0.6),
+            state_overrides={"motion_backend": "synth"},
+        )
+    # 与会话 config 相同的显式传值放行（幂等无害）
     await session.step(
-        Stimulus(name="s2", goal_congruence=-0.3, intensity=0.6),
-        state_overrides={"motion_backend": "synth"},
+        Stimulus(name="s3", goal_congruence=0.1, intensity=0.5),
+        state_overrides={"motion_backend": "efference"},
     )
-    assert session.last_motion_efference == copy_turn1
+
+
+def test_efference_without_affect_sample_clears_copy() -> None:
+    """staleness 主修正：efference 档下前置缺失（affect_sample=None）不再裸 {}，
+    显式返回 motion_efference=None——保证字段恒为「恰好上一回合」产出或 None，
+    absent-cue 判定（is not None）无陈旧漏洞。directive 档保持旧行为（裸 {}）。"""
+    state_eff = AffectState(motion_backend="efference", affect_sample=None)
+    assert agent(state_eff) == {"motion_efference": None}
+    state_dir = AffectState(motion_backend="directive", affect_sample=None)
+    assert agent(state_dir) == {}

@@ -121,6 +121,13 @@ class MotionAgent:
             return {}
         affect_sample = state.affect_sample
         if affect_sample is None:
+            # 🛑 staleness 修正（议会 CS 席 BLOCK·2026-08-07 第二步设计门）：efference 档下
+            # 本回合无产出也要**显式清空**副本，不得裸 {} 留旧值——motion 是无条件边节点
+            # 每轮必跑，本分支保证 motion_efference 恒为「恰好上一回合」的产出或 None，
+            # 下游 absent-cue 判定（is not None）才完整；否则陈旧副本会伪装成新鲜证据
+            # （lag-1 稳定性证明的对象与部署状态机重合，正赖于此）。
+            if state.motion_backend == "efference":
+                return {"motion_efference": None}
             return {}
         mod = modulation_from_affect(*affect_sample)
         regulated_mod = self._regulated_modulation(affect_sample, state.regulated_affect)

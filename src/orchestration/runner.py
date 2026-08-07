@@ -784,6 +784,16 @@ class ConversationSession:
             "recalled_disposition": None,
         }
         if state_overrides is not None:
+            # motion_backend 护栏（议会 CS 席·2026-08-07）：它是会话级固定门控（state.py 注释
+            # 早有此承诺，但此前无强制），逐轮切换会让 motion_efference 的「恰好上一回合」
+            # 语义失效（MotionAgent 不跑的回合留陈旧副本）。不一致即 fail-fast 指向调用方；
+            # 与会话 config 相同的显式传值放行（幂等无害）。
+            overridden_backend = state_overrides.get("motion_backend")
+            if overridden_backend is not None and overridden_backend != self.config.motion_backend:
+                raise ValueError(
+                    f"state_overrides 不得逐轮切换 motion_backend（会话级固定门控）："
+                    f"会话={self.config.motion_backend!r}，本轮传入={overridden_backend!r}"
+                )
             base.update(state_overrides)
         result = await self.graph.ainvoke(
             base,
