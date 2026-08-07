@@ -25,6 +25,7 @@
 | `idle_constants.py` | 从 StayStill 待机数据提取全部程序化常数的同域实测值，并与当前手写值对照 |
 | `plot_motion.py` | 把合成轨迹画成图（三面板：情绪直驱 / 意志调控 / idle 基线） |
 | `check_ab_delta.py` | 事后核对盲测两版的**实际**数值差异（防「以为改了 A 实际改了 B」） |
+| `live_bridge.py` | **接入实跑**：MCP 客户端拉 `zero.motion` → 直驱 VTS。走的是设计定的 `zero.motion` 接口（stdio 跨进程，天然绕开两仓 sys.path 冲突）。`--dry-run` 可不连 VTS 只验链路与跨段相位续接 |
 | `play_behaviors.py` | **离散动作巡演**：12 词闭集逐个放到皮套上（含 `head_tilt` 两向、`glance` 四向，共 16 次触发）。走的是 `BehaviorService.trigger` 通路，与轨迹通路是两条不同的路——轨迹管「怎么动」，这个管「做什么动作」 |
 | `gen_ladder.py` + `play_ladder.py` | **幅度梯度**：按序播若干档递增幅度，一次定量级。「该多大」是量级判断，二选一每轮只给 1 bit，梯度（心理物理学极限法）快得多，故**不盲**。每档实测 clamp 率、命中即剔除——不给一个"看着更大其实已削平"的选项 |
 
