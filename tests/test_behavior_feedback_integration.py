@@ -110,6 +110,26 @@ async def test_efference_copy_voluntary_present_with_regulation() -> None:
     assert copy["voluntary"] is not None  # 调节确实改变了表达 ⇒ δ≠0
 
 
+def test_run_payload_covers_session_config_fields() -> None:
+    """结构性回归锁（code-reviewer BLOCK·2026-08-07）：run() 是不经 ConversationSession
+    的公开入口，其 ainvoke 初值 dict 是**手拼**的——SessionConfig 每加一个新字段都可能
+    重演「加了形参、漏拼进 dict ⇒ 死参数静默不生效」（behavior_feedback_enabled 实证
+    0 次 evidence 调用 vs step() 侧 2 次）。本锁断言 run() 源码里每个 SessionConfig 字段
+    都以 dict 键形式出现；新增旋钮漏拼会在此变红（step() 侧由 to_state_flags()=
+    model_dump() 机制免疫，无需对等锁）。"""
+    import inspect
+
+    from src.orchestration.runner import run
+
+    src = inspect.getsource(run)
+    missing = [
+        field
+        for field in type(ConversationSession(thread_id="probe").config).model_fields
+        if f'"{field}":' not in src
+    ]
+    assert not missing, f"run() 手拼 ainvoke dict 漏了 SessionConfig 字段：{missing}"
+
+
 # ── MCP 治理（议会必改 #7）───────────────────────────────────────────────────
 
 

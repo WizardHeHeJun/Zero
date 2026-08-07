@@ -298,7 +298,10 @@ def behavior_feedback_evidence(
     - **μ = (0, a_expr)**，其中 a_expr = 2·voluntary.onset − 1（onset=(a+1)/2 的精确仿射逆，
       无增益依赖）——「表达出来的唤醒水平」。⚠ 位置空间口径（design.md §1.2）：主干信号
       δ = a_expr − a_felt 是位移量，直接当 μ 喂是范畴错误（会把「压低了 0.4」误宣称为
-      「唤醒是 −0.4」）；条件在场 + 位置空间 a_expr 的边际信息量恰为 δ。
+      「唤醒是 −0.4」）。边际贡献 = w_b·δ + w_b·(a_felt − μ_o)（μ_o=本轮其余流加权均值）：
+      **一般情形含残留耦合项、非「恰为 δ」，但受 W_MAX 结构性有界（最坏 0.3）**——
+      数学席二轮裁定 + moderator 方案 2 判定（2026-08-07），稳定性仿真建模的正是含此
+      残留项的真实动力学，证明对象与实现对齐。
     - **Π = (MIN_PRECISION, π_b)**：valence 维置底（动作层无 valence 信息，议会既有裁定）；
       arousal 维 π_b 见 behavior_precision 两档。
 
@@ -361,13 +364,19 @@ def cap_stream_weight(
     ignite 之后、fuse_terms 之前对**本轮真正进入融合的流集合**做不变量校验，超界则
     重标定 π_target′ = w_max/(1−w_max)·Σ_{j≠target}π_j，使封顶后权重恰为 w_max。
 
-    ⚠ 地板边界（实现期变异测试抓出的议会公式缺陷，须随必改 #2 交数学席复核）：
+    ⚠ 地板边界（实现期变异测试抓出的议会公式缺陷；数学席二轮复核判修订正确）：
     fuse_terms 对每项精度取 max(MIN_PRECISION, ·)——当重标定值 π′ < MIN_PRECISION
     （其余流全部触底的退化情形），地板会把 π′ 抬回去、封顶静默失效（n 条全底流时
     目标流最低只能拿到 1/(n+1) 均分票）。地板之下目标权重**数学上不可达** ⇒ 该情形
     改为**整条流剔除**（absent 语义：全沉默环境里 lag-1 行为回声不该获得均分投票权，
     与「不给 0 值假证据」同一哲学）。terms 与 names **成对返回**保持对齐
     （BLOCK 1 先例：两者须同一次筛选产出，防 zip 失配）。
+    ⚠ 跳变不连续（数学席二轮标注）：剔除使目标权重在 Σ_other ≈ 5.67·MIN_PRECISION
+    阈值处从 w_max 跳到 0（非 Lipschitz 控制律，理论上 Σ_other 穿阈震荡可 chattering）。
+    生产路径**结构性避开**该区：生效组合（gate_fusion=False）下 survival 流恒以
+    SURVIVAL_PRECISION=0.4 无条件参与，Σ_other 远离退化阈——该缓解依赖
+    `affect_core` 流装配「survival/appraisal/value 三条无条件 append」这一前提
+    （非仿真验证覆盖；装配处有对应标注，改成条件性时须回看本函数）。
 
     target 不在 names 中或未超界 ⇒ 原 (terms, names) 原样返回；不 mutate 输入。
     纯函数，供 affect_core 融合调用点与稳定性仿真共用。

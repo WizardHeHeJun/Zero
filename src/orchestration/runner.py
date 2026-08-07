@@ -386,6 +386,13 @@ async def run(
     external_priors 本身（每轮的 (name,(μv,μa),(Πv,Πa)) 数据）**不经 run() 注入**——它是每轮
     可变量，经 `ConversationSession.step(stim, state_overrides={"external_priors": [...]})` 注入
     （同 interlocutor_affect）。run() 批量接口每条 stimulus 不携带外部先验（code-reviewer W5）。
+
+    ⚠ **不得用同一 thread_id 跨调用切换 motion_backend**（议会 CS 席二轮复核 WARN·
+    2026-08-07）：单次 run() 内 backend 是固定形参、天然安全；但配持久 checkpoint 后端
+    （ZERO_CHECKPOINT_BACKEND=sqlite/postgres）时，同 thread_id 先以 "efference" 跑、再以
+    其它档跑，第二次 MotionAgent 不触碰 motion_efference ⇒ 第一次遗留的副本会残留并被
+    行为反馈流（若开）当作新鲜证据——与 `ConversationSession.step()` 被护栏封死的是同一类
+    失真，本入口以本免责声明处置（生产路径 chat/MCP 均不经 run()）。
     """
     # 🛑 显式过一遍 SessionConfig，只为**触发它的跨字段校验**（返回值有意丢弃）。
     # `run()` 是一条不经 ConversationSession 的公开入口（scripts/run_pipeline.py 等直接调），
@@ -486,6 +493,12 @@ async def run(
                 "voluntary_coping_leak": voluntary_coping_leak,
                 # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
                 "motion_backend": motion_backend,
+                # behavior_feedback_enabled：行为反馈流总门（默认关=零回归）。
+                # ⚠ code-reviewer BLOCK 2026-08-07：本字段曾只加形参、漏拼进本 dict ⇒
+                # run() 入口传 True 静默不生效（0 次 evidence 调用 vs step() 侧 2 次，实证）。
+                # 手拼 dict 与 SessionConfig 的字段漂移已配结构性回归锁：
+                # test_run_payload_covers_session_config_fields（integration 测试文件）
+                "behavior_feedback_enabled": behavior_feedback_enabled,
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 "external_prior_precision_cap": external_prior_precision_cap,
                 "max_external_streams": max_external_streams,

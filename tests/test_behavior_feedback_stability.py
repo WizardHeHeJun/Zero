@@ -150,7 +150,8 @@ def test_sigma_bhv_is_conservative_upper_bound(calibration_report: dict[str, flo
 
 
 def test_closed_loop_consistency(calibration_report: dict[str, float]) -> None:
-    """② 自指校准检验：开环统计的 σ 接回闭环后 |Δa| P95 漂移须有界，否则开环标定不可迁移。"""
+    """② 自指校准检验：开环统计的 σ 接回闭环后 |Δa| P95 漂移须有界，否则开环标定不可迁移。
+    ⚠ 0.1 阈是**经验安全边际，非解析导出**（数学席二轮标注；实测漂移 ~0.018，留 5 倍余量）。"""
     assert calibration_report["closed_shift"] < 0.1
 
 

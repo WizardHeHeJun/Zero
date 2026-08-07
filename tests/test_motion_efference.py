@@ -10,7 +10,9 @@
 3. 红线（副本不进情感内核）：人为塞入副本对 post_mu/affect_sample/mood 零影响；
    源码级守卫——内核数学模块不得引用 `motion_efference` 字段名（防将来有人未过议会接线）。
 4. `deliberate_intents` 每轮归零（LastValue 残留防护，external_priors 先例）。
-5. 副本跨回合持久（mood 模式）：不被每轮归零，MotionAgent 不写的回合保留上一回合值。
+5. 副本持久语义（staleness 修正后收紧）：字段不被每轮归零，但 efference 档下 MotionAgent
+   **每轮必写**（真值或显式 None）⇒ 恒为「恰好上一回合」；仅 backend≠efference 的整段
+   会话该字段恒 None（该档从不触碰它）。backend 逐轮切换被 runner 护栏 fail-fast 封死。
 """
 
 from __future__ import annotations

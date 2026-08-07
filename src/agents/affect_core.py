@@ -108,6 +108,11 @@ class AffectCoreAgent:
             else:
                 value_prec = (pi_da, pi_da)
 
+            # ⚠ survival/appraisal/value 三条流的**无条件装配**是下游两处的结构性前提
+            # （code-reviewer WARN 2026-08-07·双向可追溯标注）：
+            # ① cap_stream_weight 的 len(terms)==1 短路（单流无从封顶）依赖 terms 恒 ≥2 条；
+            # ② 其地板剔除阈（Σ_other≈5.67·MIN_PRECISION）靠 survival 恒在场结构性避开。
+            # 若将来把任一条改成条件性 append，须回看 cap_stream_weight 的两段 ⚠ docstring。
             streams: list[tuple[str, tuple[float, float], tuple[float, float]]] = [
                 ("survival", surv_mu, surv_prec),  # 快生存流（低精度、可单独点燃）
                 (
