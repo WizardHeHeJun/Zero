@@ -1,10 +1,11 @@
 """甲乙交替对比：甲→乙→甲→乙…，每段间报出当前是哪个，便于边看边判断。仍不读答案文件。"""
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import asyncio
 import json
 import os
 import sys
+
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 
 os.environ["VTS_BEHAVIOR_ENABLED"] = "true"
 os.environ["VTS_TOKEN_FILE"] = str(P.VTS_TOKEN)

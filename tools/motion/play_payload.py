@@ -1,10 +1,10 @@
 """第二步（仅 Zero_MCP 侧）：读 JSON 载荷，经 BehaviorService 驱动 VTube Studio。"""
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import asyncio
 import json
 import os
-import sys
+
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 
 os.environ["VTS_BEHAVIOR_ENABLED"] = "true"
 os.environ["VTS_TOKEN_FILE"] = str(P.VTS_TOKEN)

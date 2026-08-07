@@ -4,11 +4,11 @@
 轨迹由 Zero 侧 motion_synth 预生成成 JSON（避免两仓 `src.` 包根冲突）。
 """
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import asyncio
 import json
 import os
-import sys
+
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 
 os.environ["VTS_BEHAVIOR_ENABLED"] = "true"
 os.environ["VTS_TOKEN_FILE"] = str(P.VTS_TOKEN)

@@ -5,11 +5,12 @@
 pitch 通道在 pitch 类动作上的响应应显著高于在 yaw 类动作上，反之亦然。
 """
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import math
 import statistics
 from collections import defaultdict
 from pathlib import Path
+
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 
 ROOT = Path(P.STAYSTILL)
 

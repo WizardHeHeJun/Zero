@@ -107,9 +107,6 @@ ax.legend(loc="upper left", fontsize=9)
 ax.grid(alpha=0.25)
 
 plt.tight_layout()
-out = str(P.PLOT_PNG)
-import os
-
-os.makedirs(os.path.dirname(out), exist_ok=True)
+out = str(P.PLOT_PNG)  # 目录已由 _paths 建好，无需再 makedirs
 plt.savefig(out, dpi=130)
 print(f"saved -> {out}")

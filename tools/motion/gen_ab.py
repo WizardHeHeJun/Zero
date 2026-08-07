@@ -4,10 +4,10 @@
 统计距离缩小不保证观感变好」——故必须盲法。
 """
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import json
-import sys
 import zlib
+
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 
 P.use_zero()
 

@@ -9,12 +9,12 @@
 （生物力学惯例）而非分布分位数（后者会按构造抹平占空比，已在 RAVDESS 上栽过）。
 """
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import math
 import statistics
 from collections import defaultdict
 from pathlib import Path
 
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import numpy as np
 
 ROOT = Path(P.STAYSTILL / "idle")
@@ -144,9 +144,8 @@ for f in files:
 print("① 三轴幅度（sd，度）")
 for k in ("yaw", "pitch", "roll"):
     v = sorted(amp[k])
-    print(
-        f"   {k:6s} 中位={statistics.median(v):6.2f}  四分位 {v[len(v) // 4]:.2f}~{v[3 * len(v) // 4]:.2f}"
-    )
+    q1, q3 = v[len(v) // 4], v[3 * len(v) // 4]
+    print(f"   {k:6s} 中位={statistics.median(v):6.2f}  四分位 {q1:.2f}~{q3:.2f}")
 base = statistics.median(amp["yaw"])
 print(
     f"   ⇒ 相对 yaw 的比例： yaw 1.00 · pitch {statistics.median(amp['pitch']) / base:.2f} "
@@ -180,14 +179,11 @@ print(
     f"  三轴幅度      当前 14.0° 等幅        → 实测 {statistics.median(amp['yaw']):.1f}/"
     f"{statistics.median(amp['pitch']):.1f}/{statistics.median(amp['roll']):.1f}（不等幅）"
 )
-print(
-    f"  BREATH_HZ     当前 0.27              → 实测 {statistics.median(peak_freqs['呼吸带 0.15-0.5Hz']):.3f}"
-)
-print(
-    f"  SWAY_HZ       当前 0.07              → 实测 {statistics.median(peak_freqs['低频漂移 0.02-0.15Hz']):.3f}"
-)
+breath = statistics.median(peak_freqs["呼吸带 0.15-0.5Hz"])
+sway = statistics.median(peak_freqs["低频漂移 0.02-0.15Hz"])
+print(f"  BREATH_HZ     当前 0.27              → 实测 {breath:.3f}")
+print(f"  SWAY_HZ       当前 0.07              → 实测 {sway:.3f}")
 print(f"  POSE_RISE_S   当前 0.45              → 实测 {statistics.median(moves):.3f}")
-print(
-    f"  POSE_CYCLE_S  当前 2.4               → 实测 {statistics.median(moves) + statistics.median(dwells):.2f}"
-)
+cycle = statistics.median(moves) + statistics.median(dwells)
+print(f"  POSE_CYCLE_S  当前 2.4               → 实测 {cycle:.2f}")
 print(f"  YAW_ROLL_COUPLING 当前 -0.125        → 实测 {statistics.median(coupling):+.3f}")

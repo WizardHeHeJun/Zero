@@ -3,11 +3,12 @@
 用法：python play_one.py [甲|乙] [重复次数]
 """
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import asyncio
 import json
 import os
 import sys
+
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 
 os.environ["VTS_BEHAVIOR_ENABLED"] = "true"
 os.environ["VTS_TOKEN_FILE"] = str(P.VTS_TOKEN)

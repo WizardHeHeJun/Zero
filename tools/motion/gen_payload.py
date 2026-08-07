@@ -3,10 +3,10 @@
 两仓都用 `src.` 作包根，同时进 sys.path 会互相覆盖 —— 故拆两步，各自干净。
 """
 
-import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import json
 import statistics
-import sys
+
+import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 
 P.use_zero()
 
