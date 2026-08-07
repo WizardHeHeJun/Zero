@@ -882,6 +882,10 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         `reply_text` 可选——传入本轮回复文本即可让第 ③ 层做词法判定；不传则只出轨迹。
         ⚠ `events` 需要**你方**主动转投 `behavior_trigger`：我方不假设你会解析本返回体，
         这一条在跨仓契约里已明确（决策在我方、执行在你方）。
+
+        `motion_backend="directive"` 的会话（图内 `MotionAgent` 已产出决策）优先消费
+        `session.last_motion_directive` 的调制系数与 events；`"synth"`（默认）或该属性
+        暂缺（未 step 过 / 跨重启 resume）时优雅退回本函数现有的现场解析路径。
         """
         if not _motion_enabled():
             raise _tool_error(
@@ -900,7 +904,7 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
             stage_direction_intents,
         )
         from src.agents.language_openai import strip_stage_directions_with_segments
-        from src.agents.motion_synth import PhaseState, generate_dual, initial_blink_ms
+        from src.agents.motion_synth import Modulation, PhaseState, generate_dual, initial_blink_ms
 
         # 契约边界：段长 clamp 而非 fail-fast（对齐对面「换皮套不炸」的宽容取向），
         # 帧数由**显式算术**保证——不靠"建议 fps"。
@@ -908,6 +912,8 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         fps = min(MOTION_DEFAULT_FPS, (MOTION_MAX_KEYFRAMES - 1) * 1000.0 / span)
 
         # 只读引擎情感（不推进图）；尚未 step 过 → (None, None, leak) → 走 idle 基线。
+        # ⚠ 这一步**始终要做**：决定「用哪组 (v,a)」（双通路 affect/regulated + leak），
+        # 与下面的 motion_directive 消费（决定「怎么动」的调制系数）是正交的两件事。
         sample, regulated, leak = session.last_affect()
         affect = sample if sample is not None else (0.0, 0.0)
         # ⚠ 种子用 crc32 而非内置 hash()：CPython 对 str 的 hash **每进程随机化**
@@ -917,14 +923,64 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
         phase_in = _motion_phases.get(session_id) or PhaseState(
             noise_seed=seed, next_blink_ms=initial_blink_ms(seed)
         )
+
+        # ── 决策进图闭环（PRP/motion/design-agent.md §1/§4）──────────────────────
+        # `motion_backend="directive"` 的会话已在图内由 MotionAgent 把调制系数算好、
+        # 缓存在 `session.last_motion_directive`（只读实例属性，同 `last_affect()` 先例，
+        # 不进 checkpointer）；此处优先消费它，不再现场用 `modulation_from_affect(v,a)` 现算。
+        # `motion_backend="synth"`（默认）的会话该属性恒 `None` ⇒ `modulation` 保持 `None`
+        # ⇒ `generate_dual` 内部退回现有解析路径——本分支对默认门控**零可见影响**。
+        # 同样地，图没跑过 / 跨重启 resume（新 ConversationSession 对象，该属性未持久化）
+        # 也自然落回 `None`，不抛异常——优雅退回是这段代码的默认状态，不是要专门 try 的东西。
+        directive = session.last_motion_directive
+        modulation: Modulation | None = None
+        modulation_voluntary: Modulation | None = None
+        directive_events: list[dict[str, Any]] | None = None
+        if directive is not None:
+            modulation = Modulation(
+                amplitude=directive["amplitude"],
+                speed=directive["speed"],
+                onset_sharpness=directive["onset"],
+            )
+            # voluntary（随意通路）专属调制系数——2026-08-07 修复：此前只传 `modulation`
+            # 一份、两路共用，`voluntary` 路会丢掉"被调节后的调制系数"（`MotionAgent.
+            # _regulated_modulation` docstring 有完整缺陷记录）。`directive["regulated"]`
+            # 为 None（未开调节 / 调节没改变什么）时保持 `modulation_voluntary=None`，
+            # `generate_dual` 内部据此回退复用 `modulation`——与本字段引入前逐字零回归。
+            directive_regulated = directive.get("regulated")
+            if directive_regulated is not None:
+                modulation_voluntary = Modulation(
+                    amplitude=directive_regulated["amplitude"],
+                    speed=directive_regulated["speed"],
+                    onset_sharpness=directive_regulated["onset"],
+                )
+            directive_events = directive.get("events")
+            # scene（"idle"/"speaking"）目前恒 "idle"（TTS 未接线，见 `MotionAgent.
+            # _determine_scene` 的阻塞说明）——此处只透传/记录用途预留，**不**据它分叉
+            # 时间结构：speaking 分支按议会裁定保持未启用，本轮不解除。
+
         heads, phase_out = generate_dual(
-            affect, regulated, float(span), phase_in, voluntary_leak=leak, fps=fps
+            affect,
+            regulated,
+            float(span),
+            phase_in,
+            voluntary_leak=leak,
+            fps=fps,
+            modulation=modulation,
+            modulation_voluntary=modulation_voluntary,
         )
         _motion_phases[session_id] = phase_out  # per-session 相位：跨拉取续接不跳变
 
-        # ③ 主管判断层：词法 + 舞台说明路由（闭集白名单，物理世界宣称照旧丢弃）
+        # ③ 主管判断层：优先取 motion_directive 里图内决策好的 events（MotionAgent 消费
+        # `state.language_text`，见其 docstring）；没有则退回现有 reply_text 词法/舞台说明
+        # 路由（该路一行未改，对齐生产聊天路径独立于图内 language 节点的文本来源）。
         events: list[dict[str, Any]] = []
-        if reply_text:
+        if directive_events:
+            events = [
+                {"name": e["name"], "intensity": e["intensity"], "direction": e["direction"]}
+                for e in directive_events
+            ]
+        elif reply_text:
             _, segments = strip_stage_directions_with_segments(reply_text)
             intents = merge_intents(lexical_intents(reply_text), stage_direction_intents(segments))
             events = [

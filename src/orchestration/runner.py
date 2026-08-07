@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -135,6 +135,10 @@ class SessionConfig(BaseModel):
     # 自发头全量传 coping、随意头传 coping×leak（意志部分压制 coping-driven AU）。
     # 默认 1.0=两头等值=零回归；推荐 0.3。仅 facs_extended=True 时对 facs_au 生效。
     voluntary_coping_leak: float = Field(default=1.0, ge=0.0, le=1.0)
+    # ── motion_backend：动作层 MotionAgent 门控（PRP/motion/design-agent.md；单一枚举，
+    # CS 席要求避免多布尔组合爆炸）。默认 "synth"=MotionAgent no-op（零回归，`zero.motion`
+    # 拉取侧沿用现状现算）；"directive"=MotionAgent 在图内按回合产出 motion_directive。
+    motion_backend: Literal["synth", "directive"] = "synth"
 
     # ── 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）──
     # external_priors 本身是每轮 state_overrides 内容（同 interlocutor_affect），不在此收口。
@@ -351,6 +355,8 @@ async def run(
     canonical_physiology: bool = False,
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
     voluntary_coping_leak: float = 1.0,
+    # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
+    motion_backend: Literal["synth", "directive"] = "synth",
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
     external_prior_precision_cap: float = 0.8,
     max_external_streams: int = 5,
@@ -472,6 +478,8 @@ async def run(
                 "canonical_physiology": canonical_physiology,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
                 "voluntary_coping_leak": voluntary_coping_leak,
+                # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
+                "motion_backend": motion_backend,
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 "external_prior_precision_cap": external_prior_precision_cap,
                 "max_external_streams": max_external_streams,
@@ -596,6 +604,8 @@ class ConversationSession:
         canonical_physiology: bool = False,
         # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14；默认 1.0=零回归）
         voluntary_coping_leak: float = 1.0,
+        # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
+        motion_backend: Literal["synth", "directive"] = "synth",
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
         external_prior_precision_cap: float = 0.8,
         max_external_streams: int = 5,
@@ -630,6 +640,9 @@ class ConversationSession:
         self.last_affect_sample: tuple[float, float] | None = None
         self.last_regulated_affect: tuple[float, float] | None = None
         self.last_voluntary_coping_leak: float = 1.0
+        # last_motion_directive：同上先例，供 MotionAgent 拉取侧（未来）只读消费。
+        # motion_backend="synth"（默认）时 MotionAgent no-op，本属性恒为 None。
+        self.last_motion_directive: dict[str, Any] | None = None
         self.checkpointer = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
         self.graph = build_graph(
             checkpointer=self.checkpointer,
@@ -694,6 +707,8 @@ class ConversationSession:
                 canonical_physiology=canonical_physiology,
                 # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）
                 voluntary_coping_leak=voluntary_coping_leak,
+                # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
+                motion_backend=motion_backend,
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 external_prior_precision_cap=external_prior_precision_cap,
                 max_external_streams=max_external_streams,
@@ -773,6 +788,7 @@ class ConversationSession:
         self.last_affect_sample = state.affect_sample
         self.last_regulated_affect = state.regulated_affect
         self.last_voluntary_coping_leak = state.voluntary_coping_leak
+        self.last_motion_directive = state.motion_directive
         return _state_to_entry(stim.name, state)
 
     def last_affect(self) -> tuple[tuple[float, float] | None, tuple[float, float] | None, float]:
