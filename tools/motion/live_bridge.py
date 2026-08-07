@@ -72,7 +72,12 @@ def server_env() -> dict[str, str]:
 
 
 async def run(
-    seconds: float, session_id: str, stim: tuple[float, float] | None, dry_run: bool
+    seconds: float,
+    session_id: str,
+    stim: tuple[float, float] | None,
+    dry_run: bool,
+    lead: float = 5.0,
+    verify: bool = False,
 ) -> None:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -111,7 +116,7 @@ async def run(
                 print(f"注入刺激 {stim} ⇒ e*={payload.get('valence_arousal')}", flush=True)
 
             if service is not None:
-                for i in range(5, 0, -1):
+                for i in range(int(lead), 0, -1):
                     print(f"  {i} 秒后开始，请切到 VTube Studio …", flush=True)
                     await asyncio.sleep(1.0)
 
@@ -168,7 +173,31 @@ async def run(
                     + (f"  events={[e['name'] for e in events]}" if events else ""),
                     flush=True,
                 )
-                await asyncio.sleep(SEGMENT_MS / 1000.0)
+                if verify:
+                    # ⚠ 回读**必须在段中途**取：段末参数已走到末帧，且注入需 ≥1Hz 重发才不回落。
+                    #   读回值与我们发的关键帧对不上 ⇒ 注入没落到模型上（不是"用户没看到"）。
+                    await asyncio.sleep(SEGMENT_MS / 2000.0)
+                    live = await service.sink.api.request("InputParameterListRequest")
+                    table = {
+                        p["name"]: float(p.get("value", 0.0))
+                        for p in [
+                            *live.get("defaultParameters", []),
+                            *live.get("customParameters", []),
+                        ]
+                    }
+                    mid = frames[len(frames) // 2]["params"]
+                    diffs = {
+                        k: (mid[k], table.get(k))
+                        for k in ("FaceAngleX", "FaceAngleY", "FaceAngleZ")
+                    }
+                    parts = []
+                    for key, (sent, read) in diffs.items():
+                        got = read if read is not None else float("nan")
+                        parts.append(f"{key}发{sent:+.2f}/读{got:+.2f}")
+                    print("    回读：" + " · ".join(parts), flush=True)
+                    await asyncio.sleep(SEGMENT_MS / 2000.0)
+                else:
+                    await asyncio.sleep(SEGMENT_MS / 1000.0)
                 elapsed += SEGMENT_MS / 1000.0
 
             await mcp.call_tool(f"{TOOL_PREFIX}close_session", {"session_id": session_id})
@@ -187,6 +216,10 @@ parser.add_argument(
     help="注入一条刺激，格式 valence,arousal。⚠ 负值须用 = 形式：--stim=-0.6,0.8",
 )
 parser.add_argument("--dry-run", action="store_true", help="不连 VTS，只验 MCP 拉取与跨段相位续接")
+parser.add_argument("--lead", type=float, default=5.0, help="开播前的倒计时秒数（够你切窗口）")
+parser.add_argument(
+    "--verify", action="store_true", help="播放中途回读 VTS 实际参数值，证明注入真的落到模型上"
+)
 args = parser.parse_args()
 
 stimulus: tuple[float, float] | None = None
@@ -196,4 +229,4 @@ if args.stim:
         raise SystemExit("--stim 格式为 valence,arousal，如 -0.6,0.8")
     stimulus = (float(parts[0]), float(parts[1]))
 
-asyncio.run(run(args.seconds, args.session, stimulus, args.dry_run))
+asyncio.run(run(args.seconds, args.session, stimulus, args.dry_run, args.lead, args.verify))
