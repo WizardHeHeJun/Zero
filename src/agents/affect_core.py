@@ -18,6 +18,8 @@ from src.agents.affect_math import (
     MIN_PRECISION,
     MIN_SIGMA,
     SALIENCE_THRESHOLD,
+    behavior_feedback_evidence,
+    cap_stream_weight,
     effective_stream_count,
     evidence_from_value,
     expand_external_priors,
@@ -141,6 +143,20 @@ class AffectCoreAgent:
                         max_streams=state.max_external_streams,
                     )
                 )
+            # 行为反馈流（行为反馈环第二步·议会设计门 NEEDS-CHANGES 落地，
+            # notes/2026-08-07-behavior-feedback-council.md；默认关=零回归）。
+            # 三重在场门：总门开 ∧ 副本非 None（staleness 修正后=恰好上一回合）∧
+            # 其 voluntary 非 None（调节差 δ≠0）——后两重在 behavior_feedback_evidence
+            # 内判定，缺一即 None=流缺席（absent-cue，不注入 0 值假证据）。
+            # 生产默认 regulation 关 ⇒ voluntary 恒 None ⇒ 门开也零回归。
+            # ⚠ 默认硬门（gate_fusion=True）下本流 salience≈0.075·|a_expr|<阈值 0.18
+            # 恒被滤除——生效组合须 gate_fusion=False 或软门（design.md §三，非缺陷）。
+            if state.behavior_feedback_enabled and state.motion_efference is not None:
+                behavior_term = behavior_feedback_evidence(
+                    state.motion_efference, commensurable=comm
+                )
+                if behavior_term is not None:
+                    streams.append(("behavior", *behavior_term))
             # 数值通路与报告通路**分离**（议会第三轮 D1 + 实现期 D13）：
             #   `ignite()` → 供 fuse_terms 的 (μ,Π) + **与之对齐**的流名（BLOCK 1 的实质保证：
             #     二者同一次筛选产出、恒等长，下面的 zip(strict=True) 永不失配）；
@@ -164,6 +180,13 @@ class AffectCoreAgent:
                 exclude_physio_fusion=state.exclude_physio_fusion,
                 **gate_criteria,
             )
+            # w_b 后置封顶（议会必改 #2·数学席失真裁定的修法）：对**本轮真正进入融合**的
+            # terms 现算行为流权重并封顶 ≤ W_MAX——前置 cap π_b 在其余流全弱时约束不了
+            # 凸组合权重（w_b→0.97）。terms/names 成对返回保持对齐（BLOCK 1 先例）；
+            # 重标定值跌破 MIN_PRECISION 的退化情形整条剔除（cap_stream_weight docstring）。
+            # 仅总门开时调用（"behavior" 不在 names 时原样返回，但默认路径连查找都不做）。
+            if state.behavior_feedback_enabled:
+                terms, fusion_names = cap_stream_weight(terms, fusion_names, target="behavior")
             ignited = report_ignited(streams, **gate_criteria)
             # P3 层级预测编码（HPC v1）：门控关（默认 layers=1 或 coupling=0.0）→
             # 走现 fuse_terms 路径逐字不变（hierarchical_fuse 内部退化旁路保证零回归）。

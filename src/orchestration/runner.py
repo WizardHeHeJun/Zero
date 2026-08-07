@@ -140,6 +140,9 @@ class SessionConfig(BaseModel):
     # 拉取侧沿用现状现算）；"directive"=MotionAgent 在图内按回合产出 motion_directive；
     # "efference"=directive 全部行为 + 额外写 motion_efference 指令级副本（行为反馈环第一步）。
     motion_backend: Literal["synth", "directive", "efference"] = "synth"
+    # ── behavior_feedback_enabled：行为反馈流总门（行为反馈环第二步·议会 2026-08-07；
+    # 默认关=零回归）。语义与在场门/生效组合见 AffectState 同名字段注释。
+    behavior_feedback_enabled: bool = False
 
     # ── 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）──
     # external_priors 本身是每轮 state_overrides 内容（同 interlocutor_affect），不在此收口。
@@ -358,6 +361,8 @@ async def run(
     voluntary_coping_leak: float = 1.0,
     # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
     motion_backend: Literal["synth", "directive", "efference"] = "synth",
+    # behavior_feedback_enabled：行为反馈流总门（行为反馈环第二步；默认关=零回归）
+    behavior_feedback_enabled: bool = False,
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
     external_prior_precision_cap: float = 0.8,
     max_external_streams: int = 5,
@@ -607,6 +612,8 @@ class ConversationSession:
         voluntary_coping_leak: float = 1.0,
         # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
         motion_backend: Literal["synth", "directive", "efference"] = "synth",
+        # behavior_feedback_enabled：行为反馈流总门（行为反馈环第二步；默认关=零回归）
+        behavior_feedback_enabled: bool = False,
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
         external_prior_precision_cap: float = 0.8,
         max_external_streams: int = 5,
@@ -713,6 +720,8 @@ class ConversationSession:
                 voluntary_coping_leak=voluntary_coping_leak,
                 # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）
                 motion_backend=motion_backend,
+                # behavior_feedback_enabled：行为反馈流总门（第二步；默认关=零回归）
+                behavior_feedback_enabled=behavior_feedback_enabled,
                 # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）
                 external_prior_precision_cap=external_prior_precision_cap,
                 max_external_streams=max_external_streams,

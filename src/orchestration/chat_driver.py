@@ -958,6 +958,15 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         raise ValueError(
             f"ZERO_MOTION_BACKEND 须为 synth|directive|efference，当前值={_motion_backend_raw!r}"
         )
+    # behavior_feedback_enabled：行为反馈流总门（行为反馈环第二步·议会 2026-08-07；
+    # 默认关=零回归）。生效还需 motion_backend=efference + regulation 真触发 + 非默认硬门
+    # （生效组合见 AffectState 同名字段注释）。
+    behavior_feedback_enabled = os.getenv("ZERO_BEHAVIOR_FEEDBACK", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）。
     # external_priors 本身每轮由 state_overrides 注入（MCP 侧），不在此读取。
     # 此处只读会话级固定的校验参数：精度上界 + 流数上界。
@@ -1066,6 +1075,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         voluntary_coping_leak=voluntary_coping_leak,
         # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）。
         motion_backend=motion_backend,
+        # behavior_feedback_enabled：行为反馈流总门（第二步；默认关=零回归）。
+        behavior_feedback_enabled=behavior_feedback_enabled,
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）。
         external_prior_precision_cap=external_prior_precision_cap,
         max_external_streams=max_external_streams,

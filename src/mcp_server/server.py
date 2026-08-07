@@ -37,7 +37,7 @@ import time
 import uuid
 import zlib
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -83,6 +83,18 @@ _MCP_GOVERNANCE_GATED_FLAGS: frozenset[str] = frozenset(
         # 收紧理由与 ignition_beta 逐字同型：它改的是**对外可见的载荷语义**，不容 client 单边翻转。
         # base 里已由 ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER 播种，故入白名单是零额外接线。
         "canonical_physiology",
+        # behavior_feedback_enabled（行为反馈环第二步·议会 CS 席 WARN 2026-08-07）：
+        # 它把上一回合 motion_efference 作为一条流接进 fuse_terms——**直接改数值后验**，
+        # 深度等同 gate_fusion；client 单边开等于绕过生产门控注入行为证据流。
+        # 仅 ZERO_MCP_BEHAVIOR_FEEDBACK env 治理，overrides 静默忽略。
+        "behavior_feedback_enabled",
+        # motion_backend（同一 WARN·成组收紧）：efference 档在第二步后已从「观测开关」
+        # 升级为「与 behavior_feedback_enabled 联动可改数值后验的开关」——白名单必须覆盖
+        # 达成该效果的**所有**旋钮组合，只锁其一即留旁路。仅 ZERO_MCP_MOTION_BACKEND
+        # env 治理（synth|directive|efference，非法值回落 synth 并告警见 base 播种处）。
+        # ⚠ 治理收紧对配套项目 client 是行为变化（此前 overrides 可传），跨仓通报见
+        # notes/2026-08-07-cross-repo-motion-backend-governance.md。
+        "motion_backend",
     }
 )
 
@@ -323,6 +335,30 @@ def _env_flag(name: str, default: bool) -> bool:
     return default  # 未识别（含空串）→ 回落默认，**不再一律 False**
 
 
+def _env_motion_backend() -> Literal["synth", "directive", "efference"]:
+    """读 `ZERO_MCP_MOTION_BACKEND`：合法值透传，未设/未识别一律回落 "synth" 并 WARNING。
+
+    env 名写死为字面量、不收形参：`test_no_env_can_flip_stateless_http` 的间接名守卫要求
+    env 读取点静态可判（形参版会被判不可判）。
+    回落而非抛错（与 `_env_number` 的 fail-fast 刻意不同）：motion_backend 决定的是
+    动作层观测/副本产出档位，写错 env 不应扳倒整个会话开启；且回落方向 = 最保守的
+    零回归档（synth = MotionAgent no-op，行为反馈流因副本恒 None 也天然缺席）。
+    与 chat_driver 侧 fail-fast 的差异属边界层职责不同：那边错误直达部署者终端，
+    这边错误会被贴成 client 的 config 问题（ServerEnvError 注释同款归责考量）。
+    """
+    raw = os.getenv("ZERO_MCP_MOTION_BACKEND")
+    if raw is None:
+        return "synth"
+    value = raw.strip()
+    if value in ("synth", "directive", "efference"):
+        return value  # type: ignore[return-value]
+    logger.warning(
+        "ZERO_MCP_MOTION_BACKEND=%r 不是 synth|directive|efference，回落 synth（零回归档）",
+        raw,
+    )
+    return "synth"
+
+
 def _env_number[T: (int, float)](name: str, default: str, caster: Callable[[str], T]) -> T:
     """读数值 env；坏值抛 `ServerEnvError`（指名 env），**不**抛 ValueError。
 
@@ -424,7 +460,7 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
     （如共情系数 L1 上界 `SessionConfig._check_empathy_l1`），坏值 fail-fast → 上层转 ToolError。
 
     **议会解锁门（A5·A6·2026-07-21）**：`_MCP_GOVERNANCE_GATED_FLAGS` 中的字段
-    （现 **8 项**，以该 frozenset 为准、勿抄本注释）**不受 overrides 覆写**，
+    （现 **10 项**，以该 frozenset 为准、勿抄本注释）**不受 overrides 覆写**，
     只由 `ZERO_MCP_TEXT_COPING_ENABLED`/`ZERO_MCP_COPING_ENABLED` env 治理——防 client
     经 config 旁路生产门控（「生产关·MCP 开」治理漏洞）。非门控字段（如 `contagion_alpha`）
     仍可正常 override。
@@ -469,6 +505,14 @@ def _build_session_config(overrides: dict[str, Any] | None) -> SessionConfig:
         # ⚠ **成对要求**：进了 _MCP_GOVERNANCE_GATED_FLAGS 就必须在 base 里给 env 入口，
         # 否则该字段在 MCP 路径**永久取默认值**（对 ignition_beta 即永久 None）——design D6 的教训。
         "ignition_beta": _env_optional_float("ZERO_MCP_IGNITION_BETA"),
+        # 默认 False：与生产/chat 零回归一致（行为反馈环第二步·议会 2026-08-07）——
+        # 行为流直接改数值后验，仅 ZERO_MCP_BEHAVIOR_FEEDBACK env 治理，
+        # client override 被 gated_flags 静默忽略（成对要求同上）。
+        "behavior_feedback_enabled": _env_flag("ZERO_MCP_BEHAVIOR_FEEDBACK", False),
+        # motion_backend 随 behavior_feedback 一并入治理（成组收紧，白名单注释详述）。
+        # 默认 "synth" 与生产一致；非法 env 值回落 synth（部署端配置错不应扳倒会话开启，
+        # 且回落方向=更保守的零回归档）。
+        "motion_backend": _env_motion_backend(),
         # ⚠ 这两个走 _env_number：裸 float()/int() 抛的 ValueError 会被 open_session 的
         # `except (ValueError, TypeError)` 贴成「config 不合法」——**部署端 env 写错却指向
         # client 传参**（见 ServerEnvError 的说明）。

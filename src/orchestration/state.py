@@ -170,6 +170,17 @@ class AffectState(BaseModel):
     # 仅 motion_backend="efference" 时由 MotionAgent 写；其余值恒 None=零回归。
     motion_efference: dict[str, Any] | None = None
 
+    # behavior_feedback_enabled：行为反馈流总门（行为反馈环第二步·议会设计门
+    # NEEDS-CHANGES 落地，notes/2026-08-07-behavior-feedback-council.md；默认关=零回归）。
+    # True → AffectCoreAgent workspace 分支在 motion_efference 非 None 且其 voluntary 非 None
+    # （= 调节差 δ≠0，absent-cue 三重在场门）时，把 affect_math.behavior_feedback_evidence
+    # 的 (μ,Π) 作独立流 "behavior" 进多流竞争，并经 cap_stream_weight 后置封顶 w_b ≤ W_MAX。
+    # ⚠ 默认硬门（gate_fusion=True）下行为流恒被 salience 滤除——生效组合须 gate_fusion=False
+    # 或 ignition_beta 软门（design.md §三 ⚠，非缺陷）。生产默认 regulation 关 ⇒ voluntary
+    # 恒 None ⇒ 流恒缺席 ⇒ 本门即便开也零回归。经 ZERO_BEHAVIOR_FEEDBACK env →
+    # chat_driver → SessionConfig → to_state_flags 贯通；MCP 面入治理拦截名单。
+    behavior_feedback_enabled: bool = False  # 默认关=零回归
+
     # 观测与作用域：trace 用 reducer 累加，节点只需返回自己的 [entry]（避免每步全量拷贝）
     trace: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
     session_id: str = "default-session"

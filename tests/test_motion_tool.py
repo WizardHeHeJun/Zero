@@ -245,18 +245,21 @@ async def test_directive_events_take_priority_over_reply_text(enabled: None) -> 
 
 
 @pytest.mark.asyncio
-async def test_directive_none_falls_back_without_error(enabled: None) -> None:
+async def test_directive_none_falls_back_without_error(
+    enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """last_motion_directive 为 None（未 step / 门控没开 / 跨重启 resume）优雅退回，不抛异常。
 
     用「先产出一份 directive，再关会话重开（resume，新 ConversationSession 对象）」
     模拟跨重启：该只读实例属性不持久化，新对象上恒为 None。
+    ⚠ motion_backend 已入 MCP 治理白名单（2026-08-07 第二步）：config overrides 被静默
+    忽略，测试须走 ZERO_MCP_MOTION_BACKEND env（部署端治理口径，与生产同路径）。
     """
+    monkeypatch.setenv("ZERO_MCP_MOTION_BACKEND", "directive")
     session_id = "directive-resume"
     registry = SessionRegistry()
     server = build_server(registry)
-    await _call(
-        server, "zero.open_session", session_id=session_id, config={"motion_backend": "directive"}
-    )
+    await _call(server, "zero.open_session", session_id=session_id)
     try:
         session = await registry.get(session_id)
         assert session is not None
@@ -271,9 +274,7 @@ async def test_directive_none_falls_back_without_error(enabled: None) -> None:
         await _call(server, "zero.close_session", session_id=session_id)
 
     # resume：同 session_id 重开，新对象的 last_motion_directive 未持久化 → 恒 None。
-    await _call(
-        server, "zero.open_session", session_id=session_id, config={"motion_backend": "directive"}
-    )
+    await _call(server, "zero.open_session", session_id=session_id)
     try:
         resumed = await registry.get(session_id)
         assert resumed is not None
@@ -321,16 +322,21 @@ async def test_synth_default_matches_manual_generate_dual(enabled: None) -> None
 
 
 @pytest.mark.asyncio
-async def test_directive_voluntary_matches_synth_end_to_end(enabled: None) -> None:
+async def test_directive_voluntary_matches_synth_end_to_end(
+    enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """完整闭环回归（2026-08-07 修复验证）：真实 step 一轮（regulation_enabled=True +
     非默认 voluntary_coping_leak）后，directive 模式的 voluntary 轨迹须与「同一
     (affect, regulated, leak, seed) 手工现算 synth 路径」逐字相同——不是手工构造的
     合成 directive，是端到端跑出来的真实 affect_sample/regulated_affect。
+    motion_backend 走 env（已入 MCP 治理白名单，config 传会被静默忽略——此前经 config
+    传时本测试曾静默退化成 synth 对 synth 的自比较，覆盖失而不红）。
     """
     import zlib
 
     from src.agents.motion_synth import PhaseState, generate_dual, initial_blink_ms
 
+    monkeypatch.setenv("ZERO_MCP_MOTION_BACKEND", "directive")
     session_id = "directive-vs-synth-e2e"
     duration_ms = 3000
     registry = SessionRegistry()
@@ -340,7 +346,6 @@ async def test_directive_voluntary_matches_synth_end_to_end(enabled: None) -> No
         "zero.open_session",
         session_id=session_id,
         config={
-            "motion_backend": "directive",
             "regulation_enabled": True,
             "voluntary_coping_leak": 0.6,
         },
@@ -377,9 +382,9 @@ async def test_directive_empty_events_falls_back_to_reply_text(enabled: None) ->
     session_id = "directive-empty-events-fallback"
     registry = SessionRegistry()
     server = build_server(registry)
-    await _call(
-        server, "zero.open_session", session_id=session_id, config={"motion_backend": "directive"}
-    )
+    # motion_backend 不再经 config 传（治理白名单静默忽略）；本测试手工注入
+    # last_motion_directive、不依赖图内产出，无需设 env。
+    await _call(server, "zero.open_session", session_id=session_id)
     try:
         session = await registry.get(session_id)
         assert session is not None
@@ -407,13 +412,17 @@ async def test_directive_empty_events_falls_back_to_reply_text(enabled: None) ->
         await _call(server, "zero.close_session", session_id=session_id)
 
 
-async def _open_step_motion(server, registry, session_id: str, backend: str):
-    """open(指定 backend + 固定 rng_seed) → step → motion，返回 (payload, 副本快照)。"""
+async def _open_step_motion(server, registry, session_id: str, backend: str, monkeypatch):
+    """open(指定 backend + 固定 rng_seed) → step → motion，返回 (payload, 副本快照)。
+
+    backend 经 ZERO_MCP_MOTION_BACKEND env 注入（治理白名单后 config 传会被静默忽略）。
+    """
+    monkeypatch.setenv("ZERO_MCP_MOTION_BACKEND", backend)
     await _call(
         server,
         "zero.open_session",
         session_id=session_id,
-        config={"motion_backend": backend, "rng_seed": 42},
+        config={"rng_seed": 42},
     )
     try:
         await _call(
@@ -430,7 +439,9 @@ async def _open_step_motion(server, registry, session_id: str, backend: str):
 
 
 @pytest.mark.asyncio
-async def test_efference_full_link_matches_directive_and_no_leak(enabled: None) -> None:
+async def test_efference_full_link_matches_directive_and_no_leak(
+    enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """efference 档 MCP 全链路回归锁（code-reviewer WARN-2 2026-08-07）：
     `open_session(config={"motion_backend":"efference"}) → step → zero.motion` 的输出
     须与 "directive" 档**逐字一致**（副本纯增量，拉取侧判据不区分 backend 值），
@@ -443,11 +454,11 @@ async def test_efference_full_link_matches_directive_and_no_leak(enabled: None) 
     registry = SessionRegistry()
     server = build_server(registry)
     directive_payload, directive_copy = await _open_step_motion(
-        server, registry, session_id, "directive"
+        server, registry, session_id, "directive", monkeypatch
     )
     assert directive_copy is None  # directive 档不写副本（零回归）
     efference_payload, efference_copy = await _open_step_motion(
-        server, registry, session_id, "efference"
+        server, registry, session_id, "efference", monkeypatch
     )
     assert efference_payload == directive_payload  # 逐字一致，副本纯增量
     assert efference_copy is not None  # efference 档经 MCP 全链路确实写了副本
