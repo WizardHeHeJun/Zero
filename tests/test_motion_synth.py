@@ -81,28 +81,65 @@ def test_clamp_never_actually_fires() -> None:
     """🛑 clamp 是**安全上限**，正常运行不该触发——触发即波形顶部被削平（失真+满幅）。
 
     2026-08-06 端到端实测踩到：此前噪声基幅误用 ANGLE_RANGE_DEG，arousal≥+0.5 时输出
-    恰好等于 ±30.00，即 clamp 在削波。上一条「不越界」测试**抓不到这个**——被削平的
-    波形当然不越界。这条查的是「有没有贴着上限」，是那次教训的锚点。
+    恰好等于 ±30.00，即 clamp 在削波。「不越界」那条测试**抓不到这个**——被削平的
+    波形当然不越界。这条查的是「有没有真的贴到上限」。
+
+    ⚠ 2026-08-07 加强：原实现只跑 **5 秒、单种子**（约 2 个姿态周期），采样量根本抽不到
+    尾部峰值——实测把基幅调到会削平 2% 帧的 28° 时，它**依然全绿**。削波是低频尾部事件，
+    必须长跑多种子才测得到。现在直接数触顶帧数并要求**恰好为 0**（比"峰值离上限多远"更硬）。
     """
     for arousal in (-1.0, -0.5, 0.0, 0.5, 1.0):
-        frames, _ = generate(0.0, arousal, 5000.0, PhaseState(noise_seed=11))
-        peak = max(abs(_params(f)[k]) for f in frames for k in _ANGLE_KEYS)
-        assert peak < ANGLE_RANGE_DEG * 0.9, f"arousal={arousal} 峰值 {peak:.2f}° 贴近 clamp 上限"
+        clamped = 0
+        peak = 0.0
+        for seed in (11, 31, 77, 101, 233):
+            frames, _ = generate(0.0, arousal, 60_000.0, PhaseState(noise_seed=seed))
+            for frame in frames:
+                for key in _ANGLE_KEYS:
+                    value = abs(_params(frame)[key])
+                    peak = max(peak, value)
+                    if value >= ANGLE_RANGE_DEG - 1e-6:
+                        clamped += 1
+        # 🛑 **这一条是真正的缺陷判据**：触顶即削平波形，必须恰好为 0。
+        assert clamped == 0, f"arousal={arousal} 有 {clamped} 帧触顶被削平（峰值 {peak:.2f}°）"
+        # 余量阈：原为 0.9（留 3° 余量）。2026-08-07 用户按真机观感选定第三档幅度
+        # （基幅 21.8），实测 a=1.0 峰值 29.38°、**21 条 180 秒轨迹 22.7 万采样零触顶**，
+        # 但余量只剩 0.62°（吃满量程 97.9%）。余量是**被有意花掉的**，不是漏检——
+        # ⚠ 故今后任何往幅度通路上再加量的改动（新叠加项 / 提高基幅 / 提高唤醒增益 /
+        # 接入输出幅度更大的调制模型）都必须重跑本条：它已经没有缓冲了。
+        assert peak < ANGLE_RANGE_DEG * 0.99, f"arousal={arousal} 峰值 {peak:.2f}° 已贴死上限"
 
 
-def test_idle_amplitude_is_humanlike() -> None:
-    """待机幅度须落在人类量级：静息姿态摆动约 ±1~3°、强调性头动约 ±5~15°。
+def _peak_over_runs(arousal: float, *, seconds: float = 60.0) -> float:
+    """长跑多种子的峰值。短样本抽不到尾部——见下方两条守卫的教训注释。"""
+    peak = 0.0
+    for seed in (11, 31, 77, 101, 233):
+        frames, _ = generate(0.0, arousal, seconds * 1000.0, PhaseState(noise_seed=seed))
+        peak = max(peak, max(abs(_params(f)[k]) for f in frames for k in _ANGLE_KEYS))
+    return peak
 
-    没有这条，「摆动 sd=15°、范围 ±27°」这种剧烈摇头也能全绿——2070 条测试当初就没抓到，
-    是端到端真跑才发现的。
+
+def test_calm_is_visibly_calmer_than_excited() -> None:
+    """平静态必须**看起来明显比激动态小**——这才是「幅度合不合理」的可锚定判据。
+
+    ⚠ 2026-08-07 重写。原实现断言「平静峰值 < 4.0°」，引的是文献「静息姿态摆动 ±1~3°」，
+    有**两处问题**：
+    1. **口径错配**：那个 ±1~3° 说的是姿态摆动（对应本模块的 `SWAY_AMPLITUDE_DEG=0.6`，
+       本就在范围内），不是头部**总**运动。同域真人待机（StayStill，只是在等人）
+       yaw sd 就有 21.3°，峰值远超 40° —— 拿全身摆动的数值卡头部总峰值，标准本身是错的。
+    2. **采样不足**：只跑 5 秒单种子。实测同一配置短样本 2.73° / 长跑真值 3.95°，
+       整体幅度从 14 抬到 19 时长跑值已到 5.16°、**守卫却仍全绿**——假绿灯。
+
+    改为**比值**判据：平静/激动的峰值比。它不依赖任何绝对度数（故不受整体尺度调整影响），
+    直接编码真正要守的性质——情绪得在幅度上看得出来。整体尺度另由 clamp 那条守。
     """
-    calm, _ = generate(0.0, -0.9, 5000.0, PhaseState(noise_seed=21))
-    calm_peak = max(abs(_params(f)[k]) for f in calm for k in _ANGLE_KEYS)
-    assert calm_peak < 4.0, f"平静态峰值 {calm_peak:.2f}° 过大（应接近静息摆动量级）"
-
-    excited, _ = generate(0.0, 0.9, 5000.0, PhaseState(noise_seed=21))
-    exc_peak = max(abs(_params(f)[k]) for f in excited for k in _ANGLE_KEYS)
-    assert 3.0 < exc_peak < 20.0, f"高唤醒峰值 {exc_peak:.2f}° 不在强调性头动量级"
+    calm_peak = _peak_over_runs(-0.9)
+    excited_peak = _peak_over_runs(0.9)
+    ratio = calm_peak / excited_peak
+    assert ratio < 0.45, (
+        f"平静/激动峰值比 {ratio:.2f} 过高（平静 {calm_peak:.2f}° vs 激动 {excited_peak:.2f}°）"
+        "——情绪不再改变动作幅度"
+    )
+    assert excited_peak > calm_peak * 1.5, "激动态幅度未显著大于平静态"
 
 
 # ── 连续性（G2 / G3）────────────────────────────────────────────────────────

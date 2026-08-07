@@ -20,6 +20,7 @@ from src.agents.appraisal import AppraisalAgent
 from src.agents.expression import ChannelDecoder, ExpressionAgent
 from src.agents.language import LanguageAgent, LanguageModel
 from src.agents.mood import MoodAgent
+from src.agents.motion import MotionAgent
 from src.agents.perception import PerceptionAgent
 from src.agents.regulation import RegulationAgent
 from src.agents.value import ValueAgent
@@ -62,10 +63,11 @@ def build_graph(
     """装配并编译情感表达 StateGraph。
 
     管线：memory_recall → perception → appraisal → value → affect_core → mood
-    →（条件边）language ⇄ regulation/expression → supervisor。其中 memory_recall /
+    →（条件边）language ⇄ regulation/expression → motion → supervisor。其中 memory_recall /
     mood / language 分别由 `recall_enabled` / `mood_enabled` / `language_enabled` 门控，
     关闭时为 no-op（默认 v1 行为不变）。language 开启时进入 affect↔language 双向收敛
-    回路（带 `language_max_iters` 终止上限）。
+    回路（带 `language_max_iters` 终止上限）。motion 由 `motion_backend` 单一枚举门控
+    （"synth" 默认 no-op / "directive" 产出 `motion_directive`，见 `MotionAgent`）。
     expression_decoder / language_model：可选注入的真通道解码器/语言模型（鸭子类型，
     编排层不依赖 torch / anthropic）。
     now_fn：时钟注入（默认 time.time）。供 AppraisalAgent 的 HPA 皮质醇更新节点读取
@@ -81,6 +83,7 @@ def build_graph(
     graph.add_node("language", LanguageAgent(model=language_model))
     graph.add_node("regulation", RegulationAgent())
     graph.add_node("expression", ExpressionAgent(decoder=expression_decoder))
+    graph.add_node("motion", MotionAgent())
     graph.add_node("supervisor", SupervisorAgent(memory))
 
     graph.add_edge(START, "memory_recall")
@@ -103,7 +106,8 @@ def build_graph(
         {"language": "language", "regulation": "regulation", "expression": "expression"},
     )
     graph.add_edge("regulation", "expression")
-    graph.add_edge("expression", "supervisor")
+    graph.add_edge("expression", "motion")
+    graph.add_edge("motion", "supervisor")
     graph.add_edge("supervisor", END)
 
     return graph.compile(checkpointer=checkpointer)

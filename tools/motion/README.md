@@ -17,17 +17,41 @@
 
 | 脚本 | 用途 |
 | --- | --- |
-| `head_final.py` | **轴映射验证** + 待机三轴分布。判别式判据：比较同一通道在「低头类」vs「转头类」动作上的响应比。⚠ 别用「主导轴须等于期望轴」——真人「看手表」是复合动作 |
+| `anatomy.py` | **坐标系自动判定 + 免泄漏角度提取**（库，非脚本）。从骨架左右对称关节的 rest OFFSET 实测出「左/前/上」，roll 用 swing-twist 消除 pitch×yaw 泄漏。⚠ 接任何 BVH 前先过它——`freemocap` 是 Z-up 面朝 −Y、`ReActIdle` 是 Y-up 面朝 +Z，**关节名完全相同** |
+| `selftest_anatomy.py` | `anatomy.py` 的合成自检（无需数据集）。含"应该红"的变异项：零真实 roll 的 pitch×yaw 复合下，旧公式必须给出 ±1.0 的伪相关 |
+| `coupling_measure.py` | **yaw-roll 耦合测定**，五条判据（解剖锚定/免泄漏/符号一致性/跨数据集/伪影归因）+ 消融对照臂。结论见 `notes/2026-08-07-motion-idle-constants-criteria.md` |
+| `idle_criteria.py` | 转移·驻留时长与呼吸频率的判据检验：分割器**正控**（对已知真值）、阈值不变性扫描（含合成对照）、谱峰边界敏感性 |
+| `head_final.py` | **轴映射验证** + 待机三轴分布。判别式判据：比较同一通道在「低头类」vs「转头类」动作上的响应比。⚠ 别用「主导轴须等于期望轴」——真人「看手表」是复合动作。⚠ 其 roll 提取带泄漏，**耦合符号以 `coupling_measure.py` 为准** |
 | `idle_constants.py` | 从 StayStill 待机数据提取全部程序化常数的同域实测值，并与当前手写值对照 |
 | `plot_motion.py` | 把合成轨迹画成图（三面板：情绪直驱 / 意志调控 / idle 基线） |
 | `check_ab_delta.py` | 事后核对盲测两版的**实际**数值差异（防「以为改了 A 实际改了 B」） |
+| `play_behaviors.py` | **离散动作巡演**：12 词闭集逐个放到皮套上（含 `head_tilt` 两向、`glance` 四向，共 16 次触发）。走的是 `BehaviorService.trigger` 通路，与轨迹通路是两条不同的路——轨迹管「怎么动」，这个管「做什么动作」 |
+| `gen_ladder.py` + `play_ladder.py` | **幅度梯度**：按序播若干档递增幅度，一次定量级。「该多大」是量级判断，二选一每轮只给 1 bit，梯度（心理物理学极限法）快得多，故**不盲**。每档实测 clamp 率、命中即剔除——不给一个"看着更大其实已削平"的选项 |
+
+## 自采数据框架（2026-08-07 新增）
+
+用户拍板后续**自采待机运动学数据**（现有两条路已实测走不通：训好的 `motion_decoder`
+无时间结构；议会二期 VAR 比现状还差）。协议与全流程见 **[CAPTURE.md](CAPTURE.md)**。
+
+| 脚本 | 作用 |
+| --- | --- |
+| `capture_schema.py` | 规范格式（解剖约定一次钉死）+ 质量核查 + provenance 边车 |
+| `capture_ingest.py` | 各源 → 规范格式。BVH 自动判轴 / 通用 CSV（`axis_signs` **必填**，不给默认值）/ VTS 跟踪 |
+| `capture_vts.py` | 用 VTS 摄像头跟踪录自己的头动——**不用等设备，且天然无轴映射问题** |
+| `capture_calibrate.py` | 采集 → **带判据的常数提案**（不自动改 `src/`） |
+| `capture_selftest.py` | **正控**：合成已知常数 → 走管线 → 能否量回。⚠ **采数据前先跑这个** |
+
+🛑 采集纪律两条最容易犯的：**待机与说话必须分开采**（RAVDESS 就栽在 80% 是言语驱动头动）；
+**`axis_signs` 要录一段单向转头实测确认**，别读文档猜（本仓在轴映射上错过三次）。
 
 ## 盲测验收（议会指定的主观锚点）
 
 ```powershell
 # 1) 生成两版载荷；答案单独落 ab_key.json —— 播放脚本不读它
 cd d:\Zero\tools\motion
-& "E:\anaconda\Scripts\conda.exe" run -n affective-expression --no-capture-output python gen_ab.py
+& "E:\anaconda\Scripts\conda.exe" run -n affective-expression --no-capture-output python gen_ab.py --list
+& "E:\anaconda\Scripts\conda.exe" run -n affective-expression --no-capture-output `
+  python gen_ab.py --variant coupling --seed 1      # 换 --seed 即换一个独立试次
 
 # 2) 播放（在 Zero_MCP 目录下跑）
 cd d:\Zero_MCP
@@ -43,6 +67,14 @@ cd d:\Zero_MCP
 ⚠ 数学席提醒：单次 2AFC 只是 n=1 伯努利观测。要多轮 + 二项检验（如 ≥9/10 为通过线），
 **并须单独一组盲测问「角色是在说话还是安静待机」**——否则「更自然」可能恰因更像说话而胜出，
 反把言语域污染遮盖过去。
+
+**独立试次怎么造**：`--seed` 换一个值即换一整套（噪声场、姿态目标序列、甲乙先后全变）。
+连播同一份载荷 N 遍**不是** N 个试次，只是重复曝光同一个样本。
+
+⚠ **先做功效核算再决定值不值得跑**。本轮实例：yaw-roll 耦合改动在 10 秒片段上，
+两版的片段级相关分布**重叠**（旧四分位 −0.768~−0.327 / 新 −0.588~−0.013，40 种子实测），
+片段太短装不下足够的姿态周期。但同种子**配对次序**稳定（40/40 旧版更负），
+所以盲测要用**同种子的甲乙配对**来问，别问"这段的侧倾对不对"。
 
 ## 驱动链路（当前绕过对方 MCP server）
 

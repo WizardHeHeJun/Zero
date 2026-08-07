@@ -22,6 +22,7 @@ import os
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from src.agents.affect_math import (
     ATTITUDE_RATE,
@@ -939,6 +940,21 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # voluntary_coping_leak：双通路差异化（议会 C1 设计门 2026-07-14）∈[0,1]。默认 1.0=两头
     # 等值=零回归；推荐 0.3（随意头仅保留自发头 30% coping-driven 强度）。仅 facs_extended 时生效。
     voluntary_coping_leak = float(os.getenv("ZERO_VOLUNTARY_COPING_LEAK", "1.0"))
+    # motion_backend：动作层 MotionAgent 门控（PRP/motion/design-agent.md；默认 synth=零回归）。
+    # "synth"=MotionAgent no-op（zero.motion 拉取侧现算，不变）；"directive"=图内产出
+    # motion_directive（拉取侧尚未接线消费，见设计文档 §7 待补）。非法值在此 fail-fast
+    # （早于 SessionConfig 构造，报错信息直接点名 env 变量；分支写法而非裸赋值是为了让
+    # mypy 把变量类型窄化到 Literal["synth","directive"]，同 ConversationSession 形参签名）。
+    _motion_backend_raw = os.getenv("ZERO_MOTION_BACKEND", "synth")
+    motion_backend: Literal["synth", "directive"]
+    if _motion_backend_raw == "directive":
+        motion_backend = "directive"
+    elif _motion_backend_raw == "synth":
+        motion_backend = "synth"
+    else:
+        raise ValueError(
+            f"ZERO_MOTION_BACKEND 须为 synth|directive，当前值={_motion_backend_raw!r}"
+        )
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）。
     # external_priors 本身每轮由 state_overrides 注入（MCP 侧），不在此读取。
     # 此处只读会话级固定的校验参数：精度上界 + 流数上界。
@@ -1045,6 +1061,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         canonical_physiology=canonical_physiology,
         # voluntary_coping_leak：双通路差异化（C1 设计门 2026-07-14；默认 1.0=零回归）。
         voluntary_coping_leak=voluntary_coping_leak,
+        # motion_backend：动作层 MotionAgent 门控（默认 "synth"=零回归）。
+        motion_backend=motion_backend,
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）。
         external_prior_precision_cap=external_prior_precision_cap,
         max_external_streams=max_external_streams,

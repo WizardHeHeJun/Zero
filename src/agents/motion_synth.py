@@ -32,12 +32,26 @@ from dataclasses import dataclass, replace
 # ── idle 基线参数（生物学取值，议会核验）────────────────────────────────────────
 # 静息呼吸 12–20 次/分 = 0.2–0.33Hz。取中位，**与低频姿态漂移分开建模**——两者共用一套
 # 参数会让呼吸感消失或把漂移变成假呼吸。
+#
+# ⚠ 2026-08-07 已用待机数据检验并**否决**改用实测值（`tools/motion/idle_criteria.py` 判据 D）：
+# 此前在 0.15–0.5Hz 带内量到"主峰 0.178Hz"，看似该改。但那个峰是**取带方式的产物**——
+# 把带下限从 0.10 挪到 0.20Hz，"主峰"跟着从 0.127 挪到 0.225Hz（几乎一比一跟着边界跑），
+# 且相对 1/f 背景的突起只有 1.65~1.67 个残差 sd（不显著）。两个数据集（StayStill /
+# ReActIdle genuine）表现一致。⇒ **待机头动里测不到可归因于呼吸的谱峰**，保留文献值。
 BREATH_HZ = 0.27
 # 呼吸对头部的机械耦合幅度很小（文献称 "weak head movements"，被用作非接触呼吸监测信号）
 BREATH_AMPLITUDE_DEG = 0.2
 
-# 低频姿态漂移（postural sway）：远慢于呼吸的独立带
-SWAY_HZ = 0.07
+# 低频姿态漂移（postural sway）：远慢于呼吸的独立带。
+#
+# 2026-08-07 由同域实测取代原借用值 0.07（`tools/motion/idle_criteria.py` 判据 E）：
+# StayStill 0.048Hz · ReActIdle genuine（留出）0.035Hz ⇒ 取中 **0.04**（周期 25s）。
+# 与呼吸带那项**结论相反**，差别正在判据上：把频带下限在 0.012~0.020Hz 之间挪动，
+# 漂移带主峰**纹丝不动**（±0.001Hz，两集皆然）——若它只是 1/f 背景的产物，峰会贴着
+# 下边界走（呼吸带就是那样，下限挪 0.10→0.20，"峰"跟着 0.127→0.225）。
+# ⚠ 扫描区间两端都有约束：下端不得低于频率分辨率（片段 90~125s ⇒ 0.008~0.011Hz），
+# 上端必须明显低于候选峰，否则边界越过真峰、峰位当然被推着走（那是对照臂选错，非判据失败）。
+SWAY_HZ = 0.04
 SWAY_AMPLITUDE_DEG = 0.6
 
 # 生理性震颤 3–10Hz 是**非目标**频段（虚拟形象尺度不可见）；噪声基频上限刻意留在其下，
@@ -104,8 +118,24 @@ EYE_PARAM_PER_DEG = 1.0 / 15.0  # 皮套参数 ±1 ≈ ±15° 视觉注视量程
 # value_noise∈[-1,1] × gain(0.25~1.75) × 30° 最大到 ±52°，被 clamp 削平顶部，
 # 实测 arousal≥+0.5 时数值恰好等于 ±30.00 ⇒ **clamp 真的在触发 = 波形失真 + 满幅摇头**。
 # 参照量级：静息姿态摆动/呼吸耦合约 ±1~3°，说话时强调性头动约 ±5~15°。
-# 取 8° 使：深度平静 ≈ ±1°（几乎只有呼吸）· 中性 ≈ ±5° · 高唤醒 ≈ ±8°，clamp 不再触发。
-NOISE_AMPLITUDE_DEG = 14.0
+#
+# 本常数是**产品决定的整体尺度旋钮**（见 `AXIS_AMPLITUDE_RATIO`：只搬比例不搬绝对幅度）。
+# 2026-08-07 用户真机反馈「动作幅度有些小了」⇒ 14 → 19（约 1.35 倍）。实测口径（yaw sd）：
+#   改前 中性 5.40° · 中等唤醒 7.37° · 高唤醒 8.81°
+#   改后 中性 7.31° · 中等唤醒 9.99° · 高唤醒 11.96°（高唤醒峰值 23.2°，**clamp 率 0**）
+#
+# 🛑 **上限约 23~24，别再往上推**：本值 × 1.5 时高唤醒段 2.26% 的帧触顶被削平
+# （= 波形失真 + 满幅摇头，2026-08-06 已踩过一次）。
+#
+# ⚠ 同域真人待机 yaw sd 是 21.3°，**在本皮套上不可达**——sd 21° 配 ±30° 的参数上限
+# 意味着约 16% 的时间在削平。实测天花板：无论怎么配，高唤醒 yaw sd 最多约 15.2°。
+# 若还要更大，唯一的内部办法是调小 `AROUSAL_AMPLITUDE_GAIN` 换基础幅度——
+# 代价是「平静/激动」的幅度比从 0.24 升到 0.70（情绪几乎不再改变幅度），是取舍不是白拿。
+# 更外围的办法在皮套侧（模型对 ParamAngleX 的视觉响应幅度），不在本仓范围。
+# 2026-08-07 二次上调 21.8 → 23.5：微颤改混合式后包络不再被微颤撑大，腾出的余量用来把
+# 幅度拉回用户认可的量级。中等唤醒 yaw sd = 10.02°（改前 11.49°、全量运动学校准 8.93°，
+# 取中）。a=1.0 峰值 28.28°、21 条 180 秒轨迹 22.7 万采样**零触顶**，余量 1.72°。
+NOISE_AMPLITUDE_DEG = 23.5
 
 # 三轴幅度比（yaw : pitch : roll）。**同域实测**，非手调：
 # StayStill 待机数据 50 条 / 104.6 分钟，三轴 sd 中位 21.29° / 6.99° / 4.08° ⇒ 1 : 0.33 : 0.19。
@@ -120,6 +150,15 @@ AXIS_AMPLITUDE_RATIO = (1.0, 0.33, 0.19)
 
 # 「移动-驻留」的标称周期（秒，调制系数=1 时）：一次姿态转移 + 驻留的总时长。
 # 真人对话中的头部姿态调整大致每 1.5~3 秒一次；随 speed 调制缩短。
+#
+# ⚠ 2026-08-07 用待机数据检验（`idle_criteria.py` 判据 A/B/C），结论是**本轮不改**，理由如下：
+# - 分割器在**已知真值**上量得准（合成数据：转移 +11%、周期 +0%），所以它没坏；
+# - 但真数据与合成数据**都不存在阈值平台**（占空比随迟滞阈从 89%→37% / 54%→15% 连续变化）
+#   ⇒ 该分割器没有阈值不变的占空比估计，「转移 1.433s / 驻留 0.600s」这类**绝对秒数不可采信**。
+# - 唯一站得住的是**同阈下的比值**（全阈值区间稳定在 1.65~2.99，中位 2.7）：
+#   真人待机头部处于运动的时间占比约为本合成器当前的 **2.7 倍**——方向真实，量级只到倍数。
+# ⇒ 提高占空比是**下一轮真机盲测的候选改动**，不在数值层静默调整：当前值有文献支撑且
+#   已过两轮盲测，而"更常动"是否更自然必须由盲测判定（统计距离缩小不保证观感变好）。
 POSE_CYCLE_S = 2.4
 
 # 单次姿态转移的标称时长（秒）。真人头部重定向 0.2~0.4s 完成后停住；
@@ -128,16 +167,52 @@ POSE_CYCLE_S = 2.4
 # Zangemeister et al. 1981 头动 main-sequence（头部惯性大，35° gaze shift 后头部还要续转
 # 约 250ms）；Hendicott et al. 2002 在**非言语**日常任务实测头动幅度 6.5°/均速 11°/s
 # ⇒ 幅度÷均速 ≈ 0.59s，比 RAVDESS 实测（0.43~0.50s）还长。
-POSE_RISE_S = 0.45
+# 2026-08-07 由 0.45 上调到 **0.60**：速度分布校准（见 `MICRO_TREMOR_RATIO`）指向更长的转移，
+# 而 0.60 恰好就是上面那条 Hendicott 推得的 0.59s ——等于**回到文献值**，之前的 0.45 偏低。
+POSE_RISE_S = 0.60
 
-# 驻留期叠加的"活体微颤"占比：让停住的时候不像定格画面，但不破坏「移动-驻留」结构。
-MICRO_TREMOR_RATIO = 0.12
+# 驻留期掺入的"活体微颤"占比：让停住的时候不像定格画面，但不破坏「移动-驻留」结构。
+#
+# 2026-08-07 由**真人角速度分布**定值（`tools/motion/kinematics_gap.py`），不再是拍脑袋。
+# 起因：用户真机反馈「动作僵硬，并且动作过快」。量下来这两个词是**同一个分布缺陷的两端**——
+# 改前我们的速度分位比真人是 p10 0.47× / p50 1.00× / p90 1.93× / p99 2.23×：
+# 慢的时候太慢（=僵硬），快的时候过冲（=过快）。间歇性 p99/p50 我们 25.5、真人 10.3。
+#
+# ⚠ 用**速度分布**当靶子而不是「移动/驻留占空比」：后者要定阈，而阈值定义你看到什么
+# （`idle_criteria.py` 判据 B 实证：真数据与合成数据都无阈值平台）。分布是无阈值量。
+#
+# 取值：本比例几乎不花幅度（0.12→0.20 只让 yaw sd 掉 8%），却把高尾从 1.78× 压到 1.06×。
+# 取 **0.16** 是用户要的**中间方案**：高尾 1.32×，落在改前 1.93× 与全量校准 1.06× 之间。
+# ⚠ 议会批的二期「线性-高斯序列模型」实测**做不到**：VAR 探针的 p99/p50 只有 2.7（真人 10.3），
+# 高斯创新项天生轻尾、复现不了爆发式头动，最大分位偏离 3.88× **比程序化合成器还差**。
+# 用户已决定后续**自采数据**再议，故本项停在常数校准。
+MICRO_TREMOR_RATIO = 0.16
 
-# yaw→roll 耦合系数（转头带侧倾）。取自 RAVDESS 全库实测（三档情绪一致 ⇒ 常数）。
-# ⚠ 刻意在此**重新声明**而非从 `datasets.ravdess_motion` import：合成器是运行时热路径，
-# 不该为一个标量把数据加载模块拉进依赖（该模块引 csv/torch 侧）。两处数值须一致，
-# 改动时同步——数据侧的同名常量带完整实测出处。
-YAW_ROLL_COUPLING = -0.125
+# yaw→roll 耦合（转头带侧倾）。**本常数就是实测的那个量：yaw 与 roll 的相关系数 r**，
+# 不是一个只在本文件里有意义的混合系数——这样它才能与文献/数据直接对照。
+# 负号 = **对侧**：转向一侧时头顶倒向另一侧。
+#
+# 2026-08-07 重测（`tools/motion/coupling_measure.py`，五条判据）：
+#   ① 解剖锚定：三轴由骨架左右对称关节的 rest OFFSET 实测判定，不假设 up/forward 轴。
+#      实测 StayStill 是 Z-up 面朝 −Y、ReActIdle 是 Y-up 面朝 +Z——**同名关节、不同轴系**。
+#   ② 免泄漏：roll 用 swing-twist（绕当前视线轴的扭转），pitch×yaw 复合仍恒给 0。
+#   ③ 符号一致性：逐片段符号一致率 96% / 100% / 93%（二项检验 p<0.002）。
+#   ④ 跨数据集：StayStill −0.474 · ReActIdle genuine −0.424 · acted −0.397 ⇒ 合并 −0.458。
+#      两个独立数据集、两套骨架约定、表演与自发都同号同量级。
+#   ⑤/⑥ 伪影归因：见下。
+#
+# 🛑 **不要改回 +0.415，那是几何伪影**（交接文档第五节列的"没敢用的数字"）。旧提取用
+# `atan2(up_x, up_z)` 量 roll，在 pitch≠0 时混入 yaw（up 的横向分量 = −sin(pitch)·sin(yaw)），
+# 该伪分量**正比于 yaw**，凭空造出相关，且符号由"这个人平时低头还是抬头"决定。
+# 直接消融证实：把真实 roll **置零**后重算旧公式，仍得 +0.50 / +0.96 / +0.96
+# ——旧公式量到的主要是伪影本身。集内归因 corr(平均 pitch, 旧耦合) = −0.36/−0.56/−0.37，
+# 与解析预测方向一致。原 RAVDESS 的 −0.125 亦未经该项校验，不再作为依据。
+#
+# 皮套侧符号：Live2D 标准参数表对 `ParamAngleX` 与 `ParamAngleZ` 用**逐字相同**的措辞
+# 「+で画面の右を向く / Turn to the right of the screen when +」⇒ 两者正方向指向**同一侧**
+# （https://docs.live2d.com/en/cubism-editor-manual/standard-parameter-list/）。
+# 解剖系换算到皮套时 yaw 与 roll **同时翻转** ⇒ 相关系数的符号**不变**，可直接照搬。
+YAW_ROLL_COUPLING = -0.45
 
 # VTS 角度参数的**安全上限**（度）：只作 clamp 防越界被对面拒收。
 # 🛑 正常运行**不应触发**——触发即意味着波形顶部被削平（见上）。有测试守这条。
@@ -257,13 +332,17 @@ def _pose_cycle(t: float, seed: int, mod: Modulation) -> tuple[list[float], list
         # 眼球世界位置减头部当前位置 = 眼球相对头部的偏转（头追上则归零）
         eye_world = start + (end - start) * eye_progress
         eye_offset.append(eye_world - head)
-    # roll ← 自身 + yaw 反向耦合（转头带侧倾）。
-    # 系数 2026-08-06 议会复核由 −0.35 下修至实测值：−0.35 是**大幅主动转头**的量级
-    # （Guo et al. 2021 实测全幅旋转 55.5° 时上/下颈段各约 18~21° 补偿性侧屈），
-    # 而会话级小角度头动的耦合应更弱，RAVDESS 全库实测 −0.125（三档情绪完全一致
-    # ⇒ 属运动学固有属性、非情绪调制，故为常数不进模型；Ceylan et al. 2000 的 Fick 型
-    # 头部约束支持这一机制归属）。
-    pose[2] = 0.6 * pose[2] + YAW_ROLL_COUPLING * pose[0]
+    # roll ← 独立分量 + yaw 耦合分量（转头带侧倾），配比使**最终** roll 恰好满足两条实测约束：
+    #   · 与 yaw 的相关系数 = `YAW_ROLL_COUPLING`（实测 r）
+    #   · 幅度仍等于 `AXIS_AMPLITUDE_RATIO[2]`（三轴比例不被耦合项额外撑大）
+    # 两个分量独立 ⇒ 取 √(1−r²) 与 r 作权重即同时满足（方差配分）。
+    # 旧写法 `0.6*roll + (−0.125)*yaw` 隐含 r=−0.74、且把 roll 幅度压到比例值的 89%，
+    # 两个数都不是实测量、也无法与数据对照。
+    coupling = YAW_ROLL_COUPLING
+    pose[2] = (
+        math.sqrt(1.0 - coupling * coupling) * pose[2]
+        + coupling * AXIS_AMPLITUDE_RATIO[2] * pose[0]
+    )
     return pose, eye_offset, frac
 
 
@@ -381,14 +460,22 @@ def generate(
         sway_deg = SWAY_AMPLITUDE_DEG * math.sin(2.0 * math.pi * SWAY_HZ * t)
 
         # 主结构 =「移动-驻留」姿态序列（弹道式，非持续漂移）；
-        # 再叠一层很轻的连续噪声当"活体微颤"，避免驻留期像定格画面。
+        # 再掺一层连续噪声当"活体微颤"，避免驻留期像定格画面。
+        #
+        # ⚠ 2026-08-07 由**叠加**改为**混合**：原式 `gain*(pose + r*micro)` 里，微颤是加在
+        # 姿态之上的 —— 两者同时到峰值就把包络顶到 gain*(1+r)，于是 `MICRO_TREMOR_RATIO`
+        # 这个本该只管"驻留期别定格"的旋钮**会偷偷改变整体幅度**。实测踩到：把 r 从 0.12
+        # 调到 0.25，21 条 180 秒轨迹里 298 帧顶到 ±30° 被削平（改动前余量本就只剩 0.62°）。
+        # 混合式 `gain*((1-r)*pose + r*micro)` 使包络恒等于 gain、**与 r 无关** ⇒
+        # 调微颤不再牵动幅度，两个旋钮各管一件事。
         gain_deg = mod.amplitude * amplitude_scale * NOISE_AMPLITUDE_DEG
         pose, eye_offset, _frac = _pose_cycle(t, phase.noise_seed, mod)
         micro_freq = NOISE_BASE_HZ * mod.speed
         axis_deg: list[float] = []
         for axis in range(3):
             micro = value_noise(t, seed=phase.noise_seed + axis * 101 + 7, frequency=micro_freq)
-            axis_deg.append(gain_deg * (pose[axis] + MICRO_TREMOR_RATIO * micro))
+            blended = (1.0 - MICRO_TREMOR_RATIO) * pose[axis] + MICRO_TREMOR_RATIO * micro
+            axis_deg.append(gain_deg * blended)
 
         openness, phase = _blink_openness(absolute_ms, phase)
 
@@ -437,6 +524,7 @@ def generate_dual(
     voluntary_leak: float = 1.0,
     fps: float = 20.0,
     modulation: Modulation | None = None,
+    modulation_voluntary: Modulation | None = None,
     amplitude_scale: float = DEFAULT_AMPLITUDE_SCALE,
 ) -> tuple[dict[str, list[dict[str, object]]], PhaseState]:
     """产出**双通路**轨迹，镜像 `ExpressionAgent` 对每个表情通道的既有做法。
@@ -451,11 +539,21 @@ def generate_dual(
     `regulated_affect=None`（未开调节）或 `voluntary_leak=1.0` 时，`voluntary` 与
     `spontaneous` **逐字相同**——与 `ExpressionAgent` 默认 leak=1.0 两头等值的零回归语义一致。
 
+    `modulation`/`modulation_voluntary`：两个独立的调制系数插槽（非冗余！意志调控不只改幅度）：
+    - `modulation` 供 `spontaneous` 路（`None` 时该路内部自算 `modulation_from_affect(*affect)`）。
+    - `modulation_voluntary` **专属供 `voluntary` 路**：`None`（默认）时回退复用 `modulation`，
+      与本参数引入前逐字一致；传了才用它、不再挂 `modulation`。
+      区分开的原因：两路驱动的 (v,a) 不同源（`affect` vs `regulated_affect`），调制系数也
+      应跟着分开算（图内 `MotionAgent` 用 `state.affect_sample` / `state.regulated_affect`
+      各算一组）。否则 `voluntary` 路会丢掉"被调节后的调制系数"、只剩 `amplitude_scale×leak`
+      的整体缩放，速度/锐度不再随调节变化——2026-08-07 实测的真缺陷，不是假设。
+
     Args:
         affect: 未调节的 e\\*。
         regulated_affect: 经 Regulation 的 e\\*；None → 退回 `affect`（未开调节）。
         voluntary_leak: ∈[0,1]，随意头保留多少情绪驱动。会被钳到 `MIN_VOLUNTARY_LEAK`
             以上——**意志压不平情绪**，压平即情绪塌陷。
+        modulation_voluntary: 专属供 voluntary 路的调制系数；None（默认）回退复用 `modulation`。
 
     Returns:
         ({"spontaneous": [...], "voluntary": [...]}, phase_out)。
@@ -473,8 +571,11 @@ def generate_dual(
     )
     leak = max(MIN_VOLUNTARY_LEAK, min(1.0, voluntary_leak))
     source = regulated_affect if regulated_affect is not None else affect
-    if source == affect and leak >= 1.0:
-        # 两头等值：直接复用，避免同一输入算两遍（也保证逐字相同而非"数值相近"）
+    if source == affect and leak >= 1.0 and modulation_voluntary is None:
+        # 两头等值且无独立 voluntary 调制系数：直接复用，避免同一输入算两遍
+        # （也保证逐字相同而非"数值相近"）。加 modulation_voluntary is None
+        # 是为了不静默丢掉调用方显式传入的不同 voluntary 调制系数
+        # （即使 source==affect 且 leak≥1.0）。
         return {"spontaneous": spontaneous, "voluntary": spontaneous}, phase_out
     voluntary, _ = generate(
         source[0],
@@ -482,7 +583,7 @@ def generate_dual(
         duration_ms,
         phase_in,  # 同一相位输入：同一具身体，节律不分叉
         fps=fps,
-        modulation=modulation,
+        modulation=modulation_voluntary if modulation_voluntary is not None else modulation,
         amplitude_scale=amplitude_scale * leak,
     )
     return {"spontaneous": spontaneous, "voluntary": voluntary}, phase_out

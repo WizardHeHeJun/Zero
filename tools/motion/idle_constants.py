@@ -1,94 +1,44 @@
-"""从 StayStill 待机数据提取合成器全部程序化常数的同域实测值。
+"""从 StayStill 待机数据提取合成器各程序化常数的同域实测值（**概览用**）。
 
-对应 motion_synth.py 里当前的手写/借用文献值：
-  NOISE_AMPLITUDE_DEG=14（三轴等幅）· BREATH_HZ=0.27 · SWAY_HZ=0.07
-  BREATH_AMPLITUDE_DEG=0.2 · SWAY_AMPLITUDE_DEG=0.6
-  POSE_CYCLE_S=2.4 · POSE_RISE_S=0.45 · YAW_ROLL_COUPLING=-0.125
+🛑 **本脚本只给"数据长什么样"的概览，不作为定值依据**——2026-08-07 起，
+每个常数该不该改由 `coupling_measure.py` / `idle_criteria.py` 的**判据**决定：
+
+| 本脚本会打印的 | 判据结论 |
+| --- | --- |
+| 三轴幅度比 | ✅ 已采纳（1 : 0.33 : 0.19），留出集复现（sd 比 0.144~0.224） |
+| yaw-roll 耦合 +0.415 | ❌ **几何伪影**，已被消融对照臂证伪 → 用 `coupling_measure.py` 的 −0.45 |
+| 呼吸带主峰 0.178Hz | ❌ **取带边界的产物**，非真峰 → `BREATH_HZ` 保留文献值 0.27 |
+| 转移/驻留时长 | ❌ 绝对秒数不可采信（无阈值平台）→ 只有"占空比约为合成器 2.7 倍"可用 |
+
+角度提取自 2026-08-07 起统一走 `anatomy.py`（坐标系实测判定 + 免泄漏 roll）。
 
 ⚠ 分割参数沿用数学席的处方：平滑 + 迟滞双阈 + 最短段过滤，且阈值用**峰值百分比**
 （生物力学惯例）而非分布分位数（后者会按构造抹平占空比，已在 RAVDESS 上栽过）。
 """
 
-import math
 import statistics
 from collections import defaultdict
 from pathlib import Path
 
 import _paths as P  # 转正后统一取路径（原为 scratchpad 绝对路径）
 import numpy as np
+from anatomy import detect_anatomy, head_angles, parse_bvh
 
 ROOT = Path(P.STAYSTILL / "idle")
 FPS = 30.0
 
 
-def parse_bvh(path):
-    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    joints, channels, cur = [], {}, None
-    for i, raw in enumerate(lines):
-        s = raw.strip()
-        if s.startswith(("ROOT ", "JOINT ")):
-            cur = s.split(None, 1)[1]
-            joints.append(cur)
-        elif s.startswith("CHANNELS") and cur:
-            channels[cur] = s.split()[2:]
-        elif s.startswith("MOTION"):
-            n = int(lines[i + 1].split(":")[1])
-            return (
-                joints,
-                channels,
-                [[float(v) for v in ln.split()] for ln in lines[i + 3 : i + 3 + n] if ln.strip()],
-            )
-    return joints, channels, []
-
-
-def col(j, c, joint, ch):
-    idx = 0
-    for jj in j:
-        for cc in c.get(jj, []):
-            if jj == joint and cc == ch:
-                return idx
-            idx += 1
-    return None
-
-
-def rot(a, d):
-    r = math.radians(d)
-    co, si = math.cos(r), math.sin(r)
-    return (
-        [[1, 0, 0], [0, co, -si], [0, si, co]]
-        if a == "X"
-        else [[co, 0, si], [0, 1, 0], [-si, 0, co]]
-        if a == "Y"
-        else [[co, -si, 0], [si, co, 0], [0, 0, 1]]
-    )
-
-
-def mm(a, b):
-    return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
-
-
-def jm(j, c, joint, row):
-    m = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
-    for ch in c.get(joint, []):
-        if ch.endswith("rotation"):
-            m = mm(m, rot(ch[0], row[col(j, c, joint, ch)]))
-    return m
-
-
 def series(path):
-    j, c, data = parse_bvh(path)
-    if not data:
+    """逐帧头部 yaw/pitch/roll（度）——走 `anatomy.py`：坐标系由骨架实测判定、roll 免泄漏。
+
+    ⚠ 旧版在此手写提取，把关节局部 +Y 当"朝前"（实际朝后）、roll 用 atan2(up_x, up_z)
+    （pitch≠0 时混入 yaw）。两处错都不驱红，只会让下游常数悄悄错掉。
+    """
+    skeleton = parse_bvh(Path(path))
+    if len(skeleton.frames) == 0:
         return None
-    ys, ps, rs = [], [], []
-    for row in data:
-        m = mm(jm(j, c, "neck", row), jm(j, c, "face", row))
-        axis = [m[0][2], m[1][2], m[2][2]]
-        fwd = [m[0][1], m[1][1], m[2][1]]
-        ys.append(math.degrees(math.atan2(fwd[0], fwd[1])))
-        ps.append(math.degrees(math.asin(max(-1.0, min(1.0, fwd[2])))))
-        rs.append(math.degrees(math.atan2(axis[0], axis[2])))
-    unwrap = lambda v: np.unwrap(np.radians(v)) * 180 / math.pi  # noqa: E731
-    return unwrap(ys), np.array(ps), unwrap(rs)
+    angles = head_angles(skeleton, detect_anatomy(skeleton))
+    return angles["yaw"], angles["pitch"], angles["roll"]
 
 
 files = sorted(ROOT.glob("*.bvh"))
@@ -173,7 +123,7 @@ print(f"\n④ yaw-roll 相关（n={len(coupling)}）")
 print(f"   中位={statistics.median(coupling):+.3f}  均值={statistics.fmean(coupling):+.3f}")
 
 print("\n" + "=" * 64)
-print("对照当前 motion_synth.py 手写值")
+print("对照当前 motion_synth.py 的值 —— ⚠ 差异不等于该改，见本文件顶部的判据结论表")
 print("=" * 64)
 print(
     f"  三轴幅度      当前 14.0° 等幅        → 实测 {statistics.median(amp['yaw']):.1f}/"
@@ -181,9 +131,12 @@ print(
 )
 breath = statistics.median(peak_freqs["呼吸带 0.15-0.5Hz"])
 sway = statistics.median(peak_freqs["低频漂移 0.02-0.15Hz"])
-print(f"  BREATH_HZ     当前 0.27              → 实测 {breath:.3f}")
+print(f"  BREATH_HZ     当前 0.27              → 带内主峰 {breath:.3f} ❌ 边界产物，不改")
 print(f"  SWAY_HZ       当前 0.07              → 实测 {sway:.3f}")
-print(f"  POSE_RISE_S   当前 0.45              → 实测 {statistics.median(moves):.3f}")
+print(f"  POSE_RISE_S   当前 0.45              → 分割 {statistics.median(moves):.3f} ❌ 无阈值平台")
 cycle = statistics.median(moves) + statistics.median(dwells)
-print(f"  POSE_CYCLE_S  当前 2.4               → 实测 {cycle:.2f}")
-print(f"  YAW_ROLL_COUPLING 当前 -0.125        → 实测 {statistics.median(coupling):+.3f}")
+print(f"  POSE_CYCLE_S  当前 2.4               → 分割 {cycle:.2f} ❌ 同上，绝对值不可采信")
+print(
+    f"  YAW_ROLL_COUPLING 当前 -0.45         → 本脚本原序列相关 {statistics.median(coupling):+.3f}"
+)
+print("     （原序列相关含慢漂移；定值用的是免泄漏**增量**相关 −0.458，见 coupling_measure.py）")

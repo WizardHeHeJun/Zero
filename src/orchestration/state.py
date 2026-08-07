@@ -124,6 +124,26 @@ class AffectState(BaseModel):
     regulated_affect: tuple[float, float] | None = None
     expression: dict[str, Any] = Field(default_factory=dict)
 
+    # ── Motion（MotionAgent，PRP/motion/design-agent.md；已过议会门 2026-08-06 第五轮）──
+    # motion_backend：单一枚举门控（CS 席要求，避免多布尔组合爆炸）。
+    # "synth"（默认）→ MotionAgent no-op（返回 {}）——`zero.motion` 拉取侧沿用现状：
+    #   现场读 session.last_affect() 自算调制系数，不消费 motion_directive；zero.step 逐字零回归。
+    # "directive" → MotionAgent 在图内按回合产出 motion_directive（见下），
+    #   `zero.motion` 拉取侧已接线消费（`session.last_motion_directive` → `Modulation`
+    #   传入 `motion_synth.generate_dual`，2026-08-07）；设计文档 §7「待补」里 events 合流点
+    #   移到 MotionAgent 一项已随本次改动完成，同步勾掉。
+    # 由 ZERO_MOTION_BACKEND env → chat_driver/runner → 此字段贯通。
+    motion_backend: Literal["synth", "directive"] = "synth"
+    # motion_directive：MotionAgent 产出的小型可序列化结构（同 expression 先例，非大对象）：
+    # {amplitude, speed, onset, regulated: {amplitude,speed,onset}|None,
+    #  scene: "idle"|"speaking", events: [...], prosody_ref}。顶层三键供 spontaneous
+    # （非随意通路）；regulated 为 voluntary（随意通路）专属调制系数，None＝未开调节/
+    # 调节没改变什么（`zero.motion` 据此回退复用顶层系数，见 `MotionAgent._regulated_modulation`
+    # 的缺陷记录——此前两路共用一份系数，voluntary 会丢掉"被调节后的调制系数"）。
+    # motion_backend="synth" 时本字段恒为 None（MotionAgent 不写它，无 LastValue 残留风险——
+    # 门控是会话级固定值，不会话中途切换，同 facs_extended/canonical_physiology 先例）。
+    motion_directive: dict[str, Any] | None = None
+
     # 观测与作用域：trace 用 reducer 累加，节点只需返回自己的 [entry]（避免每步全量拷贝）
     trace: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
     session_id: str = "default-session"
