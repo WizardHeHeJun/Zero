@@ -2395,6 +2395,63 @@ def test_resolve_transport_matches_pre_extraction_expression(
     )
 
 
+def test_motion_gate_readback_is_single_sourced_with_the_tool_guard() -> None:
+    """🛑 AST：`describe_config` 的 `motion_enabled` 必须**就是** `_motion_enabled()` 的值，
+    且 `ZERO_MOTION_ENABLED` 在 `src/mcp_server/` 里只被 `_motion_enabled` 读。
+
+    存在理由（Zero_MCP 2026-08-11，逐字）：「**请把保证下在同源上，不要下在版本上**」——
+    对方明确拒绝了我方提议的「翻转必伴随 version bump」（版本管的是形状：增删键/值域/语义，
+    而 env 翻转不改形状，为它 bump 会让**所有**消费方看到一次不认识的版本而整体降级判读），
+    并指出它真正依赖的是这条结构性质：**回读面与门判同源**。此前它只是"碰巧成立"、无守卫。
+
+    ⚠ 行为测试抓不到这一半：若有人在回读面里另抄一份读**同一个 env 名**的解析，翻 env 时
+    两侧仍一起翻 ⇒ `test_describe_config_motion_gate_is_same_source_as_motion_tool` 照绿。
+    但判据将来一改（换 env 名 / 加会话级 override / 加缓存），两处当场分叉，而分叉里最坏的
+    那个方向正是对方点名怕的：**回读面说没开、实际开着** ⇒ 对方永远不装配动作通路且一声不响，
+    观测上与「这个部署本来就没有动作通道」不可区分。
+
+    ⚠ 挡不住把 env 名先塞进变量再读（同 `test_transport_resolution_is_single_sourced`
+    的边界声明）：目标是无心之失，不是存心绕过。
+    """
+    import src.mcp_server.server as srv
+
+    # ① 值表达式：`"motion_enabled": _motion_enabled()`，不是常量、不是内联 env 读取
+    tree = ast.parse(Path(srv.__file__).read_text(encoding="utf-8"))
+    values = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values, strict=True)
+        if isinstance(key, ast.Constant) and key.value == "motion_enabled"
+    ]
+    assert len(values) == 1, f"motion_enabled 的产出点不唯一（{len(values)} 处）——守卫失锚"
+    call = values[0]
+    assert (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_motion_enabled"
+        and not call.args
+    ), (
+        "motion_enabled 的值不再是 `_motion_enabled()` —— 回读面与 zero.motion 的门判已不同源；"
+        "跨仓消费方（Zero_MCP）正是把它当调用前判据在用"
+    )
+
+    # ② env 单源：门判自己也不许被绕开（否则 ① 成立但 `_motion_enabled` 已不是唯一解析点）
+    files = sorted(Path(srv.__file__).parent.glob("*.py"))
+    readers: list[tuple[str, str, int]] = []
+    for path in files:
+        source = path.read_text(encoding="utf-8")
+        readers += [
+            (path.name, enclosing, line)
+            for line, env_name, enclosing in _env_read_sites(source, path.name)
+            if env_name == "ZERO_MOTION_ENABLED"
+        ]
+    assert readers, "全包内没有一处读 ZERO_MOTION_ENABLED —— 守卫已失锚（env 名改了？），请重写"
+    assert [(f, fn) for f, fn, _ in readers] == [("server.py", "_motion_enabled")], (
+        f"ZERO_MOTION_ENABLED 被多处/别处读取：{readers}；门判与回读面必须共用 _motion_enabled"
+    )
+
+
 def test_transport_resolution_is_single_sourced() -> None:
     """🛑 AST：`ZERO_MCP_TRANSPORT` 在 `src/mcp_server/` 里**只能**被 `resolve_transport` 读。
 
