@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from src.agents.behavior_intent import (
+    BehaviorIntent,
     lexical_intents,
     merge_intents,
     stage_direction_intents,
@@ -120,6 +121,13 @@ class VtsSink:
             logger.warning("皮套连接失败，退化为纯对话：%s", exc)
             await self._kill_worker()
             return False
+        except BaseException:
+            # ⚠ CancelledError 是 BaseException 不是 Exception（code-reviewer 2026-08-11）：
+            # 子进程已起、握手中途被外部取消时，若不在这里清理，句柄丢失而进程仍在——
+            # 单进程 REPL 下靠父进程退出兜底，但本层文档明写供多 sink/长生命周期宿主复用，
+            # 那种场景会堆积子进程。清理后原样抛出，不吞取消。
+            await self._kill_worker()
+            raise
         if not reply.get("ok"):
             logger.warning("皮套连接被拒，退化为纯对话：%s", reply.get("error"))
             await self._kill_worker()
@@ -183,7 +191,7 @@ class VtsSink:
                 await asyncio.wait_for(self._rpc({"op": "close"}), timeout=5.0)
             await self._kill_worker()
 
-    def _intents(self, reply: str) -> list[Any]:
+    def _intents(self, reply: str) -> list[BehaviorIntent]:
         """③层离散行为：与 `MotionAgent._events` 同一套判定（含 12 词闭集守卫）。"""
         _, segments = strip_stage_directions_with_segments(reply)
         return merge_intents(lexical_intents(reply), stage_direction_intents(segments))

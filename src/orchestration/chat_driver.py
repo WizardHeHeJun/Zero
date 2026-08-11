@@ -46,7 +46,7 @@ from src.agents.models.composite import (
     ProsodyModel,
 )
 from src.agents.persona import Persona, load_persona
-from src.expression_out.base import ExpressionSink  # 类型用；实现不进本模块 import 图
+from src.expression_out.base import ExpressionFrame, ExpressionSink  # 零依赖协议叶子模块
 from src.expression_out.factory import build_expression_sinks
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
@@ -615,19 +615,24 @@ class ChatDriver:
         """
         if not self.expression_sinks:
             return
-        from src.expression_out.base import ExpressionFrame
-
-        frame = ExpressionFrame(
-            emotion=self.emotion,
-            emotion_label=word,
-            reply=reply,
-            regulated=self.session.last_regulated_affect,
-            channels={},
-        )
+        try:
+            # ⚠ try 从**帧构造**就开始（code-reviewer 2026-08-11）：此前只包 emit，
+            # 而帧构造也会读 session 状态——将来给 ExpressionFrame 加个会算数的字段，
+            # 红线就被悄悄绕过且无测试能发现。覆盖面按"整段表现"划，不按"某个调用"划。
+            frame = ExpressionFrame(
+                emotion=self.emotion,
+                emotion_label=word,
+                reply=reply,
+                regulated=self.session.last_regulated_affect,
+                channels={},
+            )
+        except Exception as exc:  # noqa: BLE001 —— 表现层任何异常都不得打断对话
+            logger.warning("表现帧构造失败（对话继续）：%s", exc)
+            return
         for sink in self.expression_sinks:
             try:
                 await sink.emit(frame)
-            except Exception as exc:  # noqa: BLE001 —— 表现层任何异常都不得打断对话
+            except Exception as exc:  # noqa: BLE001 —— 同上：一个 sink 炸不影响其它
                 logger.warning("表现层 %s 投递失败（对话继续）：%s", type(sink).__name__, exc)
 
     async def aclose(self) -> None:

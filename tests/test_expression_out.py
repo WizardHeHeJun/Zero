@@ -20,12 +20,21 @@ from src.expression_out.vts import VtsSink
 
 
 class RecordingSink:
-    """记录收到的帧；可选地在 emit 时抛异常（模拟渲染端故障）。"""
+    """记录收到的帧；可选地在 emit 时抛异常（模拟渲染端故障）。
+
+    刻意**不做任何连接**——代表"无需连接的表现形式"（纯文字标签/写文件那类），
+    用来钉住协议必须能容纳这种实现（`connect` 直接返回 True）。
+    """
 
     def __init__(self, *, boom: bool = False) -> None:
         self.frames: list[ExpressionFrame] = []
         self.boom = boom
         self.closed = False
+        self.connected = False
+
+    async def connect(self) -> bool:
+        self.connected = True
+        return True
 
     async def emit(self, frame: ExpressionFrame) -> None:
         self.frames.append(frame)
@@ -148,11 +157,36 @@ async def test_vts_connect_failure_returns_false(tmp_path: Any) -> None:
     await sink.aclose()  # 幂等：没连上也能安全关
 
 
-async def test_vts_emit_without_connect_is_noop() -> None:
-    """未连接时 emit 静默返回（不抛、不阻塞）。"""
+async def test_vts_emit_without_connect_short_circuits() -> None:
+    """未连接时 emit **提前短路**——不是"抛了被自己吞掉"。
+
+    区分力（code-reviewer 2026-08-11 指出旧版验不出东西）：旧断言只看"不抛异常"，
+    而删掉 `self.proc is None` 那道早退护栏后，下游 `_rpc` 抛的 RuntimeError 同样会被
+    emit 自己的 try/except 吞掉 ⇒ 测试照绿。现在直接监视 `_rpc`：未连接时它一次都不该被调。
+    """
     sink = VtsSink()
-    await sink.emit(ExpressionFrame(emotion=(0.5, 0.5), emotion_label="欣喜", reply="好啊"))
+    calls: list[dict[str, Any]] = []
+
+    async def spy(msg: dict[str, Any]) -> dict[str, Any]:
+        calls.append(msg)
+        return {"ok": True}
+
+    sink._rpc = spy  # type: ignore[method-assign]
+    await sink.emit(ExpressionFrame(emotion=(0.5, 0.5), emotion_label="欣喜", reply="是这样"))
+    assert calls == []  # 护栏被删则这里会收到 behavior 指令
     await sink.aclose()
+
+
+async def test_sink_without_connection_step_satisfies_protocol() -> None:
+    """无需连接的表现形式也能满足协议并被入口统一调用（协议含 connect 的理由）。
+
+    此前 connect 是 VtsSink 独有的扩展方法，入口靠鸭子类型硬调——加一个没有该方法的
+    实现就 AttributeError（mypy main.py 实证）。现在协议要求它，本用例钉住这条。
+    """
+    sink = RecordingSink()
+    assert isinstance(sink, ExpressionSink)
+    assert await sink.connect() is True
+    assert sink.connected
 
 
 def test_vts_intents_reuse_closed_vocabulary() -> None:

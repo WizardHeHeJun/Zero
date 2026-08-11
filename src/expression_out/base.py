@@ -61,6 +61,19 @@ class ExpressionSink(Protocol):
     塞进同一个协议会逼着实现方在"吞掉异常"和"打断对话"之间二选一，两边都错。
     """
 
+    async def connect(self) -> bool:
+        """建立与表现端的连接并启动后台任务；返回是否可用。
+
+        **必须实现，即使不需要连接**——不需要外部连接的表现形式（纯文字标签、写文件）
+        直接 `return True` 即可。放进协议是因为入口要对每个 sink 统一调用它：
+        写成"VtsSink 独有的扩展方法"会让入口只能靠鸭子类型硬调，加一个没有该方法的
+        实现就 `AttributeError`（code-reviewer 2026-08-11 实证，`mypy main.py` 可复现）。
+
+        约定与 `emit` 一致：**不抛异常**，连不上就返回 False 并自行降级（调用方据此
+        决定是否继续无表现地跑）。
+        """
+        ...
+
     async def emit(self, frame: ExpressionFrame) -> None:
         """把一帧表现内容送出去。"""
         ...
