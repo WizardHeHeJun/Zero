@@ -12,6 +12,20 @@
 轨迹合成复用 `agents.motion_synth`（纯函数、给定 seed 确定），行为抽取复用
 `agents.behavior_intent`（12 词闭集守卫在内）——本模块只做**投递**，不含任何动作决策。
 
+## ⚠ 根因已由对方查穿（2026-08-11 回执，订正下方我方原猜测）
+
+我方原以为是「anyio 上下文 vs 普通上下文」的差别——**被证伪**。真因是：**FastMCP stdio
+server 进入事件循环之后，在工具体里首次 `import numpy`（或任何传递性拉 numpy 的包）会
+无限期卡在扩展模块加载**（Windows loader），既不返回也不抛错。对方 `_get_service()` 的
+延迟 import 链路正好首次拉起 numpy。判据是「**是否首次触达 numpy**」而非「是否原生扩展」，
+且 `asyncio.to_thread` 包起来也救不了。对方已修（预热 import 提到 `mcp.run()` 之前）。
+
+⇒ **切回标准 MCP 的条件已满足**：拉到对方含该修复的 main 后，把下面 `_rpc` 换回
+`ClientSession.call_tool` 即可，上层协议不动。
+⇒ 我方 server 自查结论：**不踩此雷**（拉 torch/numpy 的解码器构造在 `build_server()` 里、
+即 `server.run()` 之前），且已配结构守卫 `tests/test_mcp_native_import_guard.py` 防将来
+有人把重依赖 import 挪进工具体（该守卫做过变异验证：埋入即红）。
+
 ## 为什么要跨进程（不是绕路）
 
 渲染在配套项目 Zero_MCP（`VtsExpressionSink` 持 VTS WebSocket），而两仓都用 `src.` 作包根、

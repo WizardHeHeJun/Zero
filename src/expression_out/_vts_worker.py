@@ -5,14 +5,20 @@
 两仓都用 `src.` 作包根、不能同进一个 `sys.path`——渲染实现（`BehaviorService` /
 `VtsExpressionSink`）在对面仓，本进程（Zero）装着对话与情感引擎，只能隔进程调。
 
-## 为什么不用对方的 MCP server（2026-08-11 实测决定）
+## 为什么不用对方的 MCP server（2026-08-11 实测发现 → 对方已修，本接法待切回）
 
 对方有现成的 `vts_behavior_mcp_server`（暴露 `vts_connect`/`params_animate`/
-`behavior_trigger`），首选本该是它。但实测：**经 MCP stdio 调 `vts_connect` 25 秒不返回**
-（卡在 `BehaviorService.connect()` 里的 VTS 握手/枚举阶段），而**同一份代码在普通进程内
-直连秒通**（`healthy=True`、轨迹 `accepted`）——对照实验两侧只差"是否跑在 MCP server 的
-anyio 上下文里"。这是对方仓的问题，已跨仓通报；在它修好前，本 worker 走已验证可靠的
-进程内直连，只把 IPC 降级成一条极简的行分隔 JSON 协议：
+`behavior_trigger`），首选本该是它。但实测：**经 MCP stdio 调 `vts_connect` 25 秒不返回**，
+而**同一份代码在普通进程内直连秒通**。
+
+⚠ **根因订正**（对方回执查穿，我方原猜的「anyio 上下文差异」**被证伪**）：真因是
+**FastMCP stdio server 进入事件循环后，工具体里首次 `import numpy`（或传递性拉 numpy 的
+包）会无限期卡在扩展模块加载**——对方 `_get_service()` 的延迟 import 正踩此坑；而进程内
+直连之所以好，是因为 import 发生在事件循环**之前**（计时窗口的差别，不是上下文的差别）。
+
+对方已修（预热 import 提到 `mcp.run()` 之前）。**切回条件已满足**：拉到对方含该修复的
+main 后，把 `VtsSink._rpc` 换回 `ClientSession.call_tool`，本 worker 即可退役；在此之前
+它走已验证可靠的进程内直连，只把 IPC 降级成一条极简的行分隔 JSON 协议：
 
     stdin  ← {"op": "connect"} / {"op": "animate", "keyframes": [...]}
              / {"op": "behavior", "name": "nod", "intensity": 0.6, "direction": null}
