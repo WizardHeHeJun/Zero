@@ -2412,6 +2412,11 @@ def test_motion_gate_readback_is_single_sourced_with_the_tool_guard() -> None:
 
     ⚠ 挡不住把 env 名先塞进变量再读（同 `test_transport_resolution_is_single_sourced`
     的边界声明）：目标是无心之失，不是存心绕过。
+
+    🛑 **删改本守卫前须跨仓通报**（我方单边纪律，2026-08-11）：对方明说过「别人仓里的守卫
+    不构成我方的保障——你方若哪天重构掉它，我方不会知道」，并已预告在真消费这一位时会补一道
+    对称 crosscheck。两道并存是对的；但在它补上之前，**这一道是那条性质的唯一看守**，
+    而对方那时可能已经把一条通路的装配与否押在这一位上了。
     """
     import src.mcp_server.server as srv
 
