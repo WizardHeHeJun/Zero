@@ -167,7 +167,11 @@ _UNKNOWN_SESSION_MARKER = ZERO_ERROR_CODE_UNKNOWN_SESSION
 # 3 → 4（Zero_MCP 2026-07-30 §E.13）：新增 `memory_store_impl` / `semantic_store_impl` /
 # `checkpointer_impl` 三键。同属第 ① 类，但同样 bump：对方要拿它们判定「本次观察期是否全内存」
 # ——即数据留存问题的事实基础，误读的代价是把一个落盘部署当成全内存部署上报。
-DESCRIBE_CONFIG_VERSION = 4
+# 4 → 5（Zero_MCP 2026-08-11 回执 §五.3）：新增 `motion_enabled` / `motion_backend` 两键。
+# 对方问的是「将来接动作通道时，想在**调用前**就知道该部署开没开」——同 `0effea7` 的题意：
+# **env 名证明不了实际状态**。同属第 ① 类本可不 bump，但对方要拿 `motion_enabled` 决定
+# 「要不要发 zero.motion 这一路调用」，属「拿不准就 bump」那一档。
+DESCRIBE_CONFIG_VERSION = 5
 
 # ── 生效传输模式：**唯一**解析点 ────────────────────────────────────────────
 # 🛑 `__main__.main` 与 `zero.describe_config` **共用**本符号，任何第二处都不得重抄这段解析。
@@ -1211,6 +1215,23 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 )
             ),
             "checkpointer_impl": type(session.checkpointer).__name__ if session else None,
+            # ── 动作通道（Zero_MCP 2026-08-11 回执 §五.3）────────────────────────
+            # 对方要在**调 `zero.motion` 之前**知道该部署开没开。此前唯一的知情方式是先调
+            # 一次、吃一个 `[zero:motion-disabled]` —— 而那个码在对方侧归**不可降级**、按
+            # 「认命并停止再调」处置 ⇒ 拿它当能力探针等于把一个正常分支建成错误分支。
+            # 🛑 同源：与 `zero.motion` 的门判用**同一个符号** `_motion_enabled()`，此处不重抄
+            # env 解析（同 `transport` 与 `resolve_transport` 的纪律：两处各读一次 = 造漂移源）。
+            # ⚠ 与 `transport` 的诚实边界**不同**：那条消不掉「启动时起传输、调用时现读 env」的
+            # 时序漂移；本键没有那半条 —— 门判本身也是每次调用现读 env ⇒ 本键回的就是
+            # 「下一次 `zero.motion` 会看到的那个值」。它是**进程级**事实，与 sid 无关。
+            "motion_enabled": _motion_enabled(),
+            # 档位是**会话级**（且在治理白名单内：只受 `ZERO_MCP_MOTION_BACKEND` 治理，
+            # client overrides 传同名字段被静默忽略）⇒ 带 sid = 该会话真实生效档，
+            # 不带 sid = 部署端默认面。它答的是「拉到的轨迹是**谁**算的」：
+            # synth = 拉取侧现算；directive = 图内 MotionAgent 决策；efference = directive
+            # + 指令级副本回流。三档的 keyframes 形状一致 ⇒ 非消费必需项，但只有这一位
+            # 能让对方分辨「同一段轨迹换没换决策源」。
+            "motion_backend": cfg.motion_backend,
         }
 
     @mcp.tool(

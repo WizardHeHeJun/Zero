@@ -941,9 +941,9 @@ async def test_describe_config_version_bumped_with_contract_change() -> None:
 
     # ⚠ 下界必须随每轮 bump 一起收紧，否则本断言不是 tripwire、只是注释：
     # 实测把 DESCRIBE_CONFIG_VERSION 改回 2 时，旧的 `>= 2` 下界让**全套 1850 条全绿**。
-    assert DESCRIBE_CONFIG_VERSION >= 4, (
-        "本轮 describe_config 新增 memory_store_impl / semantic_store_impl / checkpointer_impl "
-        "三键（契约变化），须 bump 到 ≥4；上一轮的理由是新增 transport / stateless_http 两键"
+    assert DESCRIBE_CONFIG_VERSION >= 5, (
+        "本轮 describe_config 新增 motion_enabled / motion_backend 两键（契约变化），须 bump "
+        "到 ≥5；上一轮的理由是新增 memory_store_impl / semantic_store_impl / checkpointer_impl"
     )
     async with connect(build_server()) as client:
         await client.initialize()
@@ -1286,6 +1286,95 @@ async def test_describe_config_backend_impls_null_without_sid() -> None:
         for key in ("memory_store_impl", "semantic_store_impl", "checkpointer_impl"):
             assert key in d, f"{key} 被省略了 —— 形制第 2 条要求不省略键"
             assert d[key] is None, f"{key} 无 sid 时回了 {d[key]!r}，应为 null（不可知）"
+
+
+async def test_describe_config_motion_gate_is_same_source_as_motion_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🛑 `motion_enabled` 与 `zero.motion` 的门判必须**同源**：两处一起翻，才算回读面。
+
+    存在理由（Zero_MCP 2026-08-11 回执 §五.3）：对方要在**调 `zero.motion` 之前**知道该部署
+    开没开。此前唯一知情方式是先调一次、吃一个 `[zero:motion-disabled]` —— 而那个码在对方侧
+    归**不可降级**、按「认命并停止再调」处置 ⇒ 拿它当能力探针等于把正常分支建成错误分支。
+
+    判别力取在**两侧一起翻**上，而不是「默认回 False」：后者在有人把本键写死 `False`
+    （或另起一份 env 解析）时**全绿**，而那正是回读面失去意义的形态。
+    """
+    monkeypatch.delenv("ZERO_MOTION_ENABLED", raising=False)
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr((await client.call_tool("zero.open_session", {})).content[0], "text", "")
+        )["session_id"]
+
+        off = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        assert off["motion_enabled"] is False
+        r = await client.call_tool("zero.motion", {"session_id": sid})
+        assert r.isError is True
+        assert "motion-disabled" in getattr(r.content[0], "text", ""), (
+            "回读面说没开，工具却没按 motion-disabled 拒 —— 两处判据已分叉"
+        )
+
+        monkeypatch.setenv("ZERO_MOTION_ENABLED", "true")
+        on = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        assert on["motion_enabled"] is True, "门已开而回读面仍报 False —— 本键疑似写死/另起解析"
+        r2 = await client.call_tool("zero.motion", {"session_id": sid, "duration_ms": 200})
+        assert r2.isError is False, "回读面说开着，工具却仍拒 —— 两处判据已分叉"
+        assert "keyframes" in json.loads(getattr(r2.content[0], "text", ""))
+
+
+async def test_describe_config_motion_backend_is_session_scoped_and_governed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`motion_backend`：带 sid = 会话真实生效档；不带 sid = 部署端默认面（跟随 env）。
+
+    顺带钉住治理白名单在回读面上的可见性：该字段只受 `ZERO_MCP_MOTION_BACKEND` 治理，
+    client 经 `config` overrides 传同名字段被**静默忽略** ⇒ 回读面必须回 env 那一档。
+    若哪天 overrides 重新生效（旁路），本条会红在这一行上。
+    """
+    monkeypatch.setenv("ZERO_MCP_MOTION_BACKEND", "directive")
+    async with connect(build_server()) as client:
+        await client.initialize()
+        sid = json.loads(
+            getattr(
+                (
+                    await client.call_tool(
+                        "zero.open_session", {"config": {"motion_backend": "synth"}}
+                    )
+                ).content[0],
+                "text",
+                "",
+            )
+        )["session_id"]
+        with_sid = json.loads(
+            getattr(
+                (await client.call_tool("zero.describe_config", {"session_id": sid})).content[0],
+                "text",
+                "",
+            )
+        )
+        assert with_sid["motion_backend"] == "directive", (
+            "client overrides 旁路了治理门 —— 生产关·MCP 开的形态"
+        )
+
+        # 会话已建；此刻翻转 env：带 sid 必须仍回建会话时那一档（同 precision_commensurable 先例）
+        monkeypatch.setenv("ZERO_MCP_MOTION_BACKEND", "synth")
+        again = json.loads(
+            getattr(
+                (await client.call_tool("zero.describe_config", {"session_id": sid})).content[0],
+                "text",
+                "",
+            )
+        )
+        assert again["motion_backend"] == "directive"
+        no_sid = json.loads(
+            getattr((await client.call_tool("zero.describe_config", {})).content[0], "text", "")
+        )
+        assert no_sid["motion_backend"] == "synth", "部署端默认面应跟随当下 env"
 
 
 async def test_describe_config_shape_meets_consumer_requirements() -> None:
