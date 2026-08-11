@@ -46,6 +46,8 @@ from src.agents.models.composite import (
     ProsodyModel,
 )
 from src.agents.persona import Persona, load_persona
+from src.expression_out.base import ExpressionSink  # 类型用；实现不进本模块 import 图
+from src.expression_out.factory import build_expression_sinks
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
 from src.orchestration.memory_recall import normalized_importance
@@ -337,6 +339,10 @@ class ChatDriver:
         consolidation_timeout: float = 30.0,  # aclose 巩固超时秒（ZERO_CONSOLIDATION_TIMEOUT）
         # salience 升迁门（Hill 归一后·默认 0.25·议会 2026-07-22）
         consolidation_salience_threshold: float = 0.25,
+        # 表现层出口（src/expression_out）：本轮情绪+回复的下游消费者，如皮套动作、语音。
+        # 只认协议（鸭子类型），本模块不 import 任何实现——加表现形式不动对话核心。
+        # 空列表=不表现（默认，零回归）。表现失败由各 sink 自行降级，不回灌本层。
+        expression_sinks: list[ExpressionSink] | None = None,
     ) -> None:
         self.thread = thread
         self.lm = lm
@@ -346,6 +352,7 @@ class ChatDriver:
         self.attitude = attitude
         self.emotion = attitude  # 情绪短时：启动即回到「对此人的态度」基线，不带旧情绪
         self.mode = mode
+        self.expression_sinks = list(expression_sinks or [])
         # L2 气质底色 + L3 预置关系：默认中性 Persona() / 无记忆句柄 → 逐字现有行为（零回归）。
         self.persona = persona
         self.memory = memory
@@ -589,6 +596,7 @@ class ChatDriver:
             self.attitude[1],
         )
         self.exposure += 1  # 本轮末尾统一自增（见上：三处 exposure 用法同读本轮前计数 n，W1）
+        await self._express(reply, word)
         return ChatTurn(
             reply=reply,
             appraised=(v, a),
@@ -597,6 +605,30 @@ class ChatDriver:
             emotion_label=word,
             attitude=self.attitude,
         )
+
+    async def _express(self, reply: str, word: str) -> None:
+        """把本轮情绪+回复交给表现层出口（皮套/语音/…）。无 sink 时 no-op。
+
+        🛑 **表现失败绝不扳倒对话**：逐个 sink 捕获异常只记 warning——情绪与记忆是主链路，
+        表现是下游，下游故障不回灌上游。位置在 step 末尾（一轮已完成、记忆已落），
+        **不在情感数值通路里**，故不影响给定 seed 的可复现性。
+        """
+        if not self.expression_sinks:
+            return
+        from src.expression_out.base import ExpressionFrame
+
+        frame = ExpressionFrame(
+            emotion=self.emotion,
+            emotion_label=word,
+            reply=reply,
+            regulated=self.session.last_regulated_affect,
+            channels={},
+        )
+        for sink in self.expression_sinks:
+            try:
+                await sink.emit(frame)
+            except Exception as exc:  # noqa: BLE001 —— 表现层任何异常都不得打断对话
+                logger.warning("表现层 %s 投递失败（对话继续）：%s", type(sink).__name__, exc)
 
     async def aclose(self) -> None:
         """会话结束清理：触发记忆巩固批处理，关闭语义后端连接。
@@ -967,6 +999,14 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         "yes",
         "on",
     )
+    # regulation_enabled：双通路调节（自发 vs 随意）。开启后 regulated_affect 非 None，
+    # 表现层据此走双通路（Rinn 1984）；也是行为反馈流的在场门。默认关=零回归。
+    regulation_enabled = os.getenv("ZERO_REGULATION_ENABLED", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；config-only-via-env）。
     # external_priors 本身每轮由 state_overrides 注入（MCP 侧），不在此读取。
     # 此处只读会话级固定的校验参数：精度上界 + 流数上界。
@@ -1077,6 +1117,9 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         motion_backend=motion_backend,
         # behavior_feedback_enabled：行为反馈流总门（第二步；默认关=零回归）。
         behavior_feedback_enabled=behavior_feedback_enabled,
+        # regulation_enabled：开双通路调节，使表现层能拿到 regulated_affect（随意通路）；
+        # 同时它是行为反馈流的在场门（副本 voluntary 非 None ⇔ 调节真改变了表达）。
+        regulation_enabled=regulation_enabled,
         # 外部多模态先验流注入口（议会 2026-07-15 M3/M6；默认=零回归）。
         external_prior_precision_cap=external_prior_precision_cap,
         max_external_streams=max_external_streams,
@@ -1093,6 +1136,9 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         mode=mode,
         persona=persona,
         memory=memory,
+        # 表现层出口：按 env 装配（ZERO_VTS_SINK 等；全未开 → 空列表 → 不表现，零回归）。
+        # 工厂在此处**唯一**知道具体实现；ChatDriver 本身只认协议。
+        expression_sinks=build_expression_sinks(),
         seed_key=resolved_thread,  # 种子记忆 user 作用域 key（= user_id = thread）
         first_contact=first_contact,
         rng_seed=rng_seed,  # P5：chat 层情绪噪声可复现（同一 ZERO_CHAT_RNG_SEED；None=零回归）
