@@ -81,6 +81,10 @@ DEFAULT_FPS = 20.0
 # 故按 token 文件是否已落盘分档：首次授权留够人点击，之后走机器档。
 CONNECT_TIMEOUT_S = 15.0  # 已授权过：纯机器路径（对面实测 0.0x s 级），留两个数量级余量
 CONNECT_TIMEOUT_FIRST_AUTH_S = 180.0  # 首次授权：含人去 VTS 点「允许插件」的时间
+# 🛑 人档按**纯人因**取值，不必给对面留余量（对面自查交底，2026-08-11）：其
+# `AuthenticationTokenRequest` 是全仓**唯一**显式传 `timeout=None` 的请求（就是它在等人点弹窗），
+# 其余请求走它自己的 10s，且 `vts_connect` 工具体不套超时 ⇒ **我方这个数是唯一的那把闸**，
+# 不存在两侧超时打架、也不会被对面抢先超时。调它的判据只有一条：**人多久会注意到那个弹窗**。
 
 
 def _text_of(result: Any) -> str:
@@ -142,6 +146,11 @@ class VtsSink:
         没有那句 = 踩了 numpy import 死锁（对面已修，见模块 docstring 那段结案历史）。
         另注：`Get-NetTCPConnection` 查 8001 无 ESTABLISHED **查不出**挂起授权窗——
         那是 VTS 进程里的 UI 状态，连接确实已断。两条都要进排查 checklist。
+
+        ⚠ 撞上挂起授权窗时（`errorID 51`），对面文案自 2026-08-11 起**自解释**（含「去 VTS
+        点掉那个窗再重试」+ 那条查不出的提示），我方 `reply.isError` 分支原样透传即可。
+        将来若要**自动**判别这一支，判据取对面结构化的 `error_id`，**别正则抠人读文案**
+        （中英混排、会随文案改动静默失效——同我方「判据不取在名字/文本上」那条纪律）。
         """
         try:
             from mcp import ClientSession, StdioServerParameters
