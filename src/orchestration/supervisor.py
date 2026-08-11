@@ -371,6 +371,18 @@ class SupervisorAgent:
                 streams = state.ignited_streams or []
                 # D5 首因：该 user 首条 episode 打 first_contact 标签（召回重排 ×1.2）
                 fc_seg = " | first_contact=True" if self._is_first_contact(state.user_id) else ""
+                # 语义重要性 tag（**只写不消费**·当前无任何下游读取，故行为零回归）。
+                # 为何现在就写：is_commitment / identity_fact 已在写入门算出但算完即弃，而这两个
+                # 判据**只能在写入时算**（依赖 user_text），事后无法回填——不趁现在落进 content，
+                # 将来独立 importance 信号落地时，此前所有历史 episode 都将无 tag 可用。
+                # 为何走 content 文本而非 DB 列：议会 D1·BLOCK——GraphitiGraphStore 无结构化列
+                # 钩子，加列会造成两后端能力分叉。
+                # 消费方（未来）注意：这些 tag 位于尾部元数据段，与用户原话同处一个字符串，
+                # 解析须取**最后一个**匹配（同 parse_importance 的 WARN-1 防注入口径）。
+                commit_seg = " | commitment=True" if is_commitment else ""
+                identity_seg = (
+                    f" | identity={identity_fact[0]}" if identity_fact is not None else ""
+                )
 
                 # 架构决策 F：身份 episode 的 precision 取下限，否则被召回注入门拦住
                 # （8.56 → Hill 归一 0.222 < inject_min 0.5，写进去也召不回）。
@@ -383,7 +395,7 @@ class SupervisorAgent:
                     f" | precision={ep_precision:.2f}"
                     f" | streams={streams}"
                     f" | value={value:.3f}"
-                    f"{fc_seg}"
+                    f"{fc_seg}{commit_seg}{identity_seg}"
                 )
                 # 无语义后端时 no-op（零回归）；只对 gist_text 嵌入（embed_text），全文仅存储/展示
                 await self.memory.write_episode(
