@@ -157,6 +157,30 @@ async def test_vts_connect_failure_returns_false(tmp_path: Any) -> None:
     await sink.aclose()  # 幂等：没连上也能安全关
 
 
+def test_vts_connect_timeout_budget_splits_human_from_machine(tmp_path: Any) -> None:
+    """超时预算按「等人」还是「等机器」分档，判据取在 **token 是否已落盘** 上。
+
+    存在理由（配套项目 2026-08-11 实测）：`vts_connect` 首次授权墙钟 **26.91s**，其中几乎
+    全部是等人点 VTS 的授权弹窗——token 落盘之后到「行为层已连接」只有 **77ms**。
+    🛑 而超时取消**不会**收掉那个弹窗：此后每次连接被 errorID 51 拒到有人手动点掉
+    ⇒ 档位选太小是**自我延续**的（越短越容易给下一次埋一个 51，观测上像"问题变严重"）。
+
+    判别力：任何退回单一常量的改法，两条断言必红其一（机器档不该等三分钟，
+    人档不该只比实测多几秒）。
+    """
+    from src.expression_out.vts import CONNECT_TIMEOUT_FIRST_AUTH_S, CONNECT_TIMEOUT_S
+
+    token = tmp_path / "tok"
+    sink = VtsSink(mcp_repo=tmp_path, token_file=token)
+
+    assert sink._connect_timeout() == CONNECT_TIMEOUT_FIRST_AUTH_S
+    assert sink._connect_timeout() > 26.91 * 2, "人档不够宽 —— 慢点一下就会埋下挂起授权窗"
+
+    token.write_text("token", encoding="utf-8")
+    assert sink._connect_timeout() == CONNECT_TIMEOUT_S
+    assert sink._connect_timeout() < CONNECT_TIMEOUT_FIRST_AUTH_S, "已授权仍走人档 = 分档没生效"
+
+
 async def test_vts_emit_without_connect_short_circuits() -> None:
     """未连接时 emit **提前短路**——不是"抛了被自己吞掉"。
 
