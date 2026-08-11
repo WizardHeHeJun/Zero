@@ -428,6 +428,71 @@ async def test_commitment_text_writes_episode_despite_low_salience(
 
 
 # ---------------------------------------------------------------------------
+# 语义重要性 tag（只写不消费）：为独立 importance 信号铺路，当前行为零回归
+# ---------------------------------------------------------------------------
+
+
+async def test_commitment_tag_written_but_not_embedded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """承诺/日程命中 → content 打 commitment=True；**embed_text 不含**（不污染检索/dedup）。
+
+    embedding 走 embed_text（`SqliteVectorStore.add_episode` 的 `embed_text or content`），
+    故元数据 tag 不进向量、不影响 sim 排序与 0.92 余弦去重——这是「只写不消费」成立的前提。
+    """
+    monkeypatch.setenv("ZERO_EPISODE_SALIENCE_MIN", "0.15")
+    store = _RecordingStore()
+    state = AffectState(
+        stimulus=Stimulus(name="约定", text="下午两点门口等你", goal_congruence=0.1, intensity=0.3),
+        affect_sample=(0.1, 0.1),
+        affect_precision=0.1,
+        rpe=0.1,
+        value_estimate=0.0,
+        user_id="u1",
+    )
+    await SupervisorAgent(MemoryClient(semantic=store))(state)
+    content = store.calls[0]["content"]
+    assert "commitment=True" in content, "承诺判据应留痕在 content"
+    assert "commitment" not in store.calls[0]["embed_text"], "tag 不得进 embedding 文本"
+
+
+async def test_identity_tag_records_fact_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """身份自陈命中 → content 打 identity=<类型>（name/occupation），非实体值本身。"""
+    monkeypatch.setenv("ZERO_IDENTITY_FACT_BYPASS", "1")
+    store = _RecordingStore()
+    state = AffectState(
+        stimulus=Stimulus(name="自我介绍", text="我叫林川", goal_congruence=0.0, intensity=0.2),
+        affect_sample=(0.05, 0.05),
+        affect_precision=0.1,
+        rpe=0.0,
+        value_estimate=0.0,
+        user_id="u1",
+    )
+    await SupervisorAgent(MemoryClient(semantic=store))(state)
+    assert "identity=name" in store.calls[0]["content"], "身份自陈应留痕且标出类型"
+
+
+async def test_plain_episode_carries_no_semantic_tags() -> None:
+    """零回归：既非承诺也非身份自陈的高 salience episode，两个 tag 都不出现。
+
+    与上两条成对——若实现把 tag 写成了无条件拼接，本断言转红。
+    """
+    store = _RecordingStore()
+    state = AffectState(
+        stimulus=Stimulus(name="s", text="今天云很好看", goal_congruence=0.6, intensity=0.8),
+        affect_sample=(0.4, 0.5),
+        affect_precision=0.9,
+        rpe=0.8,
+        value_estimate=0.3,
+        user_id="u1",
+    )
+    await SupervisorAgent(MemoryClient(semantic=store))(state)
+    content = store.calls[0]["content"]
+    assert "commitment=" not in content
+    assert "identity=" not in content
+
+
+# ---------------------------------------------------------------------------
 # B-4 sim_threshold 过滤
 # ---------------------------------------------------------------------------
 
