@@ -51,23 +51,44 @@ SEGMENT_MS = 4000.0  # 契约上限 10s；取 4s 让情绪变化的响应不至�
 TOOL_PREFIX = "zero."
 
 
-def server_env() -> dict[str, str]:
+def server_env(feedback: bool = False) -> dict[str, str]:
     """Zero MCP server 子进程的环境。
 
-    🛑 两个门控必须显式打开——它们默认关是**故意的**（零回归），不是遗漏：
+    🛑 门控必须显式打开——它们默认关是**故意的**（零回归），不是遗漏：
     - `ZERO_MOTION_ENABLED`：`zero.motion` 工具的总开关，关着会回 `motion-disabled`。
-    - `ZERO_MOTION_BACKEND=directive`：让图内 MotionAgent 产出 `motion_directive`，
-      拉取侧消费它而非现场自算。设 `synth`（默认）也能出轨迹，只是走解析回退。
+    - `ZERO_MCP_MOTION_BACKEND`：让图内 MotionAgent 产出 `motion_directive`
+      （`efference` 档额外留 `motion_efference` 副本）。`synth`（默认）也能出轨迹，
+      只是走拉取侧解析回退。
+
+    ⚠ **2026-08-11 修的真缺陷**：此前这里设的是 `ZERO_MOTION_BACKEND`——那是
+    `chat_driver` 读的 env，**MCP server 侧根本不读它**（`_build_session_config` 只认
+    `ZERO_MCP_*` 治理 env）。实测本脚本历来跑的都是 `motion_backend="synth"`，
+    即 `directive` 档在这条真机路径上**从未真正被验证过**（PROGRESS/交接文档记的
+    「端到端跑通」成立，但走的是拉取侧现算那条路）。
+
+    `feedback=True` 时另开行为反馈流的**生效组合**（行为反馈环第二步）：
+    副本档 `efference` + 总门 + `gate_fusion=false`——默认硬门下行为流的 salience
+    恒低于阈值、必被滤除（`PRP/behavior-feedback-loop/design.md` §三），
+    不关硬门就等于没开。调节侧（`regulation_enabled`）不是治理旗标，经 open_session
+    的 config overrides 传（见 `run()`）。
     """
     env = dict(os.environ)
+    backend = os.getenv("ZERO_MCP_MOTION_BACKEND", "efference" if feedback else "directive")
     env.update(
         {
             "ZERO_MOTION_ENABLED": "true",
-            "ZERO_MOTION_BACKEND": os.getenv("ZERO_MOTION_BACKEND", "directive"),
+            "ZERO_MCP_MOTION_BACKEND": backend,
             "PYTHONPATH": str(P.REPO),
             "PYTHONIOENCODING": "utf-8",
         }
     )
+    if feedback:
+        env.update(
+            {
+                "ZERO_MCP_BEHAVIOR_FEEDBACK": "true",
+                "ZERO_MCP_IGNITION_GATE_FUSION": "false",  # 关硬门，否则行为流恒被滤除
+            }
+        )
     return env
 
 
@@ -78,6 +99,8 @@ async def run(
     dry_run: bool,
     lead: float = 5.0,
     verify: bool = False,
+    feedback: bool = False,
+    stim_every: float = 0.0,
 ) -> None:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -98,22 +121,38 @@ async def run(
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "src.mcp_server"],
-        env=server_env(),
+        env=server_env(feedback),
         cwd=str(P.REPO),
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as mcp:
             await mcp.initialize()
-            await mcp.call_tool(f"{TOOL_PREFIX}open_session", {"session_id": session_id})
-            print(f"引擎会话 {session_id} 已开", flush=True)
+            open_args: dict[str, object] = {"session_id": session_id}
+            if feedback:
+                # regulation 不是治理旗标，经 config overrides 传；行为反馈流的在场门是
+                # 「调节真改变了表达」（副本 voluntary 非 None），不开调节则流恒缺席。
+                open_args["config"] = {"regulation_enabled": True}
+            await mcp.call_tool(f"{TOOL_PREFIX}open_session", open_args)
+            # 自报实际生效档位：env 名写错时静默退回默认档是本脚本踩过的真坑
+            # （2026-08-11：设 ZERO_MOTION_BACKEND 却被 MCP 侧忽略，一直跑 synth）。
+            gates = server_env(feedback)
+            print(
+                f"引擎会话 {session_id} 已开 · backend={gates['ZERO_MCP_MOTION_BACKEND']}"
+                f" · 行为反馈={'on' if feedback else 'off'}",
+                flush=True,
+            )
 
-            if stim is not None:
-                result = await mcp.call_tool(
+            async def push_stim(tag: str) -> None:
+                assert stim is not None
+                out = await mcp.call_tool(
                     f"{TOOL_PREFIX}step",
                     {"session_id": session_id, "stim": {"valence": stim[0], "arousal": stim[1]}},
                 )
-                payload = json.loads(getattr(result.content[0], "text", "{}"))
-                print(f"注入刺激 {stim} ⇒ e*={payload.get('valence_arousal')}", flush=True)
+                body = json.loads(getattr(out.content[0], "text", "{}"))
+                print(f"{tag} {stim} ⇒ e*={body.get('valence_arousal')}", flush=True)
+
+            if stim is not None:
+                await push_stim("注入刺激")
 
             if service is not None:
                 for i in range(int(lead), 0, -1):
@@ -122,7 +161,14 @@ async def run(
 
             elapsed = 0.0
             last_tail: dict[str, float] | None = None
+            next_stim_at = stim_every if (stim is not None and stim_every > 0) else None
             while elapsed < seconds:
+                # 多轮推进（行为反馈环第二步验收所需）：副本是**上一回合**的运动指令，
+                # 单轮 step 下行为反馈流必然缺席（无副本可读）——要看它真的在场，
+                # 引擎至少要推进两轮。这也更贴近真实对话（每轮回复推进一次引擎）。
+                if next_stim_at is not None and elapsed >= next_stim_at:
+                    await push_stim(f"↻ {elapsed:5.1f}s 重注刺激")
+                    next_stim_at += stim_every
                 result = await mcp.call_tool(
                     f"{TOOL_PREFIX}motion",
                     {"session_id": session_id, "duration_ms": SEGMENT_MS},
@@ -220,6 +266,18 @@ parser.add_argument("--lead", type=float, default=5.0, help="开播前的倒计�
 parser.add_argument(
     "--verify", action="store_true", help="播放中途回读 VTS 实际参数值，证明注入真的落到模型上"
 )
+parser.add_argument(
+    "--feedback",
+    action="store_true",
+    help="开行为反馈流的生效组合（efference 副本档 + 总门 + 关硬门 + regulation）",
+)
+parser.add_argument(
+    "--stim-every",
+    type=float,
+    default=0.0,
+    dest="stim_every",
+    help="每隔 N 秒重注一次 --stim（多轮推进引擎；行为反馈流需 ≥2 轮才在场）",
+)
 args = parser.parse_args()
 
 stimulus: tuple[float, float] | None = None
@@ -229,4 +287,15 @@ if args.stim:
         raise SystemExit("--stim 格式为 valence,arousal，如 -0.6,0.8")
     stimulus = (float(parts[0]), float(parts[1]))
 
-asyncio.run(run(args.seconds, args.session, stimulus, args.dry_run, args.lead, args.verify))
+asyncio.run(
+    run(
+        args.seconds,
+        args.session,
+        stimulus,
+        args.dry_run,
+        args.lead,
+        args.verify,
+        args.feedback,
+        args.stim_every,
+    )
+)
