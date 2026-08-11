@@ -28,11 +28,10 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
-from src.memory.utils import normalize_precision
+from src.memory.utils import normalize_precision, parse_importance
 
 logger = logging.getLogger(__name__)
 
@@ -281,17 +280,8 @@ async def run_consolidation_batch(
         return
 
     # ── 2. 构造 episode 元数据列表（含 salience 代理） ───────────────────────
-    # _parse_importance_local 内联于此（不 import 编排层·守三层单向红线）：
-    # 从 episode content 解析 precision= 字段（SupervisorAgent 写入格式），缺失返回 0.5。
-    def _parse_importance_local(content: str) -> float:
-        matches = re.findall(r"precision=([0-9]+(?:\.[0-9]+)?)", content)
-        if not matches:
-            return 0.5
-        try:
-            return float(matches[-1])
-        except ValueError:
-            return 0.5
-
+    # precision 解析走同层 utils.parse_importance（原为本函数内联的 _parse_importance_local，
+    # 与 memory_recall 各持一份同逻辑副本；已上提消 DRY·仍不 import 编排层·守三层单向红线）。
     episodes: list[dict] = []
     for row in rows_dicts:
         valid_at_str = row.get("valid_at")
@@ -309,7 +299,7 @@ async def run_consolidation_batch(
         # - × 0.5 = rpe 常数代理（事后不可得，保守用 0.5·丢失意外度个体差异·见模块头注释①）
         # 归一后 salience∈(0, 0.5]：precision=0.5(fallback)→~0.008；28→~0.241；30→0.25；72→~0.353
         content = row.get("content", "")
-        precision = _parse_importance_local(content)
+        precision = parse_importance(content)
         salience = normalize_precision(precision, scale=30.0) * 0.5
         episodes.append(
             {

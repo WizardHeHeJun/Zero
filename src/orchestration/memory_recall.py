@@ -12,16 +12,19 @@ from __future__ import annotations
 import logging
 import math
 import os
-import re
 from datetime import UTC, datetime
 
 from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
-from src.memory.utils import normalize_precision
+from src.memory.utils import normalize_precision, parse_importance
 from src.orchestration.state import AffectState
 
 logger = logging.getLogger(__name__)
+
+# parse_importance 已上提至 src/memory/utils.py（原先本模块与 consolidation 各持一份副本）。
+# 此处 import 仅供 normalized_importance 内部使用，不做兼容再导出——实测全仓无任何调用方
+# 按 memory_recall.parse_importance 引用，留个二次入口只会让同一函数有两条导入路径。
 
 
 def _parse_disposition(facts: list[Fact]) -> float | None:
@@ -38,23 +41,6 @@ def _parse_disposition(facts: list[Fact]) -> float | None:
     except ValueError:
         logger.debug("disposition value 解析失败，content=%.80s", content)
         return None
-
-
-def parse_importance(content: str) -> float:
-    """从 episode 文本解析写入时显著度 `precision=`（importance 维度）；缺失返回 0.5 保守默认。
-
-    对应 SupervisorAgent 固化的写入格式 `gist | ... | precision=<float> | ...`。取**最后一个**
-    precision= 匹配——结构化元数据字段在尾部、用户原话/语言在前段，避免用户输入里的
-    `precision=0.99` 污染评分（WARN-1）。纯正则、无 LLM（守确定性热路径 BLOCK-1）。
-    返回 0 会让 γ 维恒失效，故缺失取 0.5 中性值。
-    """
-    matches = re.findall(r"precision=([0-9]+(?:\.[0-9]+)?)", content)
-    if not matches:
-        return 0.5
-    try:
-        return float(matches[-1])
-    except ValueError:
-        return 0.5
 
 
 def normalized_importance(content: str, scale: float = 30.0) -> float:
@@ -106,12 +92,30 @@ def _rank_episodes(
     importance_scale: float = 30.0,
     actr_enabled: bool = False,
     actr_b_scale: float = 3.0,
+    salience_decay_enabled: bool = False,
+    salience_kappa: float = 0.5,
 ) -> list[Fact]:
     """三维加权和重排（D3）：`score = α·recency + β·sim + γ_eff·importance`。
 
     - recency：默认 `Δt^(-d)`（Wixted&Ebbesen 1991 幂律，非指数）；
       actr_enabled=True 且 fact.episode_id 非空且 access_count>0 时，用 Petrov B 近似
       替换（ACT-R 频率·归一到 (0,1]·与 sim/importance 同量纲）——零回归。
+      salience_decay_enabled=True 时改用 `I^κ · Δt^(-d)`（I=normalized_importance∈(0,1)）：
+      显著度调制**衰减速率**而非基线权重，对应 McGaugh 唤醒调制巩固强度，与
+      `consolidation.EbbinghausDecay` 的 `a_eff = a·salience^κ` 同构（该处衰减只作用于
+      `_trim_capacity` 驱逐顺序，召回排序此前完全不受衰减影响——本参数补上这条回路）。
+      **两门互斥：ACT-R 优先**（二者都在改写 recency 维，同开会二次污染）。
+      **已知耦合（有界·非 bug）**：I 同时出现在 γ 维基线与本处衰减调制中；κ 控制第二处
+      强度，κ=0 → `I^0=1` 精确退化回原式（变异测试靶子 test_rank_salience_decay_kappa_zero）。
+      ⚠ **调 κ 前必读的实测代价**（23 条真实 episode·Δt 铺 1–90 天·sim 固定·唯一变量为本旋钮）：
+      κ=2 时 20/23 条位次变化、方向符合预期（高显著者上移），但 `affect_precision` 的上游
+      估计噪声被**同步放大**——观测到低信息量却精度估高的 episode（「刚整理了一下桌子」
+      I=0.374）压过高信息量却精度估低的（「我最近状态不太好」I=0.268）。κ 越大放大越狠。
+      根因在 affect_precision 估计环节、非本旋钮引入，但选值须知情：`.env.example` 的 κ
+      推荐值取保守侧（0.5）正是为此。
+      量纲：I∈(0,1)、Δt^(-d)∈(0,1] ⇒ 乘积仍 ∈(0,1]，与 sim/importance 同量纲不破坏等权。
+      ⚠ 范围收窄：MemoryRecallAgent 的 recall 只查 Scope.USER，故 EbbinghausDecay 的
+      SESSION/USER 分层 d 在召回路径用不上，实际只有 d_user 一档生效。
     - relevance：`fact.sim`（D4 透传余弦；确定性后端为 0.0，该维自然退化）。
     - importance：写入时 precision 显著度；first_contact=True 时 ×1.2（D5 首因加权）。
     加权和而非乘积；`γ_eff = γ·(1+0.5·clamp(arousal,0,1))` 仅 arousal_mod=True 生效。
@@ -124,12 +128,18 @@ def _rank_episodes(
     def score(fact: Fact) -> float:
         valid_at = fact.valid_at if fact.valid_at.tzinfo else fact.valid_at.replace(tzinfo=UTC)
         delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
-        # ACT-R 门控：有 episode_id 且 access_count>0 才替换 recency（零回归）
+        importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
+        # recency 维三选一，优先级 ACT-R > salience 衰减 > 原始幂律（后两者默认关=零回归）。
+        # ACT-R 门控：有 episode_id 且 access_count>0 才替换 recency。
         if actr_enabled and fact.episode_id and fact.access_count > 0:
             recency = _petrov_b_norm(fact.access_count, delta_days, decay_d, actr_b_scale)
+        elif salience_decay_enabled:
+            recency = (importance**salience_kappa) * (delta_days ** (-decay_d))
         else:
             recency = delta_days ** (-decay_d)
-        importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
+        # ×1.2 首因加权在 salience 衰减调制**之后**施加：首因是检索优先权（D5），
+        # 不是巩固强度，不该进衰减速率；且 boost 后可 >1（0.9×1.2=1.08），
+        # 若入 I^κ 会把 recency 顶出 (0,1] 量纲。
         if "first_contact=True" in fact.content:
             importance *= 1.2
         return alpha * recency + beta * fact.sim + gamma_eff * importance
@@ -165,6 +175,23 @@ class MemoryRecallAgent:
         )
         # Petrov B sigmoid 归一 scale（越小越激进·默认 3.0·仅 actr_enabled=True 时生效）
         self.actr_b_scale = float(os.getenv("ZERO_ACTR_B_SCALE", "3.0"))
+        # 召回侧 salience 衰减门控（默认关=零回归）：开启时 recency 改用 I^κ·Δt^(-d)，
+        # 让显著度调制衰减速率（高显著旧 episode 更耐遗忘）。与 ACT-R 互斥、ACT-R 优先。
+        self.salience_decay_enabled = os.getenv("ZERO_RECALL_SALIENCE_DECAY", "0").lower() not in (
+            "0",
+            "",
+            "false",
+        )
+        # 衰减调制指数 κ（默认 0.5，与 consolidation.EbbinghausDecay.kappa 对齐；
+        # κ=0 精确退化为原幂律·κ 越大显著度对留存的影响越强）。
+        self.salience_kappa = float(os.getenv("ZERO_RECALL_SALIENCE_KAPPA", "0.5"))
+        if self.salience_decay_enabled and self.actr_enabled:
+            # 构造期一次告警（非热路径）：两门都改写 recency 维，同开时 salience 衰减被 ACT-R 覆盖。
+            logger.warning(
+                "ZERO_RECALL_SALIENCE_DECAY 与 ZERO_ACTR_ENABLED 同时开启；"
+                "二者均改写 recency 维，实际生效的是 ACT-R（salience 衰减仅对 "
+                "access_count=0 或无 episode_id 的 Fact 生效）"
+            )
 
     async def __call__(self, state: AffectState) -> dict:
         if not state.recall_enabled:
@@ -204,6 +231,8 @@ class MemoryRecallAgent:
                 importance_scale=self.importance_scale,
                 actr_enabled=self.actr_enabled,
                 actr_b_scale=self.actr_b_scale,
+                salience_decay_enabled=self.salience_decay_enabled,
+                salience_kappa=self.salience_kappa,
             )
             out["recalled_context"] = [f.content for f in ranked]
             out["recalled_facts"] = ranked  # D1：供 chat_driver 按 importance 注入 history

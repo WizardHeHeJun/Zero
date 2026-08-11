@@ -1,9 +1,12 @@
 """D3+D5：召回三维重排 + first_contact 单测（PR-3）。
 
 覆盖：
-  - _parse_importance：解析 precision=、缺失/畸形回退 0.5。
+  - parse_importance（现居 src/memory/utils）：解析 precision=、缺失/畸形回退 0.5。
   - _rank_episodes：recency / sim / importance 三维各自单维排序正确（关其余权重）；
     first_contact ×1.2；空列表返回空；Δt=0 clamp 不溢出；arousal 调制默认关。
+  - 召回侧 salience 衰减（recency = I^κ·Δt^(-d)·`ZERO_RECALL_SALIENCE_DECAY` 默认关）：
+    门关逐字等价 / 门开高显著旧 episode 反超 / κ=0 精确退化 / ACT-R 优先 / recency 不破 (0,1]。
+    五条均经变异验证可转红（去掉 I^κ、优先级写反、漏 Hill 归一）。
   - MemoryRecallAgent 输出 recalled_facts（已重排的 Fact 列表）。
   - SupervisorAgent first_contact：同一 user 仅首条 episode 打标。
   - AffectState.recalled_facts 默认空（零回归）。
@@ -18,11 +21,11 @@ from datetime import UTC, datetime, timedelta
 
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
+from src.memory.utils import parse_importance
 from src.orchestration.memory_recall import (
     MemoryRecallAgent,
     _rank_episodes,
     normalized_importance,
-    parse_importance,
 )
 from src.orchestration.state import AffectState, Stimulus
 from src.orchestration.supervisor import SupervisorAgent
@@ -154,6 +157,104 @@ def test_rank_arousal_mod_on_boosts_importance() -> None:
     )
     assert off[0] is fresh_dull, "低唤醒下近因占优"
     assert on[0] is important_old, "高唤醒放大 importance，旧但显著者反超"
+
+
+# --------------------------------------------------------------------------- #
+# 召回侧 salience 衰减（recency = I^κ·Δt^(-d)）：默认关，开启后高显著者更耐遗忘
+# --------------------------------------------------------------------------- #
+
+# 共用样本：旧但显著 vs 新但平淡。alpha=1 关掉 sim/importance 两维，
+# 使断言只咬 recency 维本身（否则 γ 维的 importance 会混进来，测不出衰减调制）。
+_SALIENCE_OLD = _fact("precision=72.00", days_ago=30)
+_SALIENCE_FRESH = _fact("precision=1.00", days_ago=1)
+_RECENCY_ONLY = {"alpha": 1.0, "beta": 0.0, "gamma": 0.0, "importance_scale": 30.0}
+
+
+def test_rank_salience_decay_off_is_byte_identical() -> None:
+    """门关（默认）→ 排序与不传该参数逐字一致（零回归断言）。"""
+    facts = [
+        _fact("precision=72.00", sim=0.3, days_ago=30),
+        _fact("precision=1.00", sim=0.7, days_ago=1),
+        _fact("precision=40.00 | first_contact=True", sim=0.5, days_ago=10),
+    ]
+    baseline = [f.content for f in _rank_episodes(facts, NOW)]
+    gated_off = [f.content for f in _rank_episodes(facts, NOW, salience_decay_enabled=False)]
+    assert gated_off == baseline
+
+
+def test_rank_salience_decay_on_lets_salient_old_win() -> None:
+    """门开 → 高显著旧 episode 的 recency 反超低显著新 episode（衰减被 I^κ 调制）。"""
+    pair = [_SALIENCE_OLD, _SALIENCE_FRESH]
+    off = _rank_episodes(pair, NOW, salience_decay_enabled=False, **_RECENCY_ONLY)
+    on = _rank_episodes(pair, NOW, salience_decay_enabled=True, salience_kappa=3.0, **_RECENCY_ONLY)
+    assert off[0] is _SALIENCE_FRESH, "门关时纯幂律：新的必胜"
+    assert on[0] is _SALIENCE_OLD, "门开时高显著者衰减更慢，反超"
+
+
+def test_rank_salience_decay_kappa_zero_degenerates() -> None:
+    """变异测试靶子：κ=0 → I^0=1，必须精确退化回原幂律排序。
+
+    若本断言在 κ=0 下仍能区分两者，说明衰减调制混入了 κ 之外的通路（实现跑偏）。
+    与 test_rank_salience_decay_on_lets_salient_old_win 成对：一个证明门开有效果，
+    一个证明该效果**完全**由 κ 承载——绿灯因此可证伪（green-light-must-prove-it-can-go-red）。
+    """
+    pair = [_SALIENCE_OLD, _SALIENCE_FRESH]
+    baseline = [f.content for f in _rank_episodes(pair, NOW, **_RECENCY_ONLY)]
+    kappa_zero = [
+        f.content
+        for f in _rank_episodes(
+            pair, NOW, salience_decay_enabled=True, salience_kappa=0.0, **_RECENCY_ONLY
+        )
+    ]
+    assert kappa_zero == baseline
+
+
+def test_rank_salience_decay_yields_to_actr() -> None:
+    """两门同开 → ACT-R 优先：常访问但平淡者靠 Petrov B 压过高显著者。
+
+    visited（precision=1，κ=3 下 salience recency≈3e-5）若被 salience 衰减接管必输给
+    plain（precision=72 → 0.35）；实测排前 ⇒ 走的是 ACT-R（≈0.72）。互斥优先级写反即红。
+    """
+    visited = Fact(
+        content="precision=1.00",
+        scope=Scope.USER,
+        valid_at=NOW - timedelta(days=1),
+        key="u1",
+        episode_id="1",
+        access_count=9,
+    )
+    plain = _fact("precision=72.00", days_ago=1)  # 无 episode_id → 只能走 salience 衰减
+    ranked = _rank_episodes(
+        [plain, visited],
+        NOW,
+        salience_decay_enabled=True,
+        salience_kappa=3.0,
+        actr_enabled=True,
+        **_RECENCY_ONLY,
+    )
+    assert ranked[0] is visited, "ACT-R 应优先于 salience 衰减接管 recency 维"
+
+
+def test_rank_salience_decay_stays_in_unit_range() -> None:
+    """量纲守恒：I∈(0,1) × Δt^(-d)∈(0,1] ⇒ recency 仍 ≤1，不破坏三维等权。
+
+    靶子：sim=1.0 的极旧无关 episode（recency≈0.007）总分≈1.007，必须压过
+    recency 最大化的那条（precision=72 + Δt clamp=1 → 0.84）。若实现漏了 Hill 归一、
+    让原始 precision 进 I^κ（72^0.5=8.5），recency 破 1、顺序翻转 → 本测试转红。
+    """
+    max_recency = _fact("precision=72.00", days_ago=0)  # recency 取到上界
+    sim_anchor = _fact("precision=0.50", sim=1.0, days_ago=365)  # recency≈0，靠 sim 拿≈1.0
+    ranked = _rank_episodes(
+        [max_recency, sim_anchor],
+        NOW,
+        salience_decay_enabled=True,
+        salience_kappa=0.5,
+        alpha=1.0,
+        beta=1.0,
+        gamma=0.0,
+        importance_scale=30.0,
+    )
+    assert ranked[0] is sim_anchor, "recency 越界（>1）才会让 max_recency 反超"
 
 
 # --------------------------------------------------------------------------- #
