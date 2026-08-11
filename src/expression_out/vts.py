@@ -12,25 +12,27 @@
 轨迹合成复用 `agents.motion_synth`（纯函数、给定 seed 确定），行为抽取复用
 `agents.behavior_intent`（12 词闭集守卫在内）——本模块只做**投递**，不含任何动作决策。
 
-## ⚠ 根因已由对方查穿（2026-08-11 回执，订正下方我方原猜测）
-
-我方原以为是「anyio 上下文 vs 普通上下文」的差别——**被证伪**。真因是：**FastMCP stdio
-server 进入事件循环之后，在工具体里首次 `import numpy`（或任何传递性拉 numpy 的包）会
-无限期卡在扩展模块加载**（Windows loader），既不返回也不抛错。对方 `_get_service()` 的
-延迟 import 链路正好首次拉起 numpy。判据是「**是否首次触达 numpy**」而非「是否原生扩展」，
-且 `asyncio.to_thread` 包起来也救不了。对方已修（预热 import 提到 `mcp.run()` 之前）。
-
-⇒ **切回标准 MCP 的条件已满足**：拉到对方含该修复的 main 后，把下面 `_rpc` 换回
-`ClientSession.call_tool` 即可，上层协议不动。
-⇒ 我方 server 自查结论：**不踩此雷**（拉 torch/numpy 的解码器构造在 `build_server()` 里、
-即 `server.run()` 之前），且已配结构守卫 `tests/test_mcp_native_import_guard.py` 防将来
-有人把重依赖 import 挪进工具体（该守卫做过变异验证：埋入即红）。
-
 ## 为什么要跨进程（不是绕路）
 
 渲染在配套项目 Zero_MCP（`VtsExpressionSink` 持 VTS WebSocket），而两仓都用 `src.` 作包根、
 不能同进一个 `sys.path`。MCP stdio 天然跨进程，正是为此选的：本进程算，对面渲染，
 决策在我方、执行在对方（zero-link 既有契约）。
+
+## 📎 一段已结案的历史（2026-08-11，别再照着旧结论排查）
+
+本 sink 曾短暂改走「薄 worker 子进程 + 行分隔 JSON」，因为经对方 MCP 调 `vts_connect`
+**25 秒挂起**。当时我方猜「anyio 上下文差异」——**被对方实测证伪**。真因是：**FastMCP
+stdio server 进入事件循环之后，在工具体里首次 `import numpy`（或任何传递性拉 numpy 的
+包）会无限期卡在扩展模块加载**（Windows loader），既不返回也不抛错；进程内直连之所以
+好，是因为 import 发生在事件循环**之前**——是**计时窗口**的差别，不是上下文的差别。
+判据是「是否首次触达 numpy」而非「是否原生扩展」，`asyncio.to_thread` 包起来也救不了。
+
+对方已修并合 main（预热 import 提到 `mcp.run()` 之前）；我方实测 `vts_connect` 秒回
+（`healthy=true`）后**已切回标准 `ClientSession.call_tool`，worker 退役**。
+
+⇒ 我方 server 自查结论：**不踩此雷**（拉 torch/numpy 的解码器构造在 `build_server()` 里、
+即 `server.run()` 之前），且已配结构守卫 `tests/test_mcp_native_import_guard.py` 防将来
+有人把重依赖 import 挪进工具体（该守卫做过变异验证：埋入即红）。
 
 ⚠ **同一时刻只能一个进程连 VTS**（参数注入独占）——跑本 sink 前先停掉
 `tools/motion/` 下的 live_bridge / loop_vts 等脚本，否则对面会拒连。
@@ -71,6 +73,14 @@ DEFAULT_SEGMENT_MS = 2000.0  # 段长：短些让情绪切换跟手（对面契�
 DEFAULT_FPS = 20.0
 
 
+def _text_of(result: Any) -> str:
+    """取 MCP 工具返回体的文本载荷（对面全部走 unstructured `content[0].text`）。"""
+    content = getattr(result, "content", None)
+    if not content:
+        return ""
+    return str(getattr(content[0], "text", "") or "")
+
+
 class VtsSink:
     """把 `ExpressionFrame` 表现成皮套动作。实现 `ExpressionSink` 协议。
 
@@ -100,17 +110,19 @@ class VtsSink:
         self.emotion: tuple[float, float] = (0.0, 0.0)
         self.regulated: tuple[float, float] | None = None
         self.phase = PhaseState(noise_seed=rng_seed, next_blink_ms=initial_blink_ms(rng_seed))
-        self.proc: asyncio.subprocess.Process | None = None
-        self.io_lock = asyncio.Lock()  # worker 是行分隔请求-响应，必须串行化
+        self.session: Any = None  # mcp.ClientSession；None = 未连接
+        self.stack: contextlib.AsyncExitStack | None = None
         self.loop_task: asyncio.Task[None] | None = None
         self.stop = asyncio.Event()
 
     async def connect(self) -> bool:
-        """起渲染 worker 子进程、连 VTS、开动作循环；失败返回 False（不抛，可继续纯对话）。
-
-        worker 见 `_vts_worker`：它在对面仓的 sys.path 下进程内直连 VTS——这条路已实测可靠，
-        而经对方 MCP server 的 `vts_connect` 会卡死（同文件 docstring 记了对照实验）。
-        """
+        """spawn 渲染端 MCP server、连 VTS、开动作循环；失败返回 False（不抛，可继续纯对话）。"""
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ImportError:
+            logger.warning("未安装 mcp，皮套表现不可用（对话照常）")
+            return False
         env = dict(os.environ)
         env.update(
             {
@@ -120,75 +132,63 @@ class VtsSink:
                 "PYTHONIOENCODING": "utf-8",
             }
         )
-        worker_src = Path(__file__).with_name("_vts_worker.py")
+        stack = contextlib.AsyncExitStack()
         try:
-            self.proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                str(worker_src),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                env=env,
-                cwd=str(self.mcp_repo),
+            read, write = await stack.enter_async_context(
+                stdio_client(
+                    StdioServerParameters(
+                        command=sys.executable,
+                        args=["-m", "src.mcp.vts_behavior_mcp_server"],
+                        env=env,
+                        cwd=str(self.mcp_repo),
+                    )
+                )
             )
-            reply = await asyncio.wait_for(self._rpc({"op": "connect"}), timeout=30.0)
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            reply = await asyncio.wait_for(session.call_tool("vts_connect", {}), timeout=30.0)
         except Exception as exc:  # 连不上就退化成纯对话，这是表现层该有的姿态
             logger.warning("皮套连接失败，退化为纯对话：%s", exc)
-            await self._kill_worker()
+            await self._close_stack(stack)
             return False
         except BaseException:
             # ⚠ CancelledError 是 BaseException 不是 Exception（code-reviewer 2026-08-11）：
-            # 子进程已起、握手中途被外部取消时，若不在这里清理，句柄丢失而进程仍在——
-            # 单进程 REPL 下靠父进程退出兜底，但本层文档明写供多 sink/长生命周期宿主复用，
+            # server 子进程已起、握手中途被外部取消时，不在这里收就会漏掉它。
+            # 单进程 REPL 下靠父进程退出兜底，但本层供多 sink/长生命周期宿主复用，
             # 那种场景会堆积子进程。清理后原样抛出，不吞取消。
-            await self._kill_worker()
+            await self._close_stack(stack)
             raise
-        if not reply.get("ok"):
-            logger.warning("皮套连接被拒，退化为纯对话：%s", reply.get("error"))
-            await self._kill_worker()
+        if reply.isError:
+            logger.warning("皮套连接被拒，退化为纯对话：%s", _text_of(reply))
+            await self._close_stack(stack)
             return False
+        body = json.loads(_text_of(reply) or "{}")
+        self.stack = stack
+        self.session = session
         self.stop = asyncio.Event()
         self.loop_task = asyncio.create_task(self._drive())
-        logger.info("皮套已连接：healthy=%s model=%s", reply.get("healthy"), reply.get("model_id"))
+        logger.info("皮套已连接：healthy=%s model=%s", body.get("healthy"), body.get("model_id"))
         return True
 
-    async def _rpc(self, msg: dict[str, Any]) -> dict[str, Any]:
-        """向 worker 发一条指令并读回执（行分隔 JSON）。"""
-        proc = self.proc
-        if proc is None or proc.stdin is None or proc.stdout is None:
-            raise RuntimeError("worker 未启动")
-        async with self.io_lock:  # 串行化：回执按发送顺序回，多协程并发写会错配
-            proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
-            await proc.stdin.drain()
-            line = await proc.stdout.readline()
-        if not line:
-            raise RuntimeError("worker 已退出")
-        return dict(json.loads(line.decode("utf-8")))
-
-    async def _kill_worker(self) -> None:
-        proc, self.proc = self.proc, None
-        if proc is None:
-            return
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+    async def _close_stack(self, stack: contextlib.AsyncExitStack) -> None:
+        """关掉 MCP 会话与 server 子进程（幂等；关不掉也不抛）。"""
         with contextlib.suppress(Exception):
-            await proc.wait()
+            await stack.aclose()
+        self.stack = None
+        self.session = None
 
     async def emit(self, frame: ExpressionFrame) -> None:
         """接一帧表现内容：更新连续轨迹的驱动情绪 + 触发本轮的离散行为。"""
         self.emotion = frame.emotion
         self.regulated = frame.regulated
-        if self.proc is None or not frame.reply:
+        if self.session is None or not frame.reply:
             return
         try:
             for intent in self._intents(frame.reply):
-                await self._rpc(
-                    {
-                        "op": "behavior",
-                        "name": intent.name,
-                        "intensity": intent.intensity,
-                        "direction": intent.direction,
-                    }
-                )
+                args: dict[str, Any] = {"name": intent.name, "intensity": intent.intensity}
+                if intent.direction:
+                    args["direction"] = intent.direction
+                await self.session.call_tool("behavior_trigger", args)
         except Exception as exc:
             logger.warning("离散行为投递失败（对话不受影响）：%s", exc)
 
@@ -200,10 +200,8 @@ class VtsSink:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.loop_task
             self.loop_task = None
-        if self.proc is not None:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self._rpc({"op": "close"}), timeout=5.0)
-            await self._kill_worker()
+        if self.stack is not None:
+            await self._close_stack(self.stack)
 
     def _intents(self, reply: str) -> list[BehaviorIntent]:
         """③层离散行为：与 `MotionAgent._events` 同一套判定（含 12 词闭集守卫）。"""
@@ -231,7 +229,7 @@ class VtsSink:
 
     async def _push_segment(self) -> None:
         """合成一段轨迹并投给渲染端。相位由 `self.phase` 跨段续接，接缝不跳变。"""
-        if self.proc is None:
+        if self.session is None:
             return
         modulation = modulation_from_affect(*self.emotion)
         heads, self.phase = generate_dual(
@@ -243,13 +241,9 @@ class VtsSink:
             fps=self.fps,
             modulation=modulation,
         )
-        await self._rpc(
-            {
-                "op": "animate",
-                "keyframes": heads["voluntary"],
-                "mode": "absolute",
-                "append": True,
-            }
+        await self.session.call_tool(
+            "params_animate",
+            {"keyframes": heads["voluntary"], "mode": "absolute", "append": True},
         )
 
 
