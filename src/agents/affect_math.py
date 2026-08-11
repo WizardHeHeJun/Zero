@@ -42,6 +42,16 @@ SURVIVAL_PRECISION = 0.4  # 快生存流（上丘-枕-杏仁核捷径）：低�
 TEXT_AFFECT_PRECISION = 0.3  # 文本语义流精度（固定低值，显式低于 occ_prior 动态精度）
 # 初版固定：类比 SURVIVAL_PRECISION 的工程近似（Friston 2005 允许初始固定精度）；
 # 未来可从回归器残差动态估计（议会悬而未决 #1）。
+# 行为反馈流精度（行为反馈环第二步·议会 2026-08-07 设计门）：显式低于 text（0.3）。
+# ⚠ 此值是**跨通道类比得出的宽松上界，非精确估计**（生物席 #13）：证据载体是皮肤电/
+# 面部肌电（表情反馈/SMH 文献），套到头部运动学是类比外推；头部/躯干粗大动作更易被
+# 随意控制覆盖，信噪比不优于面部肌电。共线性折价框架**不适用**（C 主干已结构性剔除
+# 与 mood 冗余的分量，议会必改 #5）。
+BEHAVIOR_PRECISION = 0.15
+# 行为流权重上界（议会必改 #2·数学席失真裁定的修法）：前置 cap π_b 约束不了 w_b
+# （全弱流下 w_b→0.97；含 survival 地板的最坏情形 0.27）⇒ 融合前按实际 terms 现算
+# w_b 并后置封顶（cap_stream_weight）。候选 0.15，终值待补维仿真确认（议会悬而未决）。
+W_MAX_BEHAVIOR = 0.15
 
 # ── 精度量纲齐次化（议会 2026-07-28 第四轮；PRP/精度量纲齐次化/）─────────────
 # 问题：上面几个常量与 occ_prior 的 arousal_gain/σ² **不是同一物理量**。把它们当 1/σ²
@@ -64,6 +74,13 @@ SIGMA_MOOD = 1.0
 # 故 σ_text 须 >0.35；又应强于 mood（针对当前输入而非跨轮基调），故 <1.0。
 # 取 0.5（≈ occ 最宽 0.35 与 mood 1.0 的中段）。**保守占位，待实证校准**。
 SIGMA_TEXT = 0.5
+# σ_bhv = 1.3：行为反馈流齐次档 σ（初值占位·由 scripts/calibrate_sigma_bhv.py 回填）。
+# 判据（议会必改 #4 的三处统计口径，校准脚本落实）：① 取回合间 |Δa| 分布的 95 分位**本身**
+# 作保守上界（高估 σ = 低估精度，方向安全；分位数 ≈1.96σ，非 σ 的无偏估计——刻意为之）；
+# ② 开环统计校准闭环参数属自指校准 ⇒ σ 定值后须闭环重测 |Δa| 一致性检验；
+# ③ |Δa| 只覆盖「漂移」分量，「调节偏移」|a_expr−a_felt| 是回合内量、单独测量分开报告。
+# 须 ≥ σ_mood（1.0）：行为证据是表达侧代理，不确定性不低于心境基调。
+SIGMA_BHV = 1.3
 # value 流：precision_da 的 sigmoid(α|δ|)∈[0.5,1) 是概率不是逆方差，把它当 Π 反解得
 # σ∈[1.00,1.41]（宽于整个值域）。重标定到 [MIN_PRECISION, VALUE_PRECISION_CEILING]，
 # 上限取与 survival 同量级（同属快速粗略通路），使二者可比。
@@ -258,6 +275,136 @@ def mood_precision(*, commensurable: bool = False) -> float:
 def text_affect_precision(*, commensurable: bool = False) -> float:
     """文本语义流精度。门开时 = 1/σ_text²（σ_text 见 SIGMA_TEXT，保守占位待实证校准）。"""
     return 1.0 / SIGMA_TEXT**2 if commensurable else TEXT_AFFECT_PRECISION
+
+
+def behavior_precision(*, commensurable: bool = False) -> float:
+    """行为反馈流精度。门开时 = 1/σ_bhv²（σ_bhv 见 SIGMA_BHV，占位待校准脚本回填）。"""
+    return 1.0 / SIGMA_BHV**2 if commensurable else BEHAVIOR_PRECISION
+
+
+def behavior_feedback_evidence(
+    copy: dict[str, Any],
+    *,
+    commensurable: bool = False,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """把上一回合的 motion_efference 副本映射成行为反馈流证据 (μ, Π)；缺席返回 None。
+
+    行为反馈环第二步（议会设计门 2026-08-07 收敛裁决：C 主干 + regulation_strategy
+    分流解释层，纪要 notes/2026-08-07-behavior-feedback-council.md）：
+
+    - **在场门 = 副本的 voluntary 路非 None**（第一步定死的回退语义：voluntary 为 None
+      当且仅当未开调节或调节没改变什么 ⇔ 调节差 δ≡0）。δ≡0 ⇒ 返回 None = 流缺席
+      （absent-cue，不注入 0 值假证据）。生产默认 regulation 关 ⇒ 流恒缺席 = 零回归。
+    - **μ = (0, a_expr)**，其中 a_expr = 2·voluntary.onset − 1（onset=(a+1)/2 的精确仿射逆，
+      无增益依赖）——「表达出来的唤醒水平」。⚠ 位置空间口径（design.md §1.2）：主干信号
+      δ = a_expr − a_felt 是位移量，直接当 μ 喂是范畴错误（会把「压低了 0.4」误宣称为
+      「唤醒是 −0.4」）。边际贡献 = w_b·δ + w_b·(a_felt − μ_o)（μ_o=本轮其余流加权均值）：
+      **一般情形含残留耦合项、非「恰为 δ」，但受 W_MAX 结构性有界（最坏 0.3）**——
+      数学席二轮裁定 + moderator 方案 2 判定（2026-08-07），稳定性仿真建模的正是含此
+      残留项的真实动力学，证明对象与实现对齐。
+    - **Π = (MIN_PRECISION, π_b)**：valence 维置底（动作层无 valence 信息，议会既有裁定）；
+      arousal 维 π_b 见 behavior_precision 两档。
+
+    语义标注（议会必改 #9·心理×神经独立收敛的失真修正）：suppression 下 δ<0 的语义是
+    **「表达抑制幅度」**（外显行为构造量）——🛑 不得表述为「压制使体验变平静」：
+    Gross & Levenson 1993 / Webb 2012 实证压制**不改主观体验、交感反增**，`regulation`
+    模块注释的表达/体验区分是正确基准。reappraisal 下 δ 反映重评后的真实变化，且 mood
+    只吃调节前 e*（MoodAgent 在 regulation 之前），δ 是 mood 不含的独立信息。
+    数字人表达=恒被观察，接近 Noah 2018「效应消失」边界条件——低增益/流缺席默认的
+    额外支持（必改 #10）。
+
+    机制归类与时标（议会必改 #11/#12）：本操作借用的是 Wolpert-Ghahramani-Jordan 1995
+    「由自身运动指令副本反推隐藏状态」的抽象拓扑，**不是** Crapse & Sommer 2008 经典
+    corollary discharge（同模态感觉抵消）；骨骼肌系统自有 corollary discharge/小脑前向
+    模型/γ-fusimotor 通路（比内脏运动类比更贴），但「运动学状态→情绪状态」这一跳仅有
+    Seth 2013 一般 active inference 框架兜底，是**工程外推非直接证据**。时标免责：本反馈
+    是回合级（秒~十秒、延迟受用户交互节奏支配、无固定时间常数），与生物 corollary
+    discharge 毫秒级前馈不同量级，仅借拓扑不主张时标对应。
+
+    🛑 单射性前提（议会必改 #14·未来强制项）：仿射逆的精确性绑定在
+    `motion_synth.modulation_from_affect` 为解析回退（仿射单射）这一实现上；将来真模型
+    替换该函数时，本映射不得沿用——须先校验单射性或改为直传 arousal 标量，否则
+    「反推忠实」判定失效。
+
+    Args:
+        copy: AffectState.motion_efference（恰好上一回合的指令级副本；staleness 修正后
+            该字段恒为上一回合产出或 None，调用方先判 None 再进本函数）。
+        commensurable: 精度量纲齐次化门（state.precision_commensurable）。
+
+    Returns:
+        (μ, Π) 或 None（流缺席）。scene=="speaking" 时 raise NotImplementedError——
+        speaking 场景预留结构（PRD D3），TTS 韵律接入前无写入者，显式阻塞而非空壳。
+    """
+    if copy.get("scene") == "speaking":
+        raise NotImplementedError(
+            "behavior_feedback_evidence 的 speaking 分支未定义：speaking 场景的副本"
+            "须待 TTS 韵律流接入后由议会补裁（PRD D3 预留结构，显式阻塞非遗漏）"
+        )
+    voluntary = copy.get("voluntary")
+    if voluntary is None:
+        return None  # δ≡0 ⇒ 流缺席（absent-cue），不给 0 值假证据
+    a_expr = clamp(2.0 * float(voluntary["onset"]) - 1.0, -1.0, 1.0)
+    pi_b = behavior_precision(commensurable=commensurable)
+    return ((0.0, a_expr), (MIN_PRECISION, pi_b))
+
+
+def cap_stream_weight(
+    terms: list[tuple[tuple[float, float], tuple[float, float]]],
+    names: list[str],
+    *,
+    target: str,
+    w_max: float = W_MAX_BEHAVIOR,
+    dim: int = 1,
+) -> tuple[list[tuple[tuple[float, float], tuple[float, float]]], list[str]]:
+    """对实际参与融合的 terms 后置封顶 target 流在 dim 维的权重 w = π/Σπ ≤ w_max。
+
+    议会必改 #2（数学席失真裁定的修法）：前置 cap π_b 是对上游常数的假设性推演，
+    约束不了凸组合里的实际权重——其余流全弱（各 MIN_PRECISION）时 w_b→0.97，即便算上
+    survival 的 arousal 地板（gate_fusion 副作用、非正式不变量）最坏仍 0.27。本函数在
+    ignite 之后、fuse_terms 之前对**本轮真正进入融合的流集合**做不变量校验，超界则
+    重标定 π_target′ = w_max/(1−w_max)·Σ_{j≠target}π_j，使封顶后权重恰为 w_max。
+
+    ⚠ 地板边界（实现期变异测试抓出的议会公式缺陷；数学席二轮复核判修订正确）：
+    fuse_terms 对每项精度取 max(MIN_PRECISION, ·)——当重标定值 π′ < MIN_PRECISION
+    （其余流全部触底的退化情形），地板会把 π′ 抬回去、封顶静默失效（n 条全底流时
+    目标流最低只能拿到 1/(n+1) 均分票）。地板之下目标权重**数学上不可达** ⇒ 该情形
+    改为**整条流剔除**（absent 语义：全沉默环境里 lag-1 行为回声不该获得均分投票权，
+    与「不给 0 值假证据」同一哲学）。terms 与 names **成对返回**保持对齐
+    （BLOCK 1 先例：两者须同一次筛选产出，防 zip 失配）。
+    ⚠ 跳变不连续（数学席二轮标注）：剔除使目标权重在 Σ_other ≈ 5.67·MIN_PRECISION
+    阈值处从 w_max 跳到 0（非 Lipschitz 控制律，理论上 Σ_other 穿阈震荡可 chattering）。
+    生产路径**结构性避开**该区：生效组合（gate_fusion=False）下 survival 流恒以
+    SURVIVAL_PRECISION=0.4 无条件参与，Σ_other 远离退化阈——该缓解依赖
+    `affect_core` 流装配「survival/appraisal/value 三条无条件 append」这一前提
+    （非仿真验证覆盖；装配处有对应标注，改成条件性时须回看本函数）。
+
+    target 不在 names 中或未超界 ⇒ 原 (terms, names) 原样返回；不 mutate 输入。
+    纯函数，供 affect_core 融合调用点与稳定性仿真共用。
+    """
+    if len(terms) != len(names):
+        raise ValueError(f"terms 与 names 长度不一致：{len(terms)} != {len(names)}")
+    try:
+        idx = names.index(target)
+    except ValueError:
+        return terms, names
+    total_other = sum(
+        max(MIN_PRECISION, prec[dim]) for j, (_, prec) in enumerate(terms) if j != idx
+    )
+    pi_target = max(MIN_PRECISION, terms[idx][1][dim])
+    capped_pi = w_max / (1.0 - w_max) * total_other
+    if pi_target <= capped_pi:
+        return terms, names
+    if capped_pi < MIN_PRECISION and len(terms) > 1:
+        # 地板之下封顶不可达 ⇒ 剔除目标流（见 docstring ⚠）。len==1 时不剔（fuse_terms
+        # 空输入 raise，且单流场景 w=1 无从封顶——留给调用方的流装配保证不出现）。
+        pruned_terms = [t for j, t in enumerate(terms) if j != idx]
+        pruned_names = [n for j, n in enumerate(names) if j != idx]
+        return pruned_terms, pruned_names
+    mu, prec = terms[idx]
+    new_prec = (prec[0], capped_pi) if dim == 1 else (capped_pi, prec[1])
+    out = list(terms)
+    out[idx] = (mu, new_prec)
+    return out, names
 
 
 def evidence_from_value(reward: float, delta: float) -> tuple[float, float]:

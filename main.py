@@ -70,6 +70,10 @@ async def _chat_repl() -> None:
     from src.orchestration.chat_driver import build_chat_driver
 
     driver = build_chat_driver()
+    # 表现层出口（皮套/…）：构造在工厂，**连接在这里**——连接是 async I/O（spawn 子进程 +
+    # 握手），工厂保持纯装配。连不上只降级为纯对话（sink 自己 warning），不中断启动。
+    for sink in driver.expression_sinks:
+        await sink.connect()
     rounds = len(driver.history) // 2
     print(f"情感对话｜{driver.mode}｜情绪快衰退·态度慢积累｜历史 {rounds} 轮｜exit/quit 退出")
     print(f"对你的态度：{affect_label(*driver.attitude)}｜记忆落 data/chat_history.sqlite3\n")
@@ -93,6 +97,13 @@ async def _chat_repl() -> None:
                 f" | 对你的态度=({turn.attitude[0]:+.2f},{turn.attitude[1]:+.2f})\n"
             )
     finally:
+        for sink in driver.expression_sinks:
+            # 逐个兜底（code-reviewer 2026-08-11）：清理链后面是记忆巩固与 sqlite 句柄
+            # 释放（Windows 文件锁），表现层关不掉不该连累它们。
+            try:
+                await sink.aclose()  # 停动作循环、断渲染端连接（幂等）
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).warning("表现层关闭失败：%s", exc)
         await driver.aclose()  # B 类·会话结束巩固 + 关语义后端连接（默认关=no-op，零回归）
         driver.log.close()  # 显式释放 sqlite 句柄（Windows 防文件锁；W2）
 
