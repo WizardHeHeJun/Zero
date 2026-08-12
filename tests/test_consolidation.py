@@ -391,20 +391,45 @@ def test_ebbinghaus_decay_weight_in_range() -> None:
         assert 0 < dw <= 1.0, f"episode_id={eid} decay_weight={dw} 超界"
 
 
-def test_ebbinghaus_salience_modulates_decay() -> None:
-    """EbbinghausDecay salience 越高 → a_eff 越大 → decay_weight 越高（衰减越慢）。"""
+def test_ebbinghaus_importance_modulates_decay() -> None:
+    """importance 越高 → a_eff 越大 → decay_weight 越高（衰减越慢）。
+
+    ⚠ 2026-08-12 语义变更（PRP importance-signal）：调制信号由 `salience`
+    （affect_precision 派生·衡量情绪后验确定性）换成 `importance`（tag 派生·内容重要性），
+    参数化由 `salience^κ` 换成 `(1+κ·u)`。取值用 importance_signal 的真实值域
+    `[0.5, 1)`——0.9/0.1 那种 salience 量级在新口径下不合法（<b0 会被 clamp 成 u=0）。
+    """
     from src.memory.consolidation import EbbinghausDecay
 
     now = datetime.now(UTC)
-    ep_high = _make_episode("high", salience=0.9, days_ago=3.0)
-    ep_low = _make_episode("low", salience=0.1, days_ago=3.0)
+    ep_high = _make_episode("high", days_ago=3.0)
+    ep_low = _make_episode("low", days_ago=3.0)
+    ep_high["importance"] = 0.744  # 三 tag 全中（noisy-OR: 1−0.5·0.8³）
+    ep_low["importance"] = 0.5  # 无 tag → 中性基线 b0
 
     updates, _ = EbbinghausDecay(kappa=1.0).compute([ep_high, ep_low], now=now)
     dw_map = {eid: dw for dw, eid in updates}
-    # 高 salience → 衰减更慢 → decay_weight 更大
     assert dw_map["high"] > dw_map["low"], (
-        f"高 salience 应比低 salience 衰减更慢：high={dw_map['high']:.4f} low={dw_map['low']:.4f}"
+        f"高 importance 应比中性衰减更慢：high={dw_map['high']:.4f} low={dw_map['low']:.4f}"
     )
+
+
+def test_ebbinghaus_neutral_importance_is_untouched_by_kappa() -> None:
+    """正交性：无 tag（importance=b0 ⇒ u=0）时 decay_weight 对**任意 κ** 相同。
+
+    旧式 `salience^κ` 在此处同样有基线漂移——中性条目也被 `b0^κ<1` 压低。
+    """
+    from src.memory.consolidation import EbbinghausDecay
+
+    now = datetime.now(UTC)
+    baseline: float | None = None
+    for kappa in (0.0, 0.5, 1.0, 5.0):
+        ep = _make_episode("neutral", days_ago=3.0)
+        ep["importance"] = 0.5
+        (dw, _eid), *_ = EbbinghausDecay(kappa=kappa).compute([ep], now=now)[0]  # type: ignore[misc]
+        if baseline is None:
+            baseline = dw
+        assert dw == pytest.approx(baseline), f"κ={kappa} 改动了中性条目的 decay_weight"
 
 
 def test_ebbinghaus_no_consolidate_ids() -> None:

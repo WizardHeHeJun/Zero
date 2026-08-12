@@ -24,11 +24,62 @@ _PRECISION_RE = re.compile(r"precision=([0-9]+(?:\.[0-9]+)?)")
 # `<text> | precision=.. | seed=True | first_contact=True`，**不含 value=** ⇒ 取 value=
 # 会让种子记忆的 tag 全部**静默失效**（不驱红任何断言）。改锚点前须复核全部写入路径。
 _TAG_ANCHOR_RE = re.compile(r"precision=-?[0-9]+(?:\.[0-9]+)?")
+# 各 tag 的默认权重（**等权**）。0.2 使单 tag 命中时 I/b0 = 1.2，精确复现既有
+# first_contact ×1.2。等权是刻意选择：三判据无共同度量单位，不得由文献效应量反推。
+_DEFAULT_TAG_WEIGHT = 0.2
+
 _TAG_PATTERNS: dict[str, re.Pattern[str]] = {
     "first_contact": re.compile(r" \| first_contact=True"),
     "commitment": re.compile(r" \| commitment=True"),
     "identity": re.compile(r" \| identity=\w+"),
 }
+
+
+def importance_signal(
+    tags: dict[str, bool],
+    *,
+    b0: float = 0.5,
+    weights: dict[str, float] | None = None,
+) -> float:
+    """由确定性语义 tag 算 episode 重要性，noisy-OR 组合，值域 `[b0, 1)`。
+
+        I = 1 − (1 − b0) · Π_k (1 − w_k)^{tag_k}
+
+    **不接受 `affect_precision` 或任何后验精度作为入参**（PRD 目标 G2 的静态可检查形式）：
+    后验精度衡量的是「引擎对情绪判断有多确定」，与「这条内容有多重要」方向常相反——
+    闲聊「刚整理了一下桌子」归一后 0.374 压过心事「我最近状态不太好」0.268，
+    身份自陈「我叫林川」仅 8.56。本函数只吃内容判据，不吃情绪确定性。
+
+    为何用 noisy-OR 而非「加和 + clamp」（数学席 Q2）：多 tag 共现时加和会撞到硬上界 1.0，
+    同一顶格值抹平「多重要」的区分度（identity∧commitment 与三 tag 全中会并列）；
+    noisy-OR 渐近趋近 1 但永不相等，保序性更强。且它**天生有界**，不需要 Hill 归一那种
+    为匹配经验量级而校准出来的 scale 常数（现状 `normalize_precision` 的 30 即由 precision
+    实测 ~28–72 凑出）——避免重蹈 Stevens 1946 尺度类型误用。
+
+    为何各 tag **等权**（心理席 Q1-b）：三判据分别以自由回忆准确率（自我参照效应）、
+    再认反应时（意图优势效应）、印象评定量表（人际印象首因）测得，**无共同度量单位**，
+    比较效应量来定序在方法论上不成立。`w` 默认 0.2 使单 tag 命中时 `I/b0 = 1.2`，
+    **精确复现既有 `first_contact ×1.2`**——仓内唯一在跑且未被判定为误用的系数，
+    非拍脑袋取值。调 `w` 会破坏这个锚定关系，已由单测钉死。
+
+    ⚠ 这三个 tag 是神经机制的**工程代理**，不是机制本身：真实计算内容是新颖性预测误差 /
+    图式一致性 / 奖赏情境（Tse 2007 图式一致性快速巩固与身份自陈对应最紧），
+    而非关键词匹配。沿用 `consolidation.py` 模块头「salience 是 BLA-NE 唤醒调制的工程
+    代理，非直接测量」的诚实标注风格。依据与引文见 `PRP/importance-signal/design.md`。
+
+    参数：
+      tags    — `parse_importance_tags` 的输出（缺键按未命中处理）。
+      b0      — 无任何 tag 时的中性基线，默认 0.5，与 `parse_importance` 的「缺失 → 0.5」同源。
+      weights — 各 tag 权重；缺省全部取 `_DEFAULT_TAG_WEIGHT`。
+    """
+    w_map = weights if weights is not None else dict.fromkeys(_TAG_PATTERNS, _DEFAULT_TAG_WEIGHT)
+    residual = 1.0 - b0
+    for name, hit in tags.items():
+        if not hit:
+            continue
+        w = w_map.get(name, _DEFAULT_TAG_WEIGHT)
+        residual *= 1.0 - max(0.0, min(1.0, w))
+    return 1.0 - residual
 
 
 def importance_excess(importance: float, b0: float = 0.5) -> float:

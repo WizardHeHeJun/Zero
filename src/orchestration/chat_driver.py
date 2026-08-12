@@ -153,6 +153,12 @@ def _inject_recalled_as_system(
     空列表原样返回 window（BLOCK-2 fallback，零回归）。纯数据装配、无 LLM（守 BLOCK-1）。
     importance_scale 由调用方（ChatDriver）从构造期参数传入，与 MemoryRecallAgent 保持一致。
     """
+    # ⚠ 口径分界（PRP importance-signal · D-B，有意为之非遗漏）：本处注入门**继续读
+    # `precision=`**（经 normalized_importance），而 ② 召回排序与 ③ 遗忘调制已改吃
+    # tag 派生的 importance 信号。依据：议会判定注入门只做**阈值判定**（只需落在门限
+    # 哪一侧），`precision=` 的覆写在这里是安全的；且 inject_min=0.5 正是按 Hill 归一后的
+    # precision 量级校准的，改它需要重校准而无收益。某轮走了哪套口径见 trace 的
+    # `importance_source` 字段。
     if not recalled_facts:
         return window
     system_entries: list[dict[str, str]] = [

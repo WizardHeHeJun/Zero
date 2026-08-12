@@ -19,6 +19,7 @@ from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
 from src.memory.utils import (
     importance_excess,
+    importance_signal,
     normalize_precision,
     parse_importance,
     parse_importance_tags,
@@ -99,6 +100,7 @@ def _rank_episodes(
     actr_b_scale: float = 3.0,
     salience_decay_enabled: bool = False,
     salience_kappa: float = 0.5,
+    tag_importance_enabled: bool = False,
 ) -> list[Fact]:
     """三维加权和重排（D3）：`score = α·recency + β·sim + γ_eff·importance`。
 
@@ -135,7 +137,15 @@ def _rank_episodes(
     def score(fact: Fact) -> float:
         valid_at = fact.valid_at if fact.valid_at.tzinfo else fact.valid_at.replace(tzinfo=UTC)
         delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
-        importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
+        # importance 维信号来源二选一（tag_importance_enabled 默认关 = 零回归）：
+        # - 开：tag 派生的 noisy-OR 信号，**三个 tag 统一计入**（修心理席指出的 2/3 缺口：
+        #   此前 identity 靠覆写 precision、first_contact 靠 ×1.2，而 commitment 只决定
+        #   写不写、对排序毫无影响）。此路**不读 precision=**（PRD 目标 G2）。
+        # - 关：原 Hill 归一的 affect_precision 代理（D8）。
+        if tag_importance_enabled:
+            importance = importance_signal(parse_importance_tags(fact.content))
+        else:
+            importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
         # recency 维三选一，优先级 ACT-R > salience 衰减 > 原始幂律（后两者默认关=零回归）。
         # ACT-R 门控：有 episode_id 且 access_count>0 才替换 recency。
         if actr_enabled and fact.episode_id and fact.access_count > 0:
@@ -207,7 +217,14 @@ class MemoryRecallAgent:
         )
         # 衰减调制指数 κ（默认 0.5，与 consolidation.EbbinghausDecay.kappa 对齐；
         # κ=0 精确退化为原幂律·κ 越大显著度对留存的影响越强）。
-        self.salience_kappa = float(os.getenv("ZERO_RECALL_SALIENCE_KAPPA", "0.5"))
+        self.salience_kappa = float(os.getenv("ZERO_RECALL_SALIENCE_KAPPA", "1.0"))
+        # importance 维改吃 tag 派生信号（默认关=零回归）。开启后该维**不再读 precision=**，
+        # 三个 tag 统一进 noisy-OR（含此前对排序毫无影响的 commitment）。
+        self.tag_importance_enabled = os.getenv("ZERO_TAG_IMPORTANCE", "0").lower() not in (
+            "0",
+            "",
+            "false",
+        )
         if self.salience_decay_enabled and self.actr_enabled:
             # 构造期一次告警（非热路径）：两门都改写 recency 维，同开时 salience 衰减被 ACT-R 覆盖。
             logger.warning(
@@ -256,7 +273,12 @@ class MemoryRecallAgent:
                 actr_b_scale=self.actr_b_scale,
                 salience_decay_enabled=self.salience_decay_enabled,
                 salience_kappa=self.salience_kappa,
+                tag_importance_enabled=self.tag_importance_enabled,
             )
+            # 排障用（CS 席 Q5）：口径记在 trace，**不加第 4 个 content tag**——后者会扩大
+            # 文本解析面。① inject_min 仍读 precision=、②③ 读 tag 信号，两套并存是 D-B 的
+            # 有意后果，此字段用于区分某轮排序到底走了哪套。
+            entry["importance_source"] = "tag" if self.tag_importance_enabled else "precision"
             out["recalled_context"] = [f.content for f in ranked]
             out["recalled_facts"] = ranked  # D1：供 chat_driver 按 importance 注入 history
             entry["recalled_context_n"] = len(ranked)
