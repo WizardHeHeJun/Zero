@@ -31,6 +31,30 @@ _TAG_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 
+def importance_excess(importance: float, b0: float = 0.5) -> float:
+    """重要性相对中性基线的**超出比例** `u = (I − b0)/(1 − b0)`，钳到 [0, 1]。
+
+    供 `_rank_episodes` 的衰减调制与 `EbbinghausDecay.a_eff` **共用**（两处若各写一份，
+    会重演 parse_importance 当初两处副本、最后不得不上提的老路）。
+
+    用途：把「以 0 为原点的幂函数」`I^κ` 换成「以中性基线为不动点」的线性混合
+    `1 + κ·u`。`u=0`（无 tag / 中性）时该乘子对**任意 κ** 恒为 1 ⇒ 开关不触碰基线校准，
+    正交性写进参数化本身而非靠注释约束（`ai-docs/pitfalls.md`「旋钮的副作用要写进
+    参数化本身」，先例 MICRO_TREMOR_RATIO 叠加式→混合式）。
+
+    ⚠ 为什么必须换掉 `I^κ`（2026-08-12 数学席判**失真**，主程复算证实且更严重）：
+    `b0^κ ≠ 1`（`b0<1, κ>0` 时恒成立）⇒ **即便没有任何 tag 的普通 episode**，只要打开
+    该门，其 recency 就被系统性压低。实测 Δt=4 天、κ=2 时闲聊典型 episode 压低 **94%**，
+    三维占比由 `recency 31.8%/sim 52.4%/imp 15.9%` 变成 `2.8%/74.6%/22.6%`——加权和被
+    悄悄变成「几乎只看 sim」。这与 I 有无噪声无关，是纯结构性的基线漂移。
+    2026-08-11 那次离线 A/B 所报「高显著者上移 ⇒ 机制生效」为**误读**：真实成因是
+    recency 维被整体压扁，当时 sim 被固定成同值，剩下起作用的只有 importance。
+    """
+    if b0 >= 1.0:
+        return 0.0
+    return max(0.0, min(1.0, (importance - b0) / (1.0 - b0)))
+
+
 def parse_importance_tags(content: str) -> dict[str, bool]:
     """解析 episode content 尾部元数据段里的语义重要性 tag，返回各 tag 是否命中。
 
