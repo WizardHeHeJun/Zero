@@ -17,6 +17,40 @@ import re
 
 _PRECISION_RE = re.compile(r"precision=([0-9]+(?:\.[0-9]+)?)")
 
+# 可选 importance tag 的位置锚点：`precision=` 是**全部写入路径共同必拼、且位于所有可选
+# tag 之前**的字段。只在**最后一个** `precision=` 之后的子串里找 tag——用户原话在 gist 段
+# （位于系统元数据之前）够不到，即便原话里也写了 precision= 也只会把锚点前移、不会后移。
+# ⚠ 锚点不能取 `value=`：`ChatDriver._maybe_seed_memories` 的种子记忆格式是
+# `<text> | precision=.. | seed=True | first_contact=True`，**不含 value=** ⇒ 取 value=
+# 会让种子记忆的 tag 全部**静默失效**（不驱红任何断言）。改锚点前须复核全部写入路径。
+_TAG_ANCHOR_RE = re.compile(r"precision=-?[0-9]+(?:\.[0-9]+)?")
+_TAG_PATTERNS: dict[str, re.Pattern[str]] = {
+    "first_contact": re.compile(r" \| first_contact=True"),
+    "commitment": re.compile(r" \| commitment=True"),
+    "identity": re.compile(r" \| identity=\w+"),
+}
+
+
+def parse_importance_tags(content: str) -> dict[str, bool]:
+    """解析 episode content 尾部元数据段里的语义重要性 tag，返回各 tag 是否命中。
+
+    **位置锚定**，不是「取最后一个匹配」：先定位最后一个 ` | value=<数>`，只在其**之后**
+    的子串里找 tag。返回 dict 恒含三个键（first_contact / commitment / identity）。
+
+    ⚠ 为什么不能沿用 `parse_importance` 的「取最后一个匹配」口径（PRP 执行期发现·
+    议会原表述不足）：`parse_importance` 安全是因为 `precision=` **系统必拼、总是存在**，
+    最后一个匹配必属系统；而这三个 tag 都是**可选**的——系统本轮未打时，用户原话里的
+    字面串就是**唯一**匹配，取最后一个照样命中 ⇒ 用户自称即可提权。防线必须建在
+    **位置**上，不能建在匹配序号上。样本见 `tests/fixtures_importance_tags.py`。
+
+    无锚点（空串 / 历史异常数据 / 无元数据段）→ 全 False，不猜测。
+    """
+    anchors = list(_TAG_ANCHOR_RE.finditer(content))
+    if not anchors:
+        return dict.fromkeys(_TAG_PATTERNS, False)
+    tail = content[anchors[-1].end() :]
+    return {name: pattern.search(tail) is not None for name, pattern in _TAG_PATTERNS.items()}
+
 
 def parse_importance(content: str) -> float:
     """从 episode 文本解析写入时显著度 `precision=`；缺失/畸形返回 0.5 保守默认。

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
-from src.memory.utils import normalize_precision, parse_importance
+from src.memory.utils import normalize_precision, parse_importance, parse_importance_tags
 from src.orchestration.state import AffectState
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,10 @@ def _rank_episodes(
         # ×1.2 首因加权在 salience 衰减调制**之后**施加：首因是检索优先权（D5），
         # 不是巩固强度，不该进衰减速率；且 boost 后可 >1（0.9×1.2=1.08），
         # 若入 I^κ 会把 recency 顶出 (0,1] 量纲。
-        if "first_contact=True" in fact.content:
+        # 判定走 parse_importance_tags 的**位置锚定**，不用裸子串 `in`——后者会把用户原话里
+        # 的字面串 first_contact=True 当成系统 tag，用户自称即可白拿 ×1.2（PRP 执行期实证：
+        # importance 0.2500→0.3000，与真首因加成完全相同并反超排序）。
+        if parse_importance_tags(fact.content)["first_contact"]:
             importance *= 1.2
         return alpha * recency + beta * fact.sim + gamma_eff * importance
 
