@@ -391,6 +391,26 @@ def test_ebbinghaus_decay_weight_in_range() -> None:
         assert 0 < dw <= 1.0, f"episode_id={eid} decay_weight={dw} 超界"
 
 
+def test_ebbinghaus_gate_off_is_byte_identical() -> None:
+    """零回归正控：`tag_importance_enabled=False`（默认）时走旧 salience^κ 口径。
+
+    ⚠ 本条由 code-reviewer 点名补齐——首版把 ③ 的信号源与参数化**无条件**切换了，
+    没接任何 env 门，而 `.env.example` 的 `ZERO_CONSOLIDATION_ENABLED=1` 是启用态 ⇒
+    按该样例配置的部署合并后会立即且无法回退地换掉遗忘信号源。且对无 tag 的普通
+    episode，旧式 `a·√salience` 随 precision 连续变化、新式恒为 `a`——是把 precision 对
+    衰减的调制整体抹掉，不是零回归。
+    """
+    from src.memory.consolidation import EbbinghausDecay
+
+    now = datetime.now(UTC)
+    for salience in (0.05, 0.25, 0.5):
+        ep = _make_episode("e", salience=salience, days_ago=3.0)
+        ep["importance"] = 0.744  # 即便带高 importance，门关时也必须**完全不看它**
+        (dw, _eid), *_ = EbbinghausDecay(kappa=0.5).compute([ep], now=now)[0]  # type: ignore[misc]
+        expected = min(1.0, max(1e-6, 1.0 * (salience**0.5) * (3.0 ** (-0.8))))
+        assert dw == pytest.approx(expected), f"salience={salience} 门关路径偏离旧口径"
+
+
 def test_ebbinghaus_importance_modulates_decay() -> None:
     """importance 越高 → a_eff 越大 → decay_weight 越高（衰减越慢）。
 
@@ -407,7 +427,9 @@ def test_ebbinghaus_importance_modulates_decay() -> None:
     ep_high["importance"] = 0.744  # 三 tag 全中（noisy-OR: 1−0.5·0.8³）
     ep_low["importance"] = 0.5  # 无 tag → 中性基线 b0
 
-    updates, _ = EbbinghausDecay(kappa=1.0).compute([ep_high, ep_low], now=now)
+    updates, _ = EbbinghausDecay(kappa=1.0, tag_importance_enabled=True).compute(
+        [ep_high, ep_low], now=now
+    )
     dw_map = {eid: dw for dw, eid in updates}
     assert dw_map["high"] > dw_map["low"], (
         f"高 importance 应比中性衰减更慢：high={dw_map['high']:.4f} low={dw_map['low']:.4f}"
@@ -426,7 +448,9 @@ def test_ebbinghaus_neutral_importance_is_untouched_by_kappa() -> None:
     for kappa in (0.0, 0.5, 1.0, 5.0):
         ep = _make_episode("neutral", days_ago=3.0)
         ep["importance"] = 0.5
-        (dw, _eid), *_ = EbbinghausDecay(kappa=kappa).compute([ep], now=now)[0]  # type: ignore[misc]
+        (dw, _eid), *_ = EbbinghausDecay(  # type: ignore[misc]
+            kappa=kappa, tag_importance_enabled=True
+        ).compute([ep], now=now)[0]
         if baseline is None:
             baseline = dw
         assert dw == pytest.approx(baseline), f"κ={kappa} 改动了中性条目的 decay_weight"

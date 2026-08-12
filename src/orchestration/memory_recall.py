@@ -215,8 +215,13 @@ class MemoryRecallAgent:
             "",
             "false",
         )
-        # 衰减调制指数 κ（默认 0.5，与 consolidation.EbbinghausDecay.kappa 对齐；
-        # κ=0 精确退化为原幂律·κ 越大显著度对留存的影响越强）。
+        # 衰减调制强度 κ（默认 1.0）。语义：满 tag（u→1）时**有效衰减指数缩到 d/(1+κ)**
+        # ——κ=1 即「遗忘速率减半」。κ=0 精确退化为原幂律。
+        # ⚠ 该默认值的依据只在**除法式** d_eff=d/(1+κu) 下成立；早期草案里「recency 加成
+        # 比例恰等于 importance 维加成比例」的说法是针对**乘子式** (1+κu)·Δt^(−d) 推的，
+        # 除法式下比值 Δt^(d·κu/(1+κu)) 依赖 Δt、不是常数，那条依据已作废（code-reviewer
+        # WARN 指出）。亦**不与** consolidation.EbbinghausDecay.kappa「对齐」——两处公式
+        # 不同构（此处调指数、那处调振幅），各有独立依据。
         self.salience_kappa = float(os.getenv("ZERO_RECALL_SALIENCE_KAPPA", "1.0"))
         # importance 维改吃 tag 派生信号（默认关=零回归）。开启后该维**不再读 precision=**，
         # 三个 tag 统一进 noisy-OR（含此前对排序毫无影响的 commitment）。

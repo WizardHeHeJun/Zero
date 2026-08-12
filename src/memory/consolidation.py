@@ -92,11 +92,15 @@ class EbbinghausDecay:
         d_user: float = 0.3,
         a: float = 1.0,
         kappa: float = 0.5,
+        tag_importance_enabled: bool = False,
     ) -> None:
         self.d_session = d_session
         self.d_user = d_user
         self.a = a
         self.kappa = kappa
+        # 默认 False = 走旧口径（salience^κ），与改前逐字等价。env 由编排层读后传入，
+        # 本层不 getenv（守三层：记忆层不读部署配置）。
+        self.tag_importance_enabled = tag_importance_enabled
 
     def compute(
         self,
@@ -118,13 +122,19 @@ class EbbinghausDecay:
             if not valid_at.tzinfo:
                 valid_at = valid_at.replace(tzinfo=UTC)
             delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
-            # 振幅调制走 tag 重要性（值域 [b0,1)），不再走 affect_precision 派生的 salience：
-            # 后者衡量情绪后验确定性，与内容重要性方向常相反（见 utils.importance_signal）。
-            # 混合式 a_eff = a·(1+κ·u)：u=0（无 tag）时对任意 κ 恒为 a ⇒ 不触碰基线；
-            # 此处调**振幅** a 而非 _rank_episodes 的**指数** d——decay_weight 有 min(1.0,…)
-            # 钳制、不要求与 sim 同量纲，故振幅式在这里安全（两处是不同的正确形式）。
-            i_tag = ep.get("importance", 0.5)
-            a_eff = self.a * (1.0 + self.kappa * importance_excess(i_tag))
+            if self.tag_importance_enabled:
+                # 振幅调制走 tag 重要性（值域 [b0,1)），不再走 affect_precision 派生的
+                # salience：后者衡量情绪后验确定性，与内容重要性方向常相反（见
+                # utils.importance_signal）。混合式 a_eff = a·(1+κ·u)：u=0（无 tag）时对
+                # 任意 κ 恒为 a ⇒ 不触碰基线。此处调**振幅** a 而非 _rank_episodes 的
+                # **指数** d——decay_weight 有 min(1.0,…) 钳制、不要求与 sim 同量纲，
+                # 故振幅式在这里安全（两处是不同的正确形式）。
+                a_eff = self.a * (1.0 + self.kappa * importance_excess(ep.get("importance", 0.5)))
+            else:
+                # 旧口径（默认）：affect_precision 派生的 salience 直接作幂函数底数。
+                # ⚠ 已知失真但**保留为默认**以守零回归：salience^κ 在中性点 ≠1，对无 tag
+                # 的普通 episode 也施加压低（同 _rank_episodes 旧式的基线漂移）。
+                a_eff = self.a * (max(0.0, ep.get("salience", 0.5)) ** self.kappa)
             new_dw = min(1.0, max(1e-6, a_eff * (delta_days ** (-d))))
             updates.append((new_dw, eid))
         return updates, []
@@ -256,6 +266,7 @@ async def run_consolidation_batch(
     salience_threshold: float = 0.25,
     consolidation_count_min: int = 3,
     actr_b_scale: float = 3.0,
+    tag_importance_enabled: bool = False,
 ) -> None:
     """记忆巩固批处理：Ebbinghaus 衰减 + 睡眠巩固迁移（会话结束触发）。
 
@@ -341,7 +352,9 @@ async def run_consolidation_batch(
         )
 
     # ── 3. Ebbinghaus 分层幂律衰减（decay_weight 更新） ──────────────────────
-    decay_strategy = EbbinghausDecay(d_session=d_session, d_user=d_user)
+    decay_strategy = EbbinghausDecay(
+        d_session=d_session, d_user=d_user, tag_importance_enabled=tag_importance_enabled
+    )
     decay_updates, _ = decay_strategy.compute(episodes, now=now)
     if decay_updates and hasattr(semantic, "apply_decay_weights"):
         try:

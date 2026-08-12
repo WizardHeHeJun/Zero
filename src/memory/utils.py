@@ -109,8 +109,10 @@ def importance_excess(importance: float, b0: float = 0.5) -> float:
 def parse_importance_tags(content: str) -> dict[str, bool]:
     """解析 episode content 尾部元数据段里的语义重要性 tag，返回各 tag 是否命中。
 
-    **位置锚定**，不是「取最后一个匹配」：先定位最后一个 ` | value=<数>`，只在其**之后**
+    **位置锚定**，不是「取最后一个匹配」：先定位最后一个 `precision=<数>`，只在其**之后**
     的子串里找 tag。返回 dict 恒含三个键（first_contact / commitment / identity）。
+    锚点取 `precision=` 而非 `value=` 的原因见 `_TAG_ANCHOR_RE` 上方注释（种子记忆格式
+    不含 `value=`，取它会让那批 tag 静默失效）。
 
     ⚠ 为什么不能沿用 `parse_importance` 的「取最后一个匹配」口径（PRP 执行期发现·
     议会原表述不足）：`parse_importance` 安全是因为 `precision=` **系统必拼、总是存在**，

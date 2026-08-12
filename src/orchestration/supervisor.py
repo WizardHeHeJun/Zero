@@ -396,8 +396,12 @@ class SupervisorAgent:
                 # 将来独立 importance 信号落地时，此前所有历史 episode 都将无 tag 可用。
                 # 为何走 content 文本而非 DB 列：议会 D1·BLOCK——GraphitiGraphStore 无结构化列
                 # 钩子，加列会造成两后端能力分叉。
-                # 消费方（未来）注意：这些 tag 位于尾部元数据段，与用户原话同处一个字符串，
-                # 解析须取**最后一个**匹配（同 parse_importance 的 WARN-1 防注入口径）。
+                # ⚠ 消费方**必须**走 `memory.utils.parse_importance_tags` 的**位置锚定**解析
+                # （只在最后一个 `precision=` 之后的子串里找 tag），**不得**用裸 `in`，
+                # 也**不能**只靠「取最后一个匹配」——这三个 tag 是**可选**的，系统本轮未打时
+                # 用户原话里的字面串就是唯一匹配，取最后一个照样命中 ⇒ 用户自称即可提权。
+                # （`parse_importance` 能用「取最后一个」是因为 `precision=` 系统必拼、恒存在。
+                #  此处口径的前一版正是这么写的，已在 PRP importance-signal T1 实证推翻。）
                 commit_seg = " | commitment=True" if is_commitment else ""
                 identity_seg = (
                     f" | identity={identity_fact[0]}" if identity_fact is not None else ""

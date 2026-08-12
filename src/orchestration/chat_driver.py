@@ -418,6 +418,13 @@ class ChatDriver:
         self.actr_b_scale = actr_b_scale
         self.consolidation_timeout = consolidation_timeout
         self.consolidation_salience_threshold = consolidation_salience_threshold
+        # ③ 遗忘调制是否改吃 tag importance（默认关=旧 salience^κ 口径逐字等价）。
+        # 与 MemoryRecallAgent 读的是**同一个** env，保证 ②③ 同开同关、不出现半切换态。
+        self.tag_importance_enabled = os.getenv("ZERO_TAG_IMPORTANCE", "0").lower() not in (
+            "0",
+            "",
+            "false",
+        )
 
     async def step(self, user_text: str) -> ChatTurn:
         """推进一轮：评价→引擎→两时间尺度情绪→生成回复→落盘，返回本轮结果。"""
@@ -667,6 +674,7 @@ class ChatDriver:
                         salience_threshold=self.consolidation_salience_threshold,
                         consolidation_count_min=self.consolidation_count_min,
                         actr_b_scale=self.actr_b_scale,
+                        tag_importance_enabled=self.tag_importance_enabled,
                     ),
                     timeout=self.consolidation_timeout,
                 )
