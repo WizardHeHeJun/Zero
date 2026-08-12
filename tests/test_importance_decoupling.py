@@ -19,7 +19,7 @@ import pytest
 
 from src.memory.consolidation import EbbinghausDecay
 from src.memory.types import Fact, Scope
-from src.memory.utils import importance_signal, parse_importance_tags
+from src.memory.utils import importance_signal, normalize_precision, parse_importance_tags
 from src.orchestration.memory_recall import _rank_episodes
 
 NOW = datetime(2026, 8, 12, tzinfo=UTC)
@@ -78,7 +78,15 @@ def test_rank_importance_value_is_independent_of_precision() -> None:
 
 
 def test_decay_weight_is_independent_of_precision() -> None:
-    """③ 遗忘调制：decay_weight 不随 precision 取值变化。"""
+    """③ 遗忘调制：门**开**时 decay_weight 不随 precision 取值变化。
+
+    ⚠ 必须显式 `tag_importance_enabled=True`（2026-08-12 复核发现）：该参数默认 False，
+    漏传会掉进旧 `salience^κ` 分支；而本用例的 ep dict 从不设 `"salience"` 键 ⇒
+    `ep.get("salience", 0.5)` 对**任何** precision 恒返回 0.5 ⇒ `dw` 恒为同一常数、断言
+    恒真——「通过」不是因为解耦生效，而是走上了一条对 precision 天然无感的分支。
+    本仓 pitfalls「绿灯必须先证明它能红」，此处是补门控整改时**新引入**的假绿灯：
+    同批改了 test_consolidation.py 的两条、唯独漏了这条。
+    """
     weights: set[float] = set()
     for p in PRECISION_VARIANTS:
         content = _identity_episode(p)
@@ -89,8 +97,13 @@ def test_decay_weight_is_independent_of_precision() -> None:
             "content": content,
             "valid_at": NOW - timedelta(days=5),
             "importance": importance_signal(parse_importance_tags(content)),
+            # 故意给一个**随 precision 变化**的 salience：若实现误走旧分支，dw 会跟着变、
+            # 断言转红。没有这一项，旧分支会因缺键取默认值而恒定，把假绿灯藏起来。
+            "salience": normalize_precision(p, 30.0) * 0.5,
         }
-        (dw, _eid), *_ = EbbinghausDecay(kappa=1.0).compute([ep], now=NOW)[0]  # type: ignore[misc]
+        (dw, _eid), *_ = EbbinghausDecay(  # type: ignore[misc]
+            kappa=1.0, tag_importance_enabled=True
+        ).compute([ep], now=NOW)[0]
         weights.add(round(dw, 12))
     assert len(weights) == 1, f"③ decay_weight 仍受 precision 影响：{weights}"
 
