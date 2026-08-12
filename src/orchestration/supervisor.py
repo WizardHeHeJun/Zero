@@ -36,7 +36,18 @@ _COMMITMENT_RE = re.compile(
 
 
 def _is_commitment(text: str) -> bool:
-    """文本是否含承诺/日程类语义标记（时间/约定/日期）。纯正则、无 LLM、可单测。"""
+    """文本是否含承诺/日程类语义标记（时间/约定/日期）。纯正则、无 LLM、可单测。
+
+    依据：**意图优势效应**——未完成意图在记忆中维持更高激活水平
+    （Goschke & Kuhl 1993, DOI:10.1037/0278-7393.19.5.1211；更早的未完成任务记忆优势见
+    Zeigarnik 1927）。前瞻记忆作为独立记忆功能类别见 Einstein & McDaniel 1990
+    (DOI:10.1037/0278-7393.16.4.717)。
+
+    ⚠ **已知简化（心理席 2026-08-12 判定，非 bug）**：上述机制的核心是「未完成 → 高激活，
+    **完成后激活消退**」，而本判据是静态正则、**测不到承诺是否已兑现** —— 一条早已过期或
+    已完成的约定，会与真正待办的约定获得同等写入与排序优先级。确定性判据做不到状态追踪，
+    此局限留作已知边界（追踪兑现状态需超出本判据能力，见 PRP importance-signal 悬而未决项）。
+    """
     return bool(text) and _COMMITMENT_RE.search(text) is not None
 
 
@@ -289,7 +300,15 @@ class SupervisorAgent:
 
         进程内 set 轻量记录、无额外 IO。**边界**：重启 / 多实例（并发或重开 session 各持独立
         SupervisorAgent）下同 key 可被多标——可接受（多标一次优于漏标，议会 D5 悬而未决 #4）。
-        对应系列位置效应的首因端（D5）：「第一次见面说的话」获额外检索权重。写 episode 前调一次。
+        依据：**人际印象形成的首因效应**（Asch 1946, DOI:10.1037/h0055756）——首次获得的
+        信息对整体印象的塑造不成比例地大，且发生在「对一个人形成持续印象」的层面、
+        不依赖复述。「第一次见面说的话」获额外检索权重。写 episode 前调一次。
+
+        ⚠ 引文订正（2026-08-12 心理席，原锚点判为**范式错配**）：此前注释锚的是清单学习的
+        系列位置效应首因端（Murdock 1962, DOI:10.1037/h0045106），其机制是「复述 → 短时
+        转长时存储」（Glanzer & Cunitz 1966）。该机制在跨会话场景**不成立**——用户与系统
+        的第一句话不会被复述。改引 Asch 后仍属**跨范式类比**（社会认知首因 ≠ 序列位置
+        首因），非同一实证基础，此点须保留声明。
         """
         if key in self.seen_episode_keys:
             return False
@@ -377,8 +396,12 @@ class SupervisorAgent:
                 # 将来独立 importance 信号落地时，此前所有历史 episode 都将无 tag 可用。
                 # 为何走 content 文本而非 DB 列：议会 D1·BLOCK——GraphitiGraphStore 无结构化列
                 # 钩子，加列会造成两后端能力分叉。
-                # 消费方（未来）注意：这些 tag 位于尾部元数据段，与用户原话同处一个字符串，
-                # 解析须取**最后一个**匹配（同 parse_importance 的 WARN-1 防注入口径）。
+                # ⚠ 消费方**必须**走 `memory.utils.parse_importance_tags` 的**位置锚定**解析
+                # （只在最后一个 `precision=` 之后的子串里找 tag），**不得**用裸 `in`，
+                # 也**不能**只靠「取最后一个匹配」——这三个 tag 是**可选**的，系统本轮未打时
+                # 用户原话里的字面串就是唯一匹配，取最后一个照样命中 ⇒ 用户自称即可提权。
+                # （`parse_importance` 能用「取最后一个」是因为 `precision=` 系统必拼、恒存在。
+                #  此处口径的前一版正是这么写的，已在 PRP importance-signal T1 实证推翻。）
                 commit_seg = " | commitment=True" if is_commitment else ""
                 identity_seg = (
                     f" | identity={identity_fact[0]}" if identity_fact is not None else ""

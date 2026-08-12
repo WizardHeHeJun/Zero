@@ -182,13 +182,61 @@ def test_rank_salience_decay_off_is_byte_identical() -> None:
     assert gated_off == baseline
 
 
-def test_rank_salience_decay_on_lets_salient_old_win() -> None:
-    """门开 → 高显著旧 episode 的 recency 反超低显著新 episode（衰减被 I^κ 调制）。"""
-    pair = [_SALIENCE_OLD, _SALIENCE_FRESH]
-    off = _rank_episodes(pair, NOW, salience_decay_enabled=False, **_RECENCY_ONLY)
-    on = _rank_episodes(pair, NOW, salience_decay_enabled=True, salience_kappa=3.0, **_RECENCY_ONLY)
-    assert off[0] is _SALIENCE_FRESH, "门关时纯幂律：新的必胜"
-    assert on[0] is _SALIENCE_OLD, "门开时高显著者衰减更慢，反超"
+def test_rank_salience_decay_on_slows_decay_for_salient() -> None:
+    """门开 → 高显著 episode 的**衰减变慢**（recency 相对门关提高）。
+
+    ⚠ 断言口径修订（2026-08-12）：原断言写的是「高显著旧 episode **反超**低显著新
+    episode」——那个期望建立在旧式 `I^κ` **把新 episode 压低**的失真行为上。改用
+    `d_eff = d/(1+κu)` 后，`Δt=1` 天的 recency 恒为 1（上界），旧 episode 在 recency 维
+    **不可能超过刚发生的**，这在语义上才对（「更耐遗忘」≠「比刚发生的还新」）。
+
+    同样用 sim 锚点做杠杆，断言被测代码的实际行为（不用测试内复算函数当判据）：
+      A = 30 天龄**高显著**(precision=72 ⇒ I=0.706, u=0.412)，sim=0.70
+      B =  1 天龄中性，sim=0 ⇒ score 恒为 1.0
+    门关：A = 0.1826 + 0.70 = 0.8826 < 1.0 ⇒ B 胜。
+    门开 κ=3：d_eff = 0.5/2.236 = 0.2236 ⇒ recency_A = 30^-0.2236 = 0.4245，
+              A = 1.1245 > 1.0 ⇒ A 胜。**门控翻转排序**即证明衰减确实变慢。
+    """
+    a_old_salient = _fact("precision=72.00", sim=0.70, days_ago=30)
+    b_fresh_plain = _fact("precision=10.00", sim=0.0, days_ago=1)
+    pair = [a_old_salient, b_fresh_plain]
+    weights = {"alpha": 1.0, "beta": 1.0, "gamma": 0.0, "importance_scale": 30.0}
+
+    off = _rank_episodes(pair, NOW, salience_decay_enabled=False, **weights)
+    on = _rank_episodes(pair, NOW, salience_decay_enabled=True, salience_kappa=3.0, **weights)
+    assert off[0] is b_fresh_plain, "门关：高显著旧条目不敌新条目"
+    assert on[0] is a_old_salient, "门开：高显著者衰减变慢，越过新条目"
+
+
+def test_rank_salience_decay_neutral_episode_is_untouched() -> None:
+    """正交性核心：中性（u=0）episode 的 recency 对**任意 κ** 与门关逐字相同。
+
+    这是旧式 `I^κ` 最严重的失真所在——它对无 tag 的普通 episode 也施加 `I^κ<1` 的压低，
+    κ=2 时实测压低 94%，把三维加权和悄悄变成「几乎只看 sim」。
+
+    ⚠ 断言必须咬住**被测代码的实际数值**。本测试前两版都栽了，均由变异验证逮住：
+      v1 拿测试内的复算函数 `_effective_d` 当判据 —— 恒真（改被测代码影响不到它），
+         本仓 pitfalls「判据取在不携带目标信息的代理量上」。
+      v2 用「30 天龄 vs 1 天龄」做杠杆 —— 旧式把**两条都**压低，相对顺序不变 ⇒ 测不出。
+    v3（本版）的关键：参照物必须**不受 recency 影响**。把 B 的年龄拉到 10000 天，
+    其 recency ≈ 0.01、score 由 sim 独占 ⇒ 成为稳定标尺：
+      A = 30 天龄中性，sim=0.40  ⇒ 正确实现 score = 0.1826 + 0.40 = 0.5826  （A 胜）
+      B = 10000 天龄中性，sim=0.50 ⇒ score ≈ 0.51（recency 贡献 ≤0.01）
+    旧式 κ=0.5 把 recency_A 压到 0.0913 ⇒ score_A = 0.4913 < 0.51 ⇒ B 胜 ⇒ 转红。
+    """
+    a_old_similar = _fact("precision=10.00", sim=0.40, days_ago=30)  # I=0.25 < b0 ⇒ u=0
+    b_fresh_plain = _fact("precision=10.00", sim=0.50, days_ago=10000)  # recency≈0，纯 sim 标尺
+    pair = [a_old_similar, b_fresh_plain]
+    weights = {"alpha": 1.0, "beta": 1.0, "gamma": 0.0, "importance_scale": 30.0}
+
+    off = _rank_episodes(pair, NOW, salience_decay_enabled=False, **weights)
+    assert off[0] is a_old_similar, "门关基线：0.1826+0.40 > 0.51，A 应胜（否则本测试杠杆失效）"
+
+    for kappa in (0.5, 1.0, 2.0, 10.0):
+        on = _rank_episodes(pair, NOW, salience_decay_enabled=True, salience_kappa=kappa, **weights)
+        assert on[0] is a_old_similar, (
+            f"κ={kappa}：中性条目的 recency 被改动了（u=0 时必须与门关逐字相同）"
+        )
 
 
 def test_rank_salience_decay_kappa_zero_degenerates() -> None:
@@ -223,7 +271,9 @@ def test_rank_salience_decay_yields_to_actr() -> None:
         episode_id="1",
         access_count=9,
     )
-    plain = _fact("precision=72.00", days_ago=1)  # 无 episode_id → 只能走 salience 衰减
+    # plain 无 episode_id → 只能走 salience 衰减分支；取 30 天龄使其 recency 明显 <1，
+    # 而 visited 走 ACT-R（Petrov B ≈ 0.72）。若优先级写反，plain 会用 d_eff 抬升后反超。
+    plain = _fact("precision=72.00", days_ago=30)
     ranked = _rank_episodes(
         [plain, visited],
         NOW,

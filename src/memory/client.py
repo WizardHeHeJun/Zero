@@ -206,6 +206,7 @@ class MemoryClient:
         salience_threshold: float = 0.25,
         consolidation_count_min: int = 3,
         actr_b_scale: float = 3.0,
+        tag_importance_enabled: bool = False,
     ) -> None:
         """会话结束时触发记忆巩固批处理（经 MemoryClient 封装·守三层单向）。
 
@@ -232,6 +233,7 @@ class MemoryClient:
                 salience_threshold=salience_threshold,
                 consolidation_count_min=consolidation_count_min,
                 actr_b_scale=actr_b_scale,
+                tag_importance_enabled=tag_importance_enabled,
             )
         except Exception as exc:
             logger.warning("run_consolidation_batch failed key=%s: %s", key, exc, exc_info=True)

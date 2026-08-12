@@ -153,6 +153,12 @@ def _inject_recalled_as_system(
     空列表原样返回 window（BLOCK-2 fallback，零回归）。纯数据装配、无 LLM（守 BLOCK-1）。
     importance_scale 由调用方（ChatDriver）从构造期参数传入，与 MemoryRecallAgent 保持一致。
     """
+    # ⚠ 口径分界（PRP importance-signal · D-B，有意为之非遗漏）：本处注入门**继续读
+    # `precision=`**（经 normalized_importance），而 ② 召回排序与 ③ 遗忘调制已改吃
+    # tag 派生的 importance 信号。依据：议会判定注入门只做**阈值判定**（只需落在门限
+    # 哪一侧），`precision=` 的覆写在这里是安全的；且 inject_min=0.5 正是按 Hill 归一后的
+    # precision 量级校准的，改它需要重校准而无收益。某轮走了哪套口径见 trace 的
+    # `importance_source` 字段。
     if not recalled_facts:
         return window
     system_entries: list[dict[str, str]] = [
@@ -412,6 +418,13 @@ class ChatDriver:
         self.actr_b_scale = actr_b_scale
         self.consolidation_timeout = consolidation_timeout
         self.consolidation_salience_threshold = consolidation_salience_threshold
+        # ③ 遗忘调制是否改吃 tag importance（默认关=旧 salience^κ 口径逐字等价）。
+        # 与 MemoryRecallAgent 读的是**同一个** env，保证 ②③ 同开同关、不出现半切换态。
+        self.tag_importance_enabled = os.getenv("ZERO_TAG_IMPORTANCE", "0").lower() not in (
+            "0",
+            "",
+            "false",
+        )
 
     async def step(self, user_text: str) -> ChatTurn:
         """推进一轮：评价→引擎→两时间尺度情绪→生成回复→落盘，返回本轮结果。"""
@@ -661,6 +674,7 @@ class ChatDriver:
                         salience_threshold=self.consolidation_salience_threshold,
                         consolidation_count_min=self.consolidation_count_min,
                         actr_b_scale=self.actr_b_scale,
+                        tag_importance_enabled=self.tag_importance_enabled,
                     ),
                     timeout=self.consolidation_timeout,
                 )

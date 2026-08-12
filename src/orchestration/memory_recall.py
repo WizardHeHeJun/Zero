@@ -17,7 +17,13 @@ from datetime import UTC, datetime
 from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
-from src.memory.utils import normalize_precision, parse_importance
+from src.memory.utils import (
+    importance_excess,
+    importance_signal,
+    normalize_precision,
+    parse_importance,
+    parse_importance_tags,
+)
 from src.orchestration.state import AffectState
 
 logger = logging.getLogger(__name__)
@@ -94,25 +100,28 @@ def _rank_episodes(
     actr_b_scale: float = 3.0,
     salience_decay_enabled: bool = False,
     salience_kappa: float = 0.5,
+    tag_importance_enabled: bool = False,
 ) -> list[Fact]:
     """三维加权和重排（D3）：`score = α·recency + β·sim + γ_eff·importance`。
 
     - recency：默认 `Δt^(-d)`（Wixted&Ebbesen 1991 幂律，非指数）；
       actr_enabled=True 且 fact.episode_id 非空且 access_count>0 时，用 Petrov B 近似
       替换（ACT-R 频率·归一到 (0,1]·与 sim/importance 同量纲）——零回归。
-      salience_decay_enabled=True 时改用 `I^κ · Δt^(-d)`（I=normalized_importance∈(0,1)）：
-      显著度调制**衰减速率**而非基线权重，对应 McGaugh 唤醒调制巩固强度，与
-      `consolidation.EbbinghausDecay` 的 `a_eff = a·salience^κ` 同构（该处衰减只作用于
-      `_trim_capacity` 驱逐顺序，召回排序此前完全不受衰减影响——本参数补上这条回路）。
+      salience_decay_enabled=True 时改用 `Δt^(−d_eff)`，`d_eff = d/(1+κ·u)`、
+      `u = importance_excess(I)`：显著度调制**衰减速率本身**（即指数 d），对应 McGaugh
+      唤醒调制巩固强度。`decay_weight` 此前只作用于 `_trim_capacity` 驱逐顺序，召回排序
+      完全不受衰减影响——本参数补上这条回路。
       **两门互斥：ACT-R 优先**（二者都在改写 recency 维，同开会二次污染）。
-      **已知耦合（有界·非 bug）**：I 同时出现在 γ 维基线与本处衰减调制中；κ 控制第二处
-      强度，κ=0 → `I^0=1` 精确退化回原式（变异测试靶子 test_rank_salience_decay_kappa_zero）。
-      ⚠ **调 κ 前必读的实测代价**（23 条真实 episode·Δt 铺 1–90 天·sim 固定·唯一变量为本旋钮）：
-      κ=2 时 20/23 条位次变化、方向符合预期（高显著者上移），但 `affect_precision` 的上游
-      估计噪声被**同步放大**——观测到低信息量却精度估高的 episode（「刚整理了一下桌子」
-      I=0.374）压过高信息量却精度估低的（「我最近状态不太好」I=0.268）。κ 越大放大越狠。
-      根因在 affect_precision 估计环节、非本旋钮引入，但选值须知情：`.env.example` 的 κ
-      推荐值取保守侧（0.5）正是为此。
+      κ=0 时 `d_eff = d` 精确退化回原式；**u=0（中性/无 tag）时对任意 κ 亦恒等于原式**
+      ——正交性由参数化本身保证，不靠注释约束。
+      ⚠ **2026-08-12 判定订正（原「已知耦合·有界·非 bug」作废，改判失真）**：旧式
+      `I^κ·Δt^(−d)` 有**确定性基线漂移**——`b0^κ ≠ 1` ⇒ 即便无任何 tag 的普通 episode，
+      开门后 recency 也被系统性压低。实测 Δt=4 天、κ=2 时闲聊典型压低 **94%**，三维占比
+      由 `recency 31.8%/sim 52.4%/imp 15.9%` 变成 `2.8%/74.6%/22.6%`——加权和被悄悄变成
+      「几乎只看 sim」。此漂移与 I 有无噪声**无关**（原注释只归因于噪声放大，是不完整的）。
+      2026-08-11 离线 A/B 所报「高显著者上移 ⇒ 机制生效」为**误读**：真实成因是 recency
+      维被整体压扁，当时 sim 固定同值、剩下起作用的只有 importance。
+      （数学席判失真 + 主程复算证实，见 `PRP/importance-signal/design.md`。）
       量纲：I∈(0,1)、Δt^(-d)∈(0,1] ⇒ 乘积仍 ∈(0,1]，与 sim/importance 同量纲不破坏等权。
       ⚠ 范围收窄：MemoryRecallAgent 的 recall 只查 Scope.USER，故 EbbinghausDecay 的
       SESSION/USER 分层 d 在召回路径用不上，实际只有 d_user 一档生效。
@@ -128,19 +137,43 @@ def _rank_episodes(
     def score(fact: Fact) -> float:
         valid_at = fact.valid_at if fact.valid_at.tzinfo else fact.valid_at.replace(tzinfo=UTC)
         delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
-        importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
+        # importance 维信号来源二选一（tag_importance_enabled 默认关 = 零回归）：
+        # - 开：tag 派生的 noisy-OR 信号，**三个 tag 统一计入**（修心理席指出的 2/3 缺口：
+        #   此前 identity 靠覆写 precision、first_contact 靠 ×1.2，而 commitment 只决定
+        #   写不写、对排序毫无影响）。此路**不读 precision=**（PRD 目标 G2）。
+        # - 关：原 Hill 归一的 affect_precision 代理（D8）。
+        if tag_importance_enabled:
+            importance = importance_signal(parse_importance_tags(fact.content))
+        else:
+            importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
         # recency 维三选一，优先级 ACT-R > salience 衰减 > 原始幂律（后两者默认关=零回归）。
         # ACT-R 门控：有 episode_id 且 access_count>0 才替换 recency。
         if actr_enabled and fact.episode_id and fact.access_count > 0:
             recency = _petrov_b_norm(fact.access_count, delta_days, decay_d, actr_b_scale)
         elif salience_decay_enabled:
-            recency = (importance**salience_kappa) * (delta_days ** (-decay_d))
+            # 调**衰减指数**而非乘结果：「显著度调制遗忘速率」，遗忘速率就是 d。
+            #   d_eff = d/(1+κ·u)，recency = Δt^(−d_eff)
+            # - u=0（无 tag/中性）→ d_eff = d ⇒ **与门关逐字相同**，对任意 κ 成立（正交）
+            # - u>0 → d_eff < d ⇒ 衰减更慢（方向合 McGaugh「只增强不弱化」）
+            # - Δt^(−d_eff) ∈ (0,1] ⇒ **量纲天然保持**，与 sim∈[0,1] 可等权相加
+            # ⚠ 不能用乘子式 `(1+κ·u)·Δt^(−d)`（议会数学席原式）：其上界为 1+κ，会把
+            #   recency 顶出 (0,1]、悄悄放大 α 维实权——该式只论证了 ≥1，未给上界。
+            #   test_rank_salience_decay_stays_in_unit_range 实测抓到。
+            # ⚠ 也不能用旧式 `I^κ`（已判失真）——见 utils.importance_excess 的失真说明。
+            # 语义后果（非缺陷）：Δt=1 天时 recency 恒为 1（上界），故高显著旧 episode
+            # 在 recency 维**不可能超过刚发生的**——「更耐遗忘」不等于「比刚发生的还新」。
+            # 旧式能做到只是因为它把新 episode 压低了。反超与否由三维合力决定。
+            d_eff = decay_d / (1.0 + salience_kappa * importance_excess(importance))
+            recency = delta_days ** (-d_eff)
         else:
             recency = delta_days ** (-decay_d)
         # ×1.2 首因加权在 salience 衰减调制**之后**施加：首因是检索优先权（D5），
         # 不是巩固强度，不该进衰减速率；且 boost 后可 >1（0.9×1.2=1.08），
         # 若入 I^κ 会把 recency 顶出 (0,1] 量纲。
-        if "first_contact=True" in fact.content:
+        # 判定走 parse_importance_tags 的**位置锚定**，不用裸子串 `in`——后者会把用户原话里
+        # 的字面串 first_contact=True 当成系统 tag，用户自称即可白拿 ×1.2（PRP 执行期实证：
+        # importance 0.2500→0.3000，与真首因加成完全相同并反超排序）。
+        if parse_importance_tags(fact.content)["first_contact"]:
             importance *= 1.2
         return alpha * recency + beta * fact.sim + gamma_eff * importance
 
@@ -182,9 +215,21 @@ class MemoryRecallAgent:
             "",
             "false",
         )
-        # 衰减调制指数 κ（默认 0.5，与 consolidation.EbbinghausDecay.kappa 对齐；
-        # κ=0 精确退化为原幂律·κ 越大显著度对留存的影响越强）。
-        self.salience_kappa = float(os.getenv("ZERO_RECALL_SALIENCE_KAPPA", "0.5"))
+        # 衰减调制强度 κ（默认 1.0）。语义：满 tag（u→1）时**有效衰减指数缩到 d/(1+κ)**
+        # ——κ=1 即「遗忘速率减半」。κ=0 精确退化为原幂律。
+        # ⚠ 该默认值的依据只在**除法式** d_eff=d/(1+κu) 下成立；早期草案里「recency 加成
+        # 比例恰等于 importance 维加成比例」的说法是针对**乘子式** (1+κu)·Δt^(−d) 推的，
+        # 除法式下比值 Δt^(d·κu/(1+κu)) 依赖 Δt、不是常数，那条依据已作废（code-reviewer
+        # WARN 指出）。亦**不与** consolidation.EbbinghausDecay.kappa「对齐」——两处公式
+        # 不同构（此处调指数、那处调振幅），各有独立依据。
+        self.salience_kappa = float(os.getenv("ZERO_RECALL_SALIENCE_KAPPA", "1.0"))
+        # importance 维改吃 tag 派生信号（默认关=零回归）。开启后该维**不再读 precision=**，
+        # 三个 tag 统一进 noisy-OR（含此前对排序毫无影响的 commitment）。
+        self.tag_importance_enabled = os.getenv("ZERO_TAG_IMPORTANCE", "0").lower() not in (
+            "0",
+            "",
+            "false",
+        )
         if self.salience_decay_enabled and self.actr_enabled:
             # 构造期一次告警（非热路径）：两门都改写 recency 维，同开时 salience 衰减被 ACT-R 覆盖。
             logger.warning(
@@ -233,7 +278,12 @@ class MemoryRecallAgent:
                 actr_b_scale=self.actr_b_scale,
                 salience_decay_enabled=self.salience_decay_enabled,
                 salience_kappa=self.salience_kappa,
+                tag_importance_enabled=self.tag_importance_enabled,
             )
+            # 排障用（CS 席 Q5）：口径记在 trace，**不加第 4 个 content tag**——后者会扩大
+            # 文本解析面。① inject_min 仍读 precision=、②③ 读 tag 信号，两套并存是 D-B 的
+            # 有意后果，此字段用于区分某轮排序到底走了哪套。
+            entry["importance_source"] = "tag" if self.tag_importance_enabled else "precision"
             out["recalled_context"] = [f.content for f in ranked]
             out["recalled_facts"] = ranked  # D1：供 chat_driver 按 importance 注入 history
             entry["recalled_context_n"] = len(ranked)

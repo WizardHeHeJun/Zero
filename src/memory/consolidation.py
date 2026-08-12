@@ -31,7 +31,13 @@ import math
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
-from src.memory.utils import normalize_precision, parse_importance
+from src.memory.utils import (
+    importance_excess,
+    importance_signal,
+    normalize_precision,
+    parse_importance,
+    parse_importance_tags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +69,17 @@ class EbbinghausDecay:
     """分层幂律遗忘衰减（SESSION 快衰 d_s / USER 慢衰 d_u）。
 
     decay_weight = a_eff × Δt^(−d)，结果钳到 (0, 1]。
-    salience 调制有效振幅：a_eff = a × salience^κ（salience 高→衰减慢，仿 McGaugh 唤醒调制）。
-    salience 从 episode content 解析 precision 字段代理（见 parse_importance）。
+    重要性调制有效振幅：`a_eff = a × (1 + κ·u)`，`u = importance_excess(importance)`
+    （重要性高→振幅大→衰减慢，仿 McGaugh 唤醒调制方向）。
+
+    ⚠ 2026-08-12 两处改动（PRP importance-signal）：
+    ① 信号来源由 `affect_precision` 派生的 salience 换成 **tag 派生的 importance**——
+       后验精度衡量「情绪判断有多确定」，与「内容有多重要」方向常相反。
+    ② 参数化由 `salience^κ` 换成 `(1+κ·u)` 混合式——旧式在中性点 `b0^κ ≠ 1`，
+       对**无 tag 的普通 episode 也施加压低**（确定性基线漂移，与噪声无关）。
+       混合式在 `u=0` 时对任意 κ 恒为 `a`，正交性由参数化保证而非靠注释约束。
+    两项必须同批改：旧 salience 值域 `(0,0.5]`，若只换参数化而不换信号来源，
+    `u` 会**恒为 0**、调制静默失效。
 
     注意：**非 MCM 4 参数模型**（MCM 留理论参照）；用更轻量的幂律近似。
     分层：SESSION scope 用 d_s（快衰），USER scope 用 d_u（慢衰），
@@ -77,11 +92,15 @@ class EbbinghausDecay:
         d_user: float = 0.3,
         a: float = 1.0,
         kappa: float = 0.5,
+        tag_importance_enabled: bool = False,
     ) -> None:
         self.d_session = d_session
         self.d_user = d_user
         self.a = a
         self.kappa = kappa
+        # 默认 False = 走旧口径（salience^κ），与改前逐字等价。env 由编排层读后传入，
+        # 本层不 getenv（守三层：记忆层不读部署配置）。
+        self.tag_importance_enabled = tag_importance_enabled
 
     def compute(
         self,
@@ -103,8 +122,19 @@ class EbbinghausDecay:
             if not valid_at.tzinfo:
                 valid_at = valid_at.replace(tzinfo=UTC)
             delta_days = max(1.0, (now - valid_at).total_seconds() / 86400.0)
-            salience = ep.get("salience", 0.5)
-            a_eff = self.a * (max(0.0, salience) ** self.kappa)
+            if self.tag_importance_enabled:
+                # 振幅调制走 tag 重要性（值域 [b0,1)），不再走 affect_precision 派生的
+                # salience：后者衡量情绪后验确定性，与内容重要性方向常相反（见
+                # utils.importance_signal）。混合式 a_eff = a·(1+κ·u)：u=0（无 tag）时对
+                # 任意 κ 恒为 a ⇒ 不触碰基线。此处调**振幅** a 而非 _rank_episodes 的
+                # **指数** d——decay_weight 有 min(1.0,…) 钳制、不要求与 sim 同量纲，
+                # 故振幅式在这里安全（两处是不同的正确形式）。
+                a_eff = self.a * (1.0 + self.kappa * importance_excess(ep.get("importance", 0.5)))
+            else:
+                # 旧口径（默认）：affect_precision 派生的 salience 直接作幂函数底数。
+                # ⚠ 已知失真但**保留为默认**以守零回归：salience^κ 在中性点 ≠1，对无 tag
+                # 的普通 episode 也施加压低（同 _rank_episodes 旧式的基线漂移）。
+                a_eff = self.a * (max(0.0, ep.get("salience", 0.5)) ** self.kappa)
             new_dw = min(1.0, max(1e-6, a_eff * (delta_days ** (-d))))
             updates.append((new_dw, eid))
         return updates, []
@@ -236,6 +266,7 @@ async def run_consolidation_batch(
     salience_threshold: float = 0.25,
     consolidation_count_min: int = 3,
     actr_b_scale: float = 3.0,
+    tag_importance_enabled: bool = False,
 ) -> None:
     """记忆巩固批处理：Ebbinghaus 衰减 + 睡眠巩固迁移（会话结束触发）。
 
@@ -301,6 +332,10 @@ async def run_consolidation_batch(
         content = row.get("content", "")
         precision = parse_importance(content)
         salience = normalize_precision(precision, scale=30.0) * 0.5
+        # importance：tag 派生的内容重要性（值域 [0.5,1)），供 EbbinghausDecay 的振幅调制。
+        # 与上面的 salience 并存而非替代——salience 仍供 SleepConsolidation 的升迁门使用
+        # （那是「情绪显著度」语义，对应 McGaugh 唤醒调制，本 PRP 不改；D-B 只解耦 ②③）。
+        importance = importance_signal(parse_importance_tags(content))
         episodes.append(
             {
                 "episode_id": row["episode_id"],
@@ -312,11 +347,14 @@ async def run_consolidation_batch(
                 "consolidation_count": row.get("consolidation_count", 0),
                 "decay_weight": row.get("decay_weight", 1.0),
                 "salience": salience,
+                "importance": importance,
             }
         )
 
     # ── 3. Ebbinghaus 分层幂律衰减（decay_weight 更新） ──────────────────────
-    decay_strategy = EbbinghausDecay(d_session=d_session, d_user=d_user)
+    decay_strategy = EbbinghausDecay(
+        d_session=d_session, d_user=d_user, tag_importance_enabled=tag_importance_enabled
+    )
     decay_updates, _ = decay_strategy.compute(episodes, now=now)
     if decay_updates and hasattr(semantic, "apply_decay_weights"):
         try:
