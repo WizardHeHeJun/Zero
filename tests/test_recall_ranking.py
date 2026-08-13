@@ -111,6 +111,31 @@ def test_rank_first_contact_boost() -> None:
     assert ranked[0] is first, "first_contact ×1.2 应排前"
 
 
+def test_rank_tag_mode_first_contact_counted_once() -> None:
+    """tag 模式下 first_contact 只计权一次（code-reviewer 2026-08-13 WARN 的回归锁）。
+
+    fold-in 里 first_contact 已是 noisy-OR 的一项证据（w=0.2），门关路径的外层 ×1.2
+    在 tag 模式必须**不再**施加，否则同一证据双重计权。
+    「能红」构造：fc 条目 raw=30（Ĩ=0.5）单次计权 I = 1−0.5·0.8 = 0.60，双重计权
+    0.60×1.2 = 0.72；对手无 tag、raw=55.71（Ĩ=0.65）夹在两者之间 ⇒
+    单次计权时对手胜，双重计权时 fc 反超 ⇒ 断言在双重计权实现上必转红。
+    """
+    fc = _fact(
+        "你说：初见 | 情绪=平静(0.10,0.10) | precision=30.00 | precision_raw=30.00"
+        " | streams=[] | value=0.000 | first_contact=True",
+        days_ago=1,
+    )
+    rival = _fact(
+        "你说：普通一句 | 情绪=平静(0.10,0.10) | precision=55.71 | precision_raw=55.71"
+        " | streams=[] | value=0.000",
+        days_ago=1,
+    )
+    ranked = _rank_episodes(
+        [fc, rival], NOW, alpha=0.0, beta=0.0, gamma=1.0, tag_importance_enabled=True
+    )
+    assert ranked[0] is rival, "fc 反超说明 ×1.2 在 tag 模式仍被叠加（双重计权）"
+
+
 def test_rank_delta_t_clamp_no_overflow() -> None:
     """valid_at=now（Δt=0）→ clamp 到 1 天，不抛 ZeroDivision/Overflow，分数有限。"""
     fresh = _fact("precision=0.50", days_ago=0)
@@ -283,6 +308,49 @@ def test_rank_salience_decay_yields_to_actr() -> None:
         **_RECENCY_ONLY,
     )
     assert ranked[0] is visited, "ACT-R 应优先于 salience 衰减接管 recency 维"
+
+
+def test_rank_salience_decay_tag_mode_u_ignores_precision() -> None:
+    """两门同开（salience 衰减 + tag 模式）：u 只依赖 tag，precision 变化不得渗入 recency。
+
+    议会二轮数学席点名的「隐蔽污染」回归锁（code-reviewer 2026-08-13 WARN 补测）：
+    tag 模式下若 u 仍从合并后的 fold-in I 反解，高 precision 无 tag 条目会得到 u>0、
+    衰减变慢——precision 的正常波动被误当「重要性超出基线」。
+    「能红」构造：A/B 均无 tag、同龄 30 天，仅 raw 相差悬殊（72 vs 0.5）。正确实现下
+    两者 u=0 ⇒ recency 相同 ⇒ sorted 稳定排序保持输入顺序（两种输入顺序各自保持）；
+    污染实现下 A（raw=72 ⇒ 若反解则 u≈0.41）衰减更慢、恒排第一 ⇒ 第二个断言转红。
+    gamma=0 隔离 importance 维，只咬 recency。
+    """
+    kw = {"alpha": 1.0, "beta": 0.0, "gamma": 0.0, "importance_scale": 30.0}
+    a = _fact(
+        "你说：平淡但确定 | 情绪=平静(0.05,0.05) | precision=72.00 | precision_raw=72.00"
+        " | streams=[] | value=0.000",
+        days_ago=30,
+    )
+    b = _fact(
+        "你说：模糊的一句 | 情绪=平静(0.30,0.30) | precision=0.50 | precision_raw=0.50"
+        " | streams=[] | value=0.000",
+        days_ago=30,
+    )
+    flags = {"salience_decay_enabled": True, "salience_kappa": 3.0, "tag_importance_enabled": True}
+    assert _rank_episodes([a, b], NOW, **flags, **kw)[0] is a
+    assert _rank_episodes([b, a], NOW, **flags, **kw)[0] is b, (
+        "无 tag 条目的 recency 随 precision 变化——u 被 fold-in I 污染了"
+    )
+    # 正控：tag 才是 u 的唯一来源——identity 条目衰减更慢，无论输入顺序都反超同龄无 tag 者
+    c = _fact(
+        "你说：我叫林川 | 情绪=平静(0.05,0.05) | precision=40.00 | precision_raw=10.00"
+        " | streams=[] | value=0.000 | identity=name",
+        days_ago=30,
+    )
+    d = _fact(
+        "你说：普通一句 | 情绪=平静(0.10,0.10) | precision=10.00 | precision_raw=10.00"
+        " | streams=[] | value=0.000",
+        days_ago=30,
+    )
+    assert _rank_episodes([d, c], NOW, **flags, **kw)[0] is c, (
+        "identity tag 未让衰减变慢——u 的 tag 通路断了"
+    )
 
 
 def test_rank_salience_decay_stays_in_unit_range() -> None:

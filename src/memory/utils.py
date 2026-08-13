@@ -24,9 +24,24 @@ _PRECISION_RE = re.compile(r"precision=([0-9]+(?:\.[0-9]+)?)")
 # `<text> | precision=.. | seed=True | first_contact=True`，**不含 value=** ⇒ 取 value=
 # 会让种子记忆的 tag 全部**静默失效**（不驱红任何断言）。改锚点前须复核全部写入路径。
 _TAG_ANCHOR_RE = re.compile(r"precision=-?[0-9]+(?:\.[0-9]+)?")
-# 各 tag 的默认权重（**等权**）。0.2 使单 tag 命中时 I/b0 = 1.2，精确复现既有
-# first_contact ×1.2。等权是刻意选择：三判据无共同度量单位，不得由文献效应量反推。
+# 未知 tag 键的兜底权重。0.2 使单 tag 命中时 I/b0 = 1.2，精确复现既有 first_contact ×1.2。
 _DEFAULT_TAG_WEIGHT = 0.2
+
+# 各 tag 的当前默认权重。first_contact / identity 等权 0.2（三判据无共同度量单位，
+# 不得由文献效应量反推定序——心理席 Q1-b）。
+# ⚠ commitment 临时置 0（议会二轮张力 3·2026-08-13）：438 轮实测 `_is_commitment`
+# 精确率仅 26%（时间指称被当承诺、方向已知反了），noisy-OR 里 w=0 ⇒ (1−w)^tag ≡ 1，
+# 等价于把该信号移出组合、无需分支代码。恢复非零的前置**顺序强制**：
+# ① `.claude/rules/` 落「确定性文本判据准入标准」CI 门禁 → ② 在门禁下按 T∧F∧A 合取
+# 重写 `_is_commitment`（时间指称 ∧ 未来指向 ∧ commissive 言语行为）→ ③ 验证通过后
+# 恢复权重、之后才扩词表。写入门的 is_commitment 旁路**不受本权重影响**（多写优于漏写，
+# 写入面的失真归「写入门 is_informative」独立 PRP 管）。
+# 消费方留痕：memory_recall 的 trace 会把 w=0 的 tag 记入 importance_zeroed_tags。
+DEFAULT_TAG_WEIGHTS: dict[str, float] = {
+    "first_contact": _DEFAULT_TAG_WEIGHT,
+    "commitment": 0.0,
+    "identity": _DEFAULT_TAG_WEIGHT,
+}
 
 _TAG_PATTERNS: dict[str, re.Pattern[str]] = {
     "first_contact": re.compile(r" \| first_contact=True"),
@@ -61,6 +76,8 @@ def importance_signal(
     比较效应量来定序在方法论上不成立。`w` 默认 0.2 使单 tag 命中时 `I/b0 = 1.2`，
     **精确复现既有 `first_contact ×1.2`**——仓内唯一在跑且未被判定为误用的系数，
     非拍脑袋取值。调 `w` 会破坏这个锚定关系，已由单测钉死。
+    ⚠ 例外：`commitment` 当前默认权重为 0（临时移出信号），见 `DEFAULT_TAG_WEIGHTS`
+    上方的恢复前置条件——「等权」自此指**非零权重的 tag 之间**等权。
 
     ⚠ 这三个 tag 是神经机制的**工程代理**，不是机制本身：真实计算内容是新颖性预测误差 /
     图式一致性 / 奖赏情境（Tse 2007 图式一致性快速巩固与身份自陈对应最紧），
@@ -70,9 +87,9 @@ def importance_signal(
     参数：
       tags    — `parse_importance_tags` 的输出（缺键按未命中处理）。
       b0      — 无任何 tag 时的中性基线，默认 0.5，与 `parse_importance` 的「缺失 → 0.5」同源。
-      weights — 各 tag 权重；缺省全部取 `_DEFAULT_TAG_WEIGHT`。
+      weights — 各 tag 权重；缺省取 `DEFAULT_TAG_WEIGHTS`（未知键兜底 `_DEFAULT_TAG_WEIGHT`）。
     """
-    w_map = weights if weights is not None else dict.fromkeys(_TAG_PATTERNS, _DEFAULT_TAG_WEIGHT)
+    w_map = weights if weights is not None else DEFAULT_TAG_WEIGHTS
     residual = 1.0 - b0
     for name, hit in tags.items():
         if not hit:
@@ -80,6 +97,81 @@ def importance_signal(
         w = w_map.get(name, _DEFAULT_TAG_WEIGHT)
         residual *= 1.0 - max(0.0, min(1.0, w))
     return 1.0 - residual
+
+
+def combine_importance_with_precision(
+    tag_component: float,
+    precision_content: str,
+    *,
+    w_p: float = 1.0,
+    scale: float = 30.0,
+    b0: float = 0.5,
+) -> float:
+    """把 tag 证据与 precision 证据折进**同一个 noisy-OR**（议会二轮张力 1 裁定）。
+
+        Ĩ_prec = normalize_precision(parse_importance(content), scale)   ∈ [0,1)
+        I = 1 − (1 − w_p·Ĩ_prec) · (1 − tag_component)/(1 − b0)
+
+    第二项即 `Π_k (1−w_k)^{tag_k}`——由 `importance_signal` 的输出反解回乘积形式
+    （`tag_component = 1 − (1−b0)·Π` ⇒ `Π = (1−tag_component)/(1−b0)`），
+    这样 `importance_signal` 的签名与 G2 静态断言都不必改动。
+
+    **`w_p = 1.0` 是唯一使「无 tag 时精确退化为 `Ĩ_prec`」成立的取值**：
+    `Π=1` ⇒ `I = 1 − (1 − Ĩ_prec) = Ĩ_prec`。取 `w_p<1` 等于凭空造一个衰减因子去削弱
+    一个本来良定义的量（Stevens 1946 尺度误用戒律在此处的对应版本）。
+
+    ⚠ **为什么必须是 fold-in 而非「条件分支」或 `max`/线性混合**（议会二轮）：
+    - **条件分支**（命中 tag → 纯 tag 信号；否则 → precision）：tag 命中子集会重新塌缩到
+      少数几个值，丢弃该条自身的 precision 相对序。fold-in 是乘法衰减、保序。
+    - **`max(I_tag, I_prec)`**：概率 OR 是 `1−Π(1−p)`，`max` 只是粗糙下界，多证据同时
+      成立时**不 compound**（既是 commitment 又高 precision 时白丢一半证据）。
+    - **线性混合 `λ·I_tag+(1−λ)·I_prec`**：违反外部贝叶斯性（线性意见池化的公理批判），
+      且 `λ` 又是一个凭空校准的常数。
+
+    ⚠ **本函数存在的理由（2026-08-13 实测）**：上一轮采用「替代」——②③ 只读 tag 信号——
+    实测 **87.3% 的 episode 无 tag ⇒ 落中性 b0 ⇒ importance 维取值从 171 种塌成 2 种**，
+    该维在三维加权和里的影响力跨度由 0.213 掉到 0.033（sim 维 0.119）⇒ **排序被 sim 独占**，
+    probe 问句召回到另一个 probe 问句而非含答案的陈述句。见
+    `PRP/importance-signal/findings-200turn.md` §四点五。
+
+    ⚠ **identifiability 边界（勿据此设计锚点）**：只要 precision 通道在无 tag 时连续退化为
+    非常数，任何以 `(tag, precision)` 为输入、对 `Ĩ_prec` 单调的方案，**都不可能翻转两个
+    均无 tag 样本的相对顺序**（单调保序）。故「刚整理了一下桌子(0.374) vs 我最近状态不太好
+    (0.268)」这对样本的方向错误**在本方案下原样保留**——这不是缺陷，是该输入空间的固有
+    限制；锚点应改测「不塌缩」与「tag 优势」（见 tests）。
+
+    ⚠ **precision 证据读 `precision_raw=`（floor 前原始读数），不读 `precision=`**
+    （CS 席最终裁定·2026-08-13）：`precision=` 会被身份旁路 floor 到
+    `IDENTITY_MEMORY_PRECISION`（供 ① 注入门，阈值判定下覆写安全），若 fold-in 直接读它，
+    该覆写常量会二次扩散进 ②③ 的排序/遗忘公式——`test_importance_decoupling` 锁死的正是
+    这种扩散。缺失 `precision_raw=` 的存量数据回退语义见 `parse_raw_precision`。
+    """
+    i_prec = normalize_precision(parse_raw_precision(precision_content), scale)
+    if b0 >= 1.0:
+        return max(0.0, min(1.0, i_prec))
+    tag_product = (1.0 - tag_component) / (1.0 - b0)  # 还原 Π_k (1−w_k)^{tag_k}
+    tag_product = max(0.0, min(1.0, tag_product))
+    return 1.0 - (1.0 - max(0.0, min(1.0, w_p * i_prec))) * tag_product
+
+
+def tag_excess(tags: dict[str, bool], *, weights: dict[str, float] | None = None) -> float:
+    """tag 证据强度 `u = 1 − Π_k (1−w_k)^{tag_k}`，供 ②③ 的调制项使用。
+
+    ⚠ **不得改用 `(I − b0)/(1 − b0)` 从合并后的 `I` 反解**（议会二轮数学席点名的隐蔽污染）：
+    `I` 现已混入 `Ĩ_prec`，precision 的**正常波动会被误当作「重要性超出基线」**，
+    污染「`u=0` 时对任意 κ 恒等于门关」这条正交性保证——那是第一轮好不容易写进参数化
+    本身的性质，不能在修回归时顺手弄丢。
+
+    `u = 0` **当且仅当**无任何非零权重 tag 命中，与 precision 取值完全无关。值域 `[0, 1)`。
+    """
+    w_map = weights if weights is not None else DEFAULT_TAG_WEIGHTS
+    product = 1.0
+    for name, hit in tags.items():
+        if not hit:
+            continue
+        w = max(0.0, min(1.0, w_map.get(name, _DEFAULT_TAG_WEIGHT)))
+        product *= 1.0 - w
+    return 1.0 - product
 
 
 def importance_excess(importance: float, b0: float = 0.5) -> float:
@@ -147,6 +239,34 @@ def parse_importance(content: str) -> float:
         return float(matches[-1])
     except ValueError:
         return 0.5
+
+
+_RAW_PRECISION_RE = re.compile(r"precision_raw=([0-9]+(?:\.[0-9]+)?)")
+
+
+def parse_raw_precision(content: str) -> float:
+    """解析 floor **前**的原始情绪精度 `precision_raw=`；缺失回退 `parse_importance`。
+
+    为什么有两个 precision 字段（CS 席最终裁定·2026-08-13）：supervisor 对身份 episode 把
+    `precision=` floor 到 `IDENTITY_MEMORY_PRECISION`——该覆写只对 ① 注入门的**阈值判定**
+    安全（落在门限哪一侧），若 ②③ 的 fold-in 直接读它，常量会二次扩散进要求基数尺度的
+    排序/遗忘公式（Stevens 尺度误用的老路，`test_importance_decoupling` 锁死）。
+    `precision_raw=` 是 floor 之前的真实读数，专供 fold-in；`precision=` 语义原样不动。
+
+    **位置锚定**：只在最后一个 `precision=` **之后**的子串里找（`precision=` 系统必拼、
+    位于用户原话之后，原话里伪造的 `precision_raw=` 够不到——防线同 `parse_importance_tags`，
+    建在位置上而非匹配序号上）。
+
+    **回退语义（历史数据兼容）**：无 `precision_raw=` 的存量 episode（本字段落地前写入、
+    以及不携带真实情绪读数的种子记忆）回退读 `precision=`——非身份 episode 两值本就相等；
+    身份存量会读到 floor 后的值，与其写入时的口径一致、不引入新失真。
+    """
+    anchors = list(_TAG_ANCHOR_RE.finditer(content))
+    if anchors:
+        m = _RAW_PRECISION_RE.search(content, anchors[-1].end())
+        if m:
+            return float(m.group(1))
+    return parse_importance(content)
 
 
 def normalize_precision(p: float, scale: float = 30.0) -> float:

@@ -339,6 +339,14 @@ class SqliteVectorStore:
                 "SELECT rowid FROM episodes WHERE scope = ? AND key = ? "
                 # 优先保留高 decay_weight（巩固度高）的 episode；同等则保留最新；
                 # rowid 作末位排歧（最后插入=更新=优先保留）。
+                # ⚠ 已知缺陷（议会二轮张力 2a·2026-08-13·本批**未修**）：巩固子系统默认关
+                # ⇒ decay_weight 恒为建表默认 1.0 ⇒ 第一排序键失效、退化纯 FIFO，最早的
+                # 身份自陈会被超容量驱逐（438 轮实测已发生，findings §四点五 成因 B）。
+                # 裁定的修法是加 importance 键，但 importance 由记忆层
+                # `memory.utils.importance_signal` 从 content 算出——本存储层**不得**反向
+                # import 记忆层（红线 1），也不得加 DB 列（议会 D1 BLOCK：两后端能力分叉）
+                # ⇒ 需要写入时预计算或注入式回调，属记忆生命周期语义，归入
+                # SleepConsolidation「修 vs 退役」独立 PRP 一并裁，勿在此顺手实现。
                 "ORDER BY decay_weight DESC, valid_at DESC, rowid DESC LIMIT ?)",
                 (scope, key, scope, key, max_per_key),
             )
