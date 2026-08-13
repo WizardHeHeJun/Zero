@@ -802,17 +802,22 @@ async def test_memory_recall_disabled_noop() -> None:
 
 
 def test_is_commitment_detects_schedule_and_appointment() -> None:
-    """议会 A：承诺/日程语义检测——时间点/钟点/约定/星期日期命中，闲聊不命中。"""
+    """T∧F∧A 合取口径（议会二轮张力 3·2026-08-13 重写后更新本断言）。
+
+    ⚠ 两条原正例按裁定**改判负例**：「几点出发？」是疑问句式（asking ≠ committing）、
+    「星期三那家店」是纯时间指称无施为动词——它们正是前版 26% 精确率的失效形态。
+    完整预注册样本册见 fixtures_commitment_predicate.py，本条只保留冒烟级断言。
+    """
     from src.orchestration.supervisor import _is_commitment
 
-    assert _is_commitment("下午两点门口等你")  # 下午 + 两点
-    assert _is_commitment("我们约好明天去")  # 约好 + 明天
-    assert _is_commitment("几点出发？")  # 几点
-    assert _is_commitment("3点见")  # 数字+点
-    assert _is_commitment("星期三那家店")  # 星期X
+    assert _is_commitment("下午两点门口等你")  # T=下午/两点 · F=无过去证据 · A=等你
+    assert _is_commitment("我们约好明天去")  # T/F=明天 · A=约好
+    assert _is_commitment("3点见")  # T=3点 · A=点见（省略式施为）
+    assert not _is_commitment("几点出发？")  # 疑问句式排除（原正例·改判）
+    assert not _is_commitment("星期三那家店")  # 纯时间指称无施为（原正例·改判）
     assert not _is_commitment("嗯嗯")
     assert not _is_commitment("")
-    assert not _is_commitment("今天心情不错")  # 无明确时间/约定标记
+    assert not _is_commitment("今天心情不错")  # 无时间/施为标记
 
 
 def test_stimulus_text_field_defaults_to_none() -> None:

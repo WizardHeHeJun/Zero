@@ -25,30 +25,67 @@ from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Scope
 from src.orchestration.state import AffectState
+from src.orchestration.text_predicates import is_future_oriented, is_question
 
-# 议会 A 语义写入通道：承诺/日程类标记（时间点/钟点/约定/星期日期）。命中即使情感低唤醒、低 salience
-# 也强制写 episode——对应 PFC 对「语义重要但情绪平淡」内容的独立巩固调制（生物席「下午两点」案例），
-# 不依赖 McGaugh 的唤醒×意外度门控。纯确定性正则，不进 LLM（守 affect 热路径红线）。
-_COMMITMENT_RE = re.compile(
-    r"几点|[一二三四五六七八九十两零\d]\s*点|\d\s*[:：]\s*\d|时间|约(好|定|会)|说好|答应|"
-    r"明天|后天|今晚|上午|中午|下午|晚上|星期[一二三四五六日天]|周[一二三四五六日天]|\d+\s*号"
+# 议会 A 语义写入通道：承诺/日程判据，2026-08-13 议会二轮张力 3 重写为 T∧F∧A 合取。
+# 前一版是「任一时间词出现即命中」的单维词表 OR——438 轮实测精确率 26%（时间指称被当
+# 承诺：「晚上打了两把游戏」「下午要跑一轮回归」全误报），与 _is_identity_disclosure
+# 初版 13/13 假阳同构（非锚定子串搜索，本仓第二次）。判据准入标准与 CI 门禁见
+# `.claude/rules/text-predicate-admission.md`；预注册样本 tests/fixtures_commitment_predicate.py。
+#
+# T：时间指称。词表已按 438 轮实测漏报扩充（周末/每周/每天/下周/下个月）——扩词表
+# 发生在合取收紧**之后**，符合「先收紧结构再扩词表」的强制顺序（数学席贝叶斯基率论证：
+# 单维词表的先验误报率随词表增长单调上升，合取结构下扩表才安全）。
+_COMMITMENT_TIME_RE = re.compile(
+    r"几点|[一二三四五六七八九十两零\d]\s*点|\d\s*[:：]\s*\d|时间|"
+    r"明天|明晚|明早|后天|大后天|今晚|上午|中午|下午|晚上|"
+    r"星期[一二三四五六日天]|周[一二三四五六日天]|周末|每周|每天|下周|下个?月|\d+\s*号"
 )
+# A：commissive 言语行为标记（Searle 1976, DOI:10.1017/S0047404500006837——承诺类
+# 言语行为使说话人承担未来行为义务）。蕴含论证：约好/说好/答应/保证 是显式施为动词；
+# [点时]见/见面/碰头/等你/接你 是汉语约定句的省略式施为（「三点见」＝我承诺三点到）。
+# 反例防线：「看见/意见/再见」不含 [点时]见 形态；「等你」的叙述用法（「昨天等你半天」）
+# 由 F 维的过去词拦截——单维不严，合取兜底。
+_COMMISSIVE_RE = re.compile(
+    r"约(好|定|会)|说好|答应|保证|承诺|一言为定|不见不散|[点时]见|见面|碰面|碰头|等你|等我|接你"
+)
+# 回顾性已完成框架：施为动词 + 经验体「过」是**叙述**曾经的承诺，不是做出承诺
+# （「我答应过我妈什么事」）。「但还是答应了」由 F 维完成体拦截，此处不重复。
+_RETROSPECTIVE_COMMISSIVE_RE = re.compile(r"(答应|承诺|保证|约好?|说好)过")
 
 
 def _is_commitment(text: str) -> bool:
-    """文本是否含承诺/日程类语义标记（时间/约定/日期）。纯正则、无 LLM、可单测。
+    """文本是否**正在做出**承诺/约定：T 时间指称 ∧ F 未来指向 ∧ A commissive 言语行为。
 
-    依据：**意图优势效应**——未完成意图在记忆中维持更高激活水平
-    （Goschke & Kuhl 1993, DOI:10.1037/0278-7393.19.5.1211；更早的未完成任务记忆优势见
-    Zeigarnik 1927）。前瞻记忆作为独立记忆功能类别见 Einstein & McDaniel 1990
-    (DOI:10.1037/0278-7393.16.4.717)。
+    合取结构（议会二轮张力 3 裁定）与语用排除（疑问句式、回顾性框架）——三维缺一不可：
+      - 只有 T：「晚上打了两把游戏」（时间词不蕴含承诺——前版 26% 精确率的根因）。
+      - T∧F 缺 A：「明天得去趟超市」（对自己的安排，非对人的 commissive）。
+      - T∧A 缺 F：「我上周三答应了她」（回顾叙述，意图优势效应只支持**未完成**意图——
+        Goschke & Kuhl 1993, DOI:10.1037/0278-7393.19.5.1211 实测已完成意图反应时更慢）。
+      - 疑问句：「几点出发？」在询问时间，不在施行承诺（asking ≠ committing）。
 
-    ⚠ **已知简化（心理席 2026-08-12 判定，非 bug）**：上述机制的核心是「未完成 → 高激活，
-    **完成后激活消退**」，而本判据是静态正则、**测不到承诺是否已兑现** —— 一条早已过期或
-    已完成的约定，会与真正待办的约定获得同等写入与排序优先级。确定性判据做不到状态追踪，
-    此局限留作已知边界（追踪兑现状态需超出本判据能力，见 PRP importance-signal 悬而未决项）。
+    依据：意图优势效应（同上）；前瞻记忆独立功能类别（Einstein & McDaniel 1990,
+    DOI:10.1037/0278-7393.16.4.717）；commissive 分类（Searle 1976）。
+
+    ⚠ **已知简化（心理席 2026-08-12，非 bug）**：静态正则测不到承诺**是否已兑现**——
+    过期约定与待办约定同权。状态追踪超出确定性判据能力，留作已知边界。
+    ⚠ **已知漏报（438 轮实测·诚实边界，勿当 bug 修松结构）**：无时间词的承诺
+    （「我请了假陪她去」）、无施为动词的计划（「周末去拿桃子」「每周跑三次」）不命中
+    ——合取宁漏勿误，样本册 KNOWN_MISSES 钉死。召回缺口的正解是换机制（语言层顺带
+    输出标记，须重过议会），不是拆合取。
+    ⚠ **权重恢复前置**：排序侧 w_commitment（`memory.utils.DEFAULT_TAG_WEIGHTS`）仍为 0，
+    恢复非零须以本判据在生产路径实跑的精确率占比表为据（准入标准第 6 条），
+    本次重写的单测绿**不构成**恢复依据。
     """
-    return bool(text) and _COMMITMENT_RE.search(text) is not None
+    if not text:
+        return False
+    if is_question(text) or _RETROSPECTIVE_COMMISSIVE_RE.search(text):
+        return False
+    return (
+        _COMMITMENT_TIME_RE.search(text) is not None
+        and is_future_oriented(text)
+        and _COMMISSIVE_RE.search(text) is not None
+    )
 
 
 # 身份自陈写入通道（议会 2026-07-30 D1·BLOCK）：与上面承诺/日程旁路**并列**的第三条正交通道。
@@ -409,13 +446,20 @@ class SupervisorAgent:
 
                 # 架构决策 F：身份 episode 的 precision 取下限，否则被召回注入门拦住
                 # （8.56 → Hill 归一 0.222 < inject_min 0.5，写进去也召不回）。
-                ep_precision = state.affect_precision or 0.0
+                # `precision_raw=` 是 floor **前**的原始读数（CS 席最终裁定·2026-08-13）：
+                # ②③ 的 fold-in 读它而非 `precision=`，使 IDENTITY_MEMORY_PRECISION 覆写
+                # 只作用于 ① 注入门（阈值判定安全），不再二次扩散进排序/遗忘公式
+                # （test_importance_decoupling 锁）。消费方 `memory.utils.parse_raw_precision`
+                # 位置锚定在最后一个 `precision=` 之后 ⇒ 本字段必须拼在 `precision=` 后面。
+                ep_precision_raw = state.affect_precision or 0.0
+                ep_precision = ep_precision_raw
                 if identity_fact is not None:
                     ep_precision = max(ep_precision, IDENTITY_MEMORY_PRECISION)
                 episode_content = (
                     f"{gist_text}"
                     f" | 情绪={label}({affect[0]:.2f},{affect[1]:.2f})"
                     f" | precision={ep_precision:.2f}"
+                    f" | precision_raw={ep_precision_raw:.2f}"
                     f" | streams={streams}"
                     f" | value={value:.3f}"
                     f"{fc_seg}{commit_seg}{identity_seg}"

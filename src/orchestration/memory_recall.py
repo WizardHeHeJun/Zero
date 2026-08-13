@@ -18,11 +18,14 @@ from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Fact, Scope
 from src.memory.utils import (
+    DEFAULT_TAG_WEIGHTS,
+    combine_importance_with_precision,
     importance_excess,
     importance_signal,
     normalize_precision,
     parse_importance,
     parse_importance_tags,
+    tag_excess,
 )
 from src.orchestration.state import AffectState
 
@@ -143,7 +146,16 @@ def _rank_episodes(
         #   写不写、对排序毫无影响）。此路**不读 precision=**（PRD 目标 G2）。
         # - 关：原 Hill 归一的 affect_precision 代理（D8）。
         if tag_importance_enabled:
-            importance = importance_signal(parse_importance_tags(fact.content))
+            # fold-in noisy-OR（议会二轮张力 1）：tag 证据在 precision 基线上**放大**，
+            # 而非替换。无 tag 时 w_p=1.0 使其精确退化为 precision 基线 ⇒
+            # 保留全部 171 种取值，不再塌成 2 种（上一轮「替代」实测把该维压平 6.5 倍）。
+            # precision 基线读 `precision_raw=`（floor 前原始读数，缺失回退 precision=），
+            # 使 IDENTITY_MEMORY_PRECISION 覆写不经此路二次扩散——见
+            # utils.combine_importance_with_precision / parse_raw_precision。
+            tags = parse_importance_tags(fact.content)
+            importance = combine_importance_with_precision(
+                importance_signal(tags), fact.content, scale=importance_scale
+            )
         else:
             importance = normalized_importance(fact.content, importance_scale)  # D8：Hill 归一
         # recency 维三选一，优先级 ACT-R > salience 衰减 > 原始幂律（后两者默认关=零回归）。
@@ -163,7 +175,17 @@ def _rank_episodes(
             # 语义后果（非缺陷）：Δt=1 天时 recency 恒为 1（上界），故高显著旧 episode
             # 在 recency 维**不可能超过刚发生的**——「更耐遗忘」不等于「比刚发生的还新」。
             # 旧式能做到只是因为它把新 episode 压低了。反超与否由三维合力决定。
-            d_eff = decay_d / (1.0 + salience_kappa * importance_excess(importance))
+            # u 的来源分两种口径（议会二轮数学席点名的隐蔽污染）：
+            # - tag 模式：`u` 必须**只依赖 tag**。若沿用 importance_excess(importance) 从
+            #   合并后的 I 反解，而 I 现已混入 Ĩ_prec ⇒ precision 的正常波动会被误当成
+            #   「重要性超出基线」，污染「u=0 时对任意 κ 恒等于门关」这条正交性保证。
+            # - 门关模式：维持原口径（从 Hill 归一的 importance 反解），零回归。
+            u = (
+                tag_excess(parse_importance_tags(fact.content))
+                if tag_importance_enabled
+                else importance_excess(importance)
+            )
+            d_eff = decay_d / (1.0 + salience_kappa * u)
             recency = delta_days ** (-d_eff)
         else:
             recency = delta_days ** (-decay_d)
@@ -173,7 +195,11 @@ def _rank_episodes(
         # 判定走 parse_importance_tags 的**位置锚定**，不用裸子串 `in`——后者会把用户原话里
         # 的字面串 first_contact=True 当成系统 tag，用户自称即可白拿 ×1.2（PRP 执行期实证：
         # importance 0.2500→0.3000，与真首因加成完全相同并反超排序）。
-        if parse_importance_tags(fact.content)["first_contact"]:
+        # ⚠ 仅门**关**路径施加（code-reviewer 2026-08-13 WARN）：tag 模式下 first_contact
+        # 已作为 noisy-OR 的一项证据计入 importance（w=0.2 即「精确复现 ×1.2」的锚定），
+        # 再乘一次 = 同一证据双重计权（实测 ×1.15 再 ×1.2 ≈ ×1.38）。门关路径的
+        # normalized_importance 不含任何 tag 证据，×1.2 是其唯一的首因通道，原样保留。
+        if not tag_importance_enabled and parse_importance_tags(fact.content)["first_contact"]:
             importance *= 1.2
         return alpha * recency + beta * fact.sim + gamma_eff * importance
 
@@ -281,9 +307,17 @@ class MemoryRecallAgent:
                 tag_importance_enabled=self.tag_importance_enabled,
             )
             # 排障用（CS 席 Q5）：口径记在 trace，**不加第 4 个 content tag**——后者会扩大
-            # 文本解析面。① inject_min 仍读 precision=、②③ 读 tag 信号，两套并存是 D-B 的
-            # 有意后果，此字段用于区分某轮排序到底走了哪套。
-            entry["importance_source"] = "tag" if self.tag_importance_enabled else "precision"
+            # 文本解析面。① inject_min 仍读 precision=、②③ 走 fold-in（tag×precision_raw），
+            # 两套并存是 D-B 的有意后果，此字段用于区分某轮排序到底走了哪套。
+            # importance_zeroed_tags：权重为 0 而被临时移出信号的 tag（当前 commitment，
+            # 议会二轮张力 3）——留痕防「信号还在、只是权重为零」这件事被遗忘。
+            if self.tag_importance_enabled:
+                entry["importance_source"] = "tag_foldin"
+                zeroed = sorted(k for k, w in DEFAULT_TAG_WEIGHTS.items() if w == 0.0)
+                if zeroed:
+                    entry["importance_zeroed_tags"] = zeroed
+            else:
+                entry["importance_source"] = "precision"
             out["recalled_context"] = [f.content for f in ranked]
             out["recalled_facts"] = ranked  # D1：供 chat_driver 按 importance 注入 history
             entry["recalled_context_n"] = len(ranked)

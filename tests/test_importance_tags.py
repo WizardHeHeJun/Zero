@@ -111,29 +111,44 @@ def test_signal_no_tag_returns_neutral_baseline() -> None:
 
 
 def test_signal_single_tag_reproduces_first_contact_ratio() -> None:
-    """**锚定断言**：单 tag 命中时 `I/b0 == 1.2`，精确复现既有 `first_contact ×1.2`。
+    """**锚定断言**：非零权重的单 tag 命中时 `I/b0 == 1.2`，精确复现既有 `first_contact ×1.2`。
 
     `w=0.2` 这个默认值的**全部依据**就是这个比值（仓内唯一在跑且未被判误用的系数）。
     若有人调了 w 而此关系悄悄断掉，依据即失效却无人知晓——把依据本身写成断言，
     比写在注释里可靠。
     """
-    for tag in ("first_contact", "commitment", "identity"):
+    for tag in ("first_contact", "identity"):
         assert _sig(**{tag: True}) / SIGNAL_B0 == pytest.approx(1.2), tag
 
 
+def test_signal_commitment_weight_is_temporarily_zero() -> None:
+    """⚠ commitment 临时移出信号（议会二轮张力 3·2026-08-13）：命中它 I 仍 == b0。
+
+    依据：438 轮实测 `_is_commitment` 精确率仅 26%（时间指称被当承诺、方向已知反了）。
+    noisy-OR 里 w=0 ⇒ `(1−w)^tag ≡ 1`，等价于移出、无需分支代码。恢复非零的前置顺序
+    （CI 门禁 → T∧F∧A 合取重写 → 验证）见 `utils.DEFAULT_TAG_WEIGHTS` 上方注释；
+    届时**先改那个常量再来改本断言**，别反着来。
+    """
+    assert _sig(commitment=True) == pytest.approx(SIGNAL_B0)
+    # 与非零 tag 共现时也不贡献任何增量
+    assert _sig(first_contact=True, commitment=True) == pytest.approx(_sig(first_contact=True))
+
+
 def test_signal_tags_are_equal_weighted() -> None:
-    """等权：任意单 tag 取值相同（心理席 Q1-b——三判据无共同度量单位，不得定序）。"""
-    values = {_sig(**{tag: True}) for tag in ("first_contact", "commitment", "identity")}
+    """等权：非零权重的单 tag 取值相同（心理席 Q1-b——判据无共同度量单位，不得定序）。"""
+    values = {_sig(**{tag: True}) for tag in ("first_contact", "identity")}
     assert len(values) == 1, f"各 tag 权重不等：{values}"
 
 
 def test_signal_multi_tag_monotonic_and_never_saturates() -> None:
-    """多 tag 共现严格递增且**不撞硬上界 1.0**（noisy-OR 相对「加和+clamp」的优势）。"""
+    """多 tag 共现严格递增且**不撞硬上界 1.0**（noisy-OR 相对「加和+clamp」的优势）。
+
+    只取非零权重的两个 tag（commitment 当前 w=0，共现不增量，见上一条）。
+    """
     one = _sig(first_contact=True)
-    two = _sig(first_contact=True, commitment=True)
-    three = _sig(first_contact=True, commitment=True, identity=True)
-    assert SIGNAL_B0 < one < two < three < 1.0, (one, two, three)
-    assert three == pytest.approx(1.0 - 0.5 * 0.8**3)
+    two = _sig(first_contact=True, identity=True)
+    assert SIGNAL_B0 < one < two < 1.0, (one, two)
+    assert two == pytest.approx(1.0 - 0.5 * 0.8**2)
 
 
 def test_signal_range_is_bounded() -> None:
@@ -150,6 +165,11 @@ def test_signal_accepts_no_precision_argument() -> None:
 
     后验精度衡量「情绪判断有多确定」，与「内容有多重要」方向常相反——这正是本 PRP
     要解耦的东西。若有人把 precision 加回入参，本断言转红。
+
+    ⚠ 保护范围声明（议会二轮·张力 1）：G2 只约束 `importance_signal` **本身**保持纯 tag
+    输入，**不约束调用方的组合逻辑**——`combine_importance_with_precision` 在函数之外
+    把 precision 证据折进同一 noisy-OR 是裁定采纳的设计，不是对本断言的规避。
+    别据此把 fold-in 判成违规，也别以 fold-in 为由把 precision 塞回本函数签名。
     """
     import inspect
 

@@ -715,6 +715,10 @@ class ChatDriver:
             return
         now = datetime.now(UTC)
         for text in self.persona.seed_memories:
+            # 刻意**不写** `precision_raw=`（CS 席最终裁定·2026-08-13）：该字段的意义是
+            # 「floor 前的真实情绪读数」，而种子记忆没有情绪链路、SEED_MEMORY_PRECISION
+            # 本身就是人为设定值——**无真实读数可解耦**。消费方 parse_raw_precision 缺失
+            # 时回退 `precision=`，种子在 fold-in 里保持高基线是有意行为（种子本就该易召回）。
             content = (
                 f"{text} | precision={SEED_MEMORY_PRECISION:.2f} | seed=True | first_contact=True"
             )
