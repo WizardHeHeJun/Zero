@@ -11,6 +11,7 @@ import logging
 from datetime import UTC, datetime
 
 from src.memory.types import Fact, Scope
+from src.memory.utils import importance_signal, parse_importance_tags
 from src.storage.graph_store import GraphStore, InMemoryGraphStore, SemanticStore
 
 logger = logging.getLogger(__name__)
@@ -98,9 +99,19 @@ class MemoryClient:
         if self.semantic is None:
             return
         when = valid_at if valid_at is not None else datetime.now(UTC)
+        # importance_tag（PRP sleep-consolidation-verdict 案 i·2026-08-13 裁定）：纯 tag 分量
+        # 的写入时身份重要性，供 SqliteVectorStore._trim_capacity 驱逐排序第二键消费；
+        # 记忆层合法 import 同层 utils（守三层单向）。禁 fold-in 全量 I（含 precision 分量，
+        # 会把排序侧刚切干净的「precision 污染重要性判断」缝回驱逐侧，见 design.md §三议题3）。
+        importance_tag = importance_signal(parse_importance_tags(content))
         try:
             await self.semantic.add_episode(
-                scope=scope.value, key=key, content=content, valid_at=when, embed_text=embed_text
+                scope=scope.value,
+                key=key,
+                content=content,
+                valid_at=when,
+                embed_text=embed_text,
+                importance_tag=importance_tag,
             )
             logger.info("memory.write_episode scope=%s key=%s", scope.value, key)
         except Exception as exc:
@@ -203,12 +214,10 @@ class MemoryClient:
         consolidation_enabled: bool = False,
         d_session: float = 0.8,
         d_user: float = 0.3,
-        salience_threshold: float = 0.25,
-        consolidation_count_min: int = 3,
         actr_b_scale: float = 3.0,
         tag_importance_enabled: bool = False,
     ) -> None:
-        """会话结束时触发记忆巩固批处理（经 MemoryClient 封装·守三层单向）。
+        """会话结束时触发记忆衰减批处理（经 MemoryClient 封装·守三层单向）。
 
         把 self.semantic 传给 consolidation.run_consolidation_batch；
         ChatDriver 调本方法而非直接传 semantic（层归属修正）。
@@ -230,8 +239,6 @@ class MemoryClient:
                 consolidation_enabled=consolidation_enabled,
                 d_session=d_session,
                 d_user=d_user,
-                salience_threshold=salience_threshold,
-                consolidation_count_min=consolidation_count_min,
                 actr_b_scale=actr_b_scale,
                 tag_importance_enabled=tag_importance_enabled,
             )

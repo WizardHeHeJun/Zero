@@ -207,6 +207,7 @@ class _RecordingSemantic:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         self.calls.append(
             {"scope": scope, "key": key, "content": content, "embed_text": embed_text}

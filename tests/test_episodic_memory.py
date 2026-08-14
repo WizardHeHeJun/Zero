@@ -51,6 +51,7 @@ class _RecordingStore:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         self.calls.append(
             {
@@ -59,6 +60,7 @@ class _RecordingStore:
                 "content": content,
                 "valid_at": valid_at,
                 "embed_text": embed_text,
+                "importance_tag": importance_tag,
             }
         )
 
@@ -90,6 +92,7 @@ class _RecordingRecallStore:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         self.episodes.append(content)
 

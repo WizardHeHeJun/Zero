@@ -1,11 +1,30 @@
-"""记忆巩固与遗忘 B 类单测（2026-07-22）。
+"""记忆巩固与遗忘 B 类单测（2026-07-22 引入；2026-08-13 复裁收窄，见下）。
+
+⚠ 2026-08-13 复裁（PRP/sleep-consolidation-verdict/design.md，路 B·退役）：
+`SleepConsolidation` 类与 `consolidate_session_to_user` 存储方法已删除（该策略从未在
+生产生效，议会裁定不构成学术降级）。随之**删除以下 8 条测试**（锁定的是已删除的类/方法，
+非行为回归——commit message 引用此清单）：
+  - test_consolidate_session_to_user_copies_and_soft_deletes
+  - test_consolidate_session_to_user_empty_noop
+  - test_consolidate_then_search_shows_user_not_session
+  - test_sleep_consolidation_both_criteria_met
+  - test_sleep_consolidation_low_salience_blocked
+  - test_sleep_consolidation_low_count_blocked
+  - test_sleep_consolidation_user_scope_skipped
+  - test_sleep_consolidation_no_decay_updates
+`test_run_consolidation_batch_disabled_noop` 同步删除对 `consolidate_session_to_user`
+的 mock 引用与 assert_not_called（保留「门关时 apply_decay_weights 不被调」主张）；
+`test_ebbinghaus_gate_off_is_byte_identical` 改为显式钉 `scope="session"`（`_make_episode`
+默认 scope 已从 "session" 改 "user"，对齐生产形态，该测试的硬编码期望值只在 session
+分支下成立，须显式传参防随默认值联动漂移）。
 
 覆盖：
   1. 零回归（默认关时各路径逐字不变）。
   2. schema 迁移兼容：旧库 5 列 ALTER TABLE 加 5 新列；旧行不破；新库直接 10 列。
-  3. 三存储方法单测：batch_update_access_count / apply_decay_weights /
-     consolidate_session_to_user。
-  4. consolidation.py 三策略：EbbinghausDecay / SleepConsolidation / ACTRFrequency。
+     T9-2 起再加 importance_tag 列迁移（旧库/新库两侧）。
+  3. 存储方法单测：batch_update_access_count / apply_decay_weights。
+  4. consolidation.py 两策略：EbbinghausDecay / ACTRFrequency
+     （SleepConsolidation 已随 2026-08-13 复裁退役，见上）。
   4b. 防伪长期：低 consolidation_count 高 salience 经 N 轮后 decay_weight 正常衰减。
   5. CS BLOCK：access_count 更新走 Supervisor 任务完成节点，
      召回节点（MemoryRecallAgent）不写 access_count。
@@ -13,8 +32,10 @@
      runner step 每轮归零 / Supervisor 读取后调 batch_update。
   7. Petrov 门控：actr_enabled=False 用原幂律 / True + access_count>0 产 B_norm∈(0,1)。
   8. aclose：门关 no-op / 门开 wait_for 触发 / 超时降级不抛 / 协程持句柄。
-  9. 软删语义：search 过滤 invalid_at IS NULL（巩固后 SESSION 行不再被 search 到）。
-  10. _trim_capacity 驱逐方向：优先删低 decay_weight（ORDER BY decay_weight DESC 保留高值）。
+  9. 软删语义：search 过滤 invalid_at IS NULL（历史巩固软删行为的残留验证，
+     构造直接走 SQL UPDATE 而非已删除的 consolidate_session_to_user）。
+  10. _trim_capacity 驱逐方向：优先删低 decay_weight，同权重优先删低 importance_tag
+     （ORDER BY decay_weight DESC, importance_tag DESC 保留高值·T9-3 驱逐锚点）。
   11. Fact/StoredFact 字段序列化回归（episode_id/access_count 默认不破）。
 """
 
@@ -24,6 +45,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -137,7 +159,8 @@ def test_stored_fact_accepts_episode_id_and_access_count() -> None:
 
 
 def test_old_schema_alter_table_adds_five_new_columns() -> None:
-    """旧库（5 列）被 SqliteVectorStore 打开后 ALTER TABLE 加 5 列，旧行不丢。"""
+    """旧库（5 列）被 SqliteVectorStore 打开后 ALTER TABLE 加 5+1 列（含 T9-2 importance_tag），
+    旧行不丢、新列 DEFAULT 生效。"""
     # 构造旧 5 列库
     conn = _make_legacy_db()
     _insert_legacy_row(conn, "user", "u1", "old-content")
@@ -155,6 +178,7 @@ def test_old_schema_alter_table_adds_five_new_columns() -> None:
         "ALTER TABLE episodes ADD COLUMN consolidation_count INTEGER DEFAULT 0",
         "ALTER TABLE episodes ADD COLUMN decay_weight REAL DEFAULT 1.0",
         "ALTER TABLE episodes ADD COLUMN invalid_at TEXT",
+        "ALTER TABLE episodes ADD COLUMN importance_tag REAL DEFAULT 0.5",
     ):
         try:
             conn2.execute(col_ddl)
@@ -164,19 +188,22 @@ def test_old_schema_alter_table_adds_five_new_columns() -> None:
 
     # 旧行仍存在
     rows = conn2.execute(
-        "SELECT content, access_count, decay_weight, invalid_at FROM episodes"
+        "SELECT content, access_count, decay_weight, invalid_at, importance_tag FROM episodes"
     ).fetchall()
     assert len(rows) == 1
-    content, ac, dw, ia = rows[0]
+    content, ac, dw, ia, itag = rows[0]
     assert content == "old-content"
     assert ac == 0  # DEFAULT 生效
     assert dw == 1.0  # DEFAULT 生效
     assert ia is None  # 软删默认 NULL
+    assert itag == 0.5, "旧库迁移侧 importance_tag 应落 DEFAULT 0.5（T9-2）"
     conn2.close()
 
 
 def test_new_schema_has_ten_columns() -> None:
-    """SqliteVectorStore 新库直接含 10 列（CREATE TABLE 定义正确）。"""
+    """SqliteVectorStore 新库直接含 11 列（10 历史列 + T9-2 importance_tag，
+    CREATE TABLE 定义正确）。函数名沿用历史命名不改（实际断言列数已随 T9-2 增至 11）。
+    """
     store = SqliteVectorStore(":memory:")
     col_names = {row[1] for row in store.conn.execute("PRAGMA table_info(episodes)")}
     expected = {
@@ -190,8 +217,17 @@ def test_new_schema_has_ten_columns() -> None:
         "consolidation_count",
         "decay_weight",
         "invalid_at",
+        "importance_tag",
     }
     assert expected <= col_names, f"缺列：{expected - col_names}"
+    # 新库 CREATE TABLE 侧 DEFAULT：不显式写 importance_tag 列插入一行，应落 0.5。
+    store.conn.execute(
+        "INSERT INTO episodes (scope, key, content, valid_at, embedding) VALUES (?,?,?,?,?)",
+        ("user", "u1", "x", datetime.now(UTC).isoformat(), json.dumps([0.0])),
+    )
+    store.conn.commit()
+    itag = store.conn.execute("SELECT importance_tag FROM episodes WHERE content='x'").fetchone()[0]
+    assert itag == 0.5, "新库 CREATE TABLE 侧 importance_tag 应落 DEFAULT 0.5（T9-2）"
     store.close()
 
 
@@ -292,54 +328,14 @@ async def test_apply_decay_weights_empty_noop() -> None:
     store.close()
 
 
-async def test_consolidate_session_to_user_copies_and_soft_deletes() -> None:
-    """consolidate_session_to_user：复制 SESSION 行到 USER scope，原行 invalid_at 软删。"""
-    store = SqliteVectorStore(":memory:")
-    now_iso = datetime.now(UTC).isoformat()
-    store.conn.execute(
-        "INSERT INTO episodes "
-        "(scope, key, content, valid_at, embedding, access_count, consolidation_count, "
-        "decay_weight, invalid_at) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("session", "u1", "sess-ep", now_iso, json.dumps([1.0, 0.0]), 2, 1, 0.8, None),
-    )
-    store.conn.commit()
-    rowid = store.conn.execute("SELECT rowid FROM episodes WHERE scope='session'").fetchone()[0]
-
-    await store.consolidate_session_to_user("session", "user", [str(rowid)])
-
-    # 原行应软删
-    orig_invalid = store.conn.execute(
-        "SELECT invalid_at FROM episodes WHERE rowid=?", (rowid,)
-    ).fetchone()[0]
-    assert orig_invalid is not None, "原 SESSION 行应有 invalid_at（软删）"
-
-    # 新行应在 USER scope
-    user_rows = store.conn.execute(
-        "SELECT scope, consolidation_count, access_count FROM episodes WHERE scope='user'"
-    ).fetchall()
-    assert len(user_rows) == 1, "应复制了 1 行到 USER scope"
-    scope, cc, ac = user_rows[0]
-    assert scope == "user"
-    assert cc == 2, "consolidation_count 应 +1（原 1 → 2）"
-    assert ac == 2, "access_count 应复制（2）"
-    store.close()
-
-
-async def test_consolidate_session_to_user_empty_noop() -> None:
-    """consolidate_session_to_user 空列表 → no-op，不崩。"""
-    store = SqliteVectorStore(":memory:")
-    await store.consolidate_session_to_user("session", "user", [])
-    store.close()
-
-
 # ---------------------------------------------------------------------------
-# 4. consolidation.py 三策略单测
+# 4. consolidation.py 两策略单测（SleepConsolidation 已随 2026-08-13 复裁退役）
 # ---------------------------------------------------------------------------
 
 
 def _make_episode(
     eid: str,
-    scope: str = "session",
+    scope: str = "user",
     salience: float = 0.5,
     cc: int = 0,
     dw: float = 1.0,
@@ -404,7 +400,9 @@ def test_ebbinghaus_gate_off_is_byte_identical() -> None:
 
     now = datetime.now(UTC)
     for salience in (0.05, 0.25, 0.5):
-        ep = _make_episode("e", salience=salience, days_ago=3.0)
+        # 显式钉 scope="session"：硬编码期望值用 3.0**(-0.8)（d_session）算出，
+        # 不随 _make_episode 默认 scope（已改 "user"）联动漂移。
+        ep = _make_episode("e", scope="session", salience=salience, days_ago=3.0)
         ep["importance"] = 0.744  # 即便带高 importance，门关时也必须**完全不看它**
         (dw, _eid), *_ = EbbinghausDecay(kappa=0.5).compute([ep], now=now)[0]  # type: ignore[misc]
         expected = min(1.0, max(1e-6, 1.0 * (salience**0.5) * (3.0 ** (-0.8))))
@@ -465,57 +463,6 @@ def test_ebbinghaus_no_consolidate_ids() -> None:
     assert consolidate_ids == []
 
 
-def test_sleep_consolidation_both_criteria_met() -> None:
-    """SleepConsolidation：salience≥门 AND cc≥min_count → 进 consolidate_ids。"""
-    from src.memory.consolidation import SleepConsolidation
-
-    ep = _make_episode("ok", scope="session", salience=0.5, cc=3)
-    _, ids = SleepConsolidation(salience_threshold=0.3, consolidation_count_min=3).compute(
-        [ep], now=datetime.now(UTC)
-    )
-    assert "ok" in ids, "双准则满足应升迁"
-
-
-def test_sleep_consolidation_low_salience_blocked() -> None:
-    """SleepConsolidation：salience < 门 → 不升迁（即使 cc 满足）。"""
-    from src.memory.consolidation import SleepConsolidation
-
-    ep = _make_episode("low_s", scope="session", salience=0.1, cc=5)
-    _, ids = SleepConsolidation(salience_threshold=0.3, consolidation_count_min=2).compute(
-        [ep], now=datetime.now(UTC)
-    )
-    assert "low_s" not in ids, "salience 不足不应升迁"
-
-
-def test_sleep_consolidation_low_count_blocked() -> None:
-    """SleepConsolidation：cc < min_count → 不升迁（即使 salience 满足）。"""
-    from src.memory.consolidation import SleepConsolidation
-
-    ep = _make_episode("low_cc", scope="session", salience=0.8, cc=1)
-    _, ids = SleepConsolidation(salience_threshold=0.3, consolidation_count_min=3).compute(
-        [ep], now=datetime.now(UTC)
-    )
-    assert "low_cc" not in ids, "cc 不足不应升迁（需 AND 双准则）"
-
-
-def test_sleep_consolidation_user_scope_skipped() -> None:
-    """SleepConsolidation：非 SESSION scope（如 USER）不参与升迁。"""
-    from src.memory.consolidation import SleepConsolidation
-
-    ep = _make_episode("user_ep", scope="user", salience=0.9, cc=10)
-    _, ids = SleepConsolidation().compute([ep], now=datetime.now(UTC))
-    assert "user_ep" not in ids, "USER scope 不参与 session→user 升迁"
-
-
-def test_sleep_consolidation_no_decay_updates() -> None:
-    """SleepConsolidation 不产生 decay_weight 更新（不属该策略职责）。"""
-    from src.memory.consolidation import SleepConsolidation
-
-    ep = _make_episode("e1", scope="session", salience=0.9, cc=5)
-    updates, _ = SleepConsolidation().compute([ep], now=datetime.now(UTC))
-    assert updates == []
-
-
 def test_actr_frequency_compute_b_norm_n1_positive() -> None:
     """ACTRFrequency.compute_b_norm：n=1 时 B_norm∈(0,1)，单调正值。"""
     from src.memory.consolidation import ACTRFrequency
@@ -562,7 +509,6 @@ async def test_run_consolidation_batch_disabled_noop() -> None:
     mock_semantic.conn = MagicMock()
     mock_semantic.db_lock = asyncio.Lock()
     mock_semantic.apply_decay_weights = AsyncMock()
-    mock_semantic.consolidate_session_to_user = AsyncMock()
 
     await run_consolidation_batch(
         mock_semantic,
@@ -574,7 +520,6 @@ async def test_run_consolidation_batch_disabled_noop() -> None:
 
     # 门关时什么都不应被调用
     mock_semantic.apply_decay_weights.assert_not_called()
-    mock_semantic.consolidate_session_to_user.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1063,39 +1008,8 @@ async def test_search_filters_soft_deleted_rows(monkeypatch: pytest.MonkeyPatch)
     store.close()
 
 
-async def test_consolidate_then_search_shows_user_not_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """consolidate_session_to_user 后：search SESSION 返空，search USER 含新行。"""
-    store = SqliteVectorStore(":memory:", sim_threshold=0.0)
-
-    async def fixed_embed(text: str) -> list[float]:
-        return [1.0, 0.0, 0.0]
-
-    monkeypatch.setattr(store, "_embed", fixed_embed)
-
-    now = datetime.now(UTC)
-    store.conn.execute(
-        "INSERT INTO episodes "
-        "(scope, key, content, valid_at, embedding, access_count, consolidation_count, "
-        "decay_weight, invalid_at) VALUES (?,?,?,?,?,?,?,?,?)",
-        ("session", "u1", "content", now.isoformat(), json.dumps([1.0, 0.0, 0.0]), 1, 2, 0.9, None),
-    )
-    store.conn.commit()
-    rowid = store.conn.execute("SELECT rowid FROM episodes WHERE scope='session'").fetchone()[0]
-
-    await store.consolidate_session_to_user("session", "user", [str(rowid)])
-
-    sess_results = await store.search("q", scope="session", key="u1", sim_threshold=0.0)
-    user_results = await store.search("q", scope="user", key="u1", sim_threshold=0.0)
-
-    assert len(sess_results) == 0, "巩固后 SESSION 行应被软删，search SESSION 返空"
-    assert len(user_results) == 1, "巩固后 USER scope 应有 1 条"
-    store.close()
-
-
 # ---------------------------------------------------------------------------
-# 10. _trim_capacity 驱逐方向：低 decay_weight 先删
+# 10. _trim_capacity 驱逐方向：低 decay_weight 先删；同权重优先删低 importance_tag
 # ---------------------------------------------------------------------------
 
 
@@ -1169,6 +1083,140 @@ async def test_trim_capacity_zero_max_no_delete(monkeypatch: pytest.MonkeyPatch)
         "SELECT COUNT(*) FROM episodes WHERE scope='user' AND key='u1'"
     ).fetchone()[0]
     assert count == 5, f"max_per_key=0 不删行，应有 5 条，实际 {count}"
+    store.close()
+
+
+# ---------------------------------------------------------------------------
+# T9-3 驱逐锚点（PRP sleep-consolidation-verdict 案 i·2026-08-13）：
+# importance_tag 作为 _trim_capacity 第二排序键的端到端验收。
+# ---------------------------------------------------------------------------
+
+
+async def test_trim_capacity_prefers_evicting_untagged_over_identity_when_decay_tied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """驱逐锚点：容量溢出时，同 decay_weight 同龄的无 tag episode 先于 identity episode 被驱逐。
+
+    走真实 write 路径（`MemoryClient.write_episode` → `importance_signal` 自动算
+    `importance_tag`，非手工插行）——覆盖「计算 → 落库 → 驱逐排序」整条链路。
+    decay_weight 恒为建表默认 1.0（巩固子系统门关时 `_trim_capacity` 第一排序键失效退化为
+    纯 FIFO，这正是 design.md 记录的已知缺陷场景），三条 episode 同一 valid_at（`now`）
+    第一/三排序键并列，importance_tag 成为唯一有效区分信号。
+
+    ⚠ **identity 故意最先写入**（rowid 最小/最旧）：若测试让 identity 最后写入，
+    去掉 importance_tag 键后 rowid DESC 恰好也保留最新插入的 identity——插入顺序会与
+    importance_tag 混淆，测出「假绿灯」（构造缺陷曾在本地实测踩到）。identity 最先写、
+    两条无 tag 闲聊后写，才能让「无 importance_tag 键」与「有 importance_tag 键」在
+    本构造下给出不同结果，真正锁住该键而非锁住插入顺序。
+
+    ⚠ 变异验证（已本地跑过、验证后已还原，勿据此假设仍生效）：把
+    `src/storage/backends/semantic.py` `_trim_capacity` 的
+    `ORDER BY decay_weight DESC, importance_tag DESC, valid_at DESC, rowid DESC`
+    临时改回退役前的 `ORDER BY decay_weight DESC, valid_at DESC, rowid DESC`
+    （去掉 importance_tag 键），本测试从绿转红（identity episode 被误删、
+    `"identity=name" in remaining` 断言失败——rowid DESC 保留的是后写入的两条闲聊）——
+    证明本测试确实锁住了该键，非假绿灯。
+    """
+    store = SqliteVectorStore(":memory:", max_per_key=2)
+    monkeypatch.setattr(store, "_embed", _distinct_embedder())
+    mem = MemoryClient(semantic=store)
+
+    now = datetime.now(UTC)
+    # identity 自陈（importance_tag=0.6）**最先写入**（rowid 最旧）；两条无 tag 闲聊
+    # （importance_tag=0.5，b0）随后写入（rowid 更新）——插入顺序刻意与「重要性顺序」
+    # 相反，见上方 docstring。max_per_key=2 强制驱逐 1 条。
+    await mem.write_episode(
+        "我叫林川 | precision=8.56 | identity=name", scope=Scope.USER, key="u1", valid_at=now
+    )
+    await mem.write_episode("闲聊A | precision=0.5", scope=Scope.USER, key="u1", valid_at=now)
+    await mem.write_episode("闲聊B | precision=0.5", scope=Scope.USER, key="u1", valid_at=now)
+
+    remaining = {
+        r[0]
+        for r in store.conn.execute(
+            "SELECT content FROM episodes WHERE scope='user' AND key='u1' AND invalid_at IS NULL"
+        ).fetchall()
+    }
+    assert len(remaining) == 2, f"max_per_key=2 应保留 2 条，实际 {len(remaining)}"
+    assert any("identity=name" in c for c in remaining), (
+        "identity episode（importance_tag=0.6 更高）不应先于无 tag episode（0.5）被驱逐"
+    )
+    store.close()
+
+
+async def test_trim_capacity_legacy_row_without_importance_tag_uses_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """历史数据回退：列迁移前写入的行（无 importance_tag 值）走 DB DEFAULT 0.5，
+    与真实写入行并存时驱逐排序仍正确、不因缺值报错。
+
+    构造：手工 INSERT 一行不指定 importance_tag 列（模拟 T9-2 加列前的存量数据，DEFAULT 生效）；
+    再经 `MemoryClient.write_episode` 写一条 identity 标签新行（importance_tag=0.6 > 0.5）。
+    max_per_key=1 强制驱逐 1 条——新行更高优先级应存活。
+    """
+    store = SqliteVectorStore(":memory:", max_per_key=1)
+    monkeypatch.setattr(store, "_embed", _distinct_embedder())
+    mem = MemoryClient(semantic=store)
+
+    now = datetime.now(UTC)
+    # 嵌入向量与下方 mem.write_episode 触发的第一次 _distinct_embedder 调用（index0=1.0）
+    # 正交（index4=1.0），避免 cosine 相似度触发 dedup 短路、掩盖驱逐排序断言。
+    store.conn.execute(
+        "INSERT INTO episodes (scope, key, content, valid_at, embedding, decay_weight) "
+        "VALUES (?,?,?,?,?,?)",
+        (
+            "user",
+            "u1",
+            "旧行-无tag列",
+            now.isoformat(),
+            json.dumps([0.0, 0.0, 0.0, 0.0, 1.0]),
+            1.0,
+        ),
+    )
+    store.conn.commit()
+    legacy_tag = store.conn.execute(
+        "SELECT importance_tag FROM episodes WHERE content='旧行-无tag列'"
+    ).fetchone()[0]
+    assert legacy_tag == 0.5, "缺 importance_tag 的历史行应落 DB DEFAULT 0.5"
+
+    await mem.write_episode(
+        "我叫林川 | precision=8.56 | identity=name", scope=Scope.USER, key="u1", valid_at=now
+    )
+
+    remaining = {
+        r[0]
+        for r in store.conn.execute(
+            "SELECT content FROM episodes WHERE scope='user' AND key='u1' AND invalid_at IS NULL"
+        ).fetchall()
+    }
+    assert len(remaining) == 1, f"max_per_key=1 应保留 1 条，实际 {len(remaining)}"
+    assert "identity=name" in next(iter(remaining)), (
+        "新写入的 identity 行（importance_tag=0.6）应存活，历史无 tag 行（DEFAULT 0.5）被驱逐"
+    )
+    store.close()
+
+
+async def test_write_episode_latency_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """写入延迟基线（CS 席遗留占比项·design.md §六）：连续写入均值耗时哨兵。
+
+    粗粒度即可，非性能测试框架——目的是把「沿用先例=零成本」从未验证的假设钉成可测断言，
+    防止未来改动（dedup 全表扫描升级 / 驱逐排序键增多）悄悄引入 O(n²) 退化而无人发现。
+    N=200、上限 50ms/条为宽松值；本机（:memory: + monkeypatch embed，排除网络抖动）
+    实测均值 < 5ms/条，50ms 留 10 倍以上余量防 CI 机器抖动误报。
+    """
+    store = SqliteVectorStore(":memory:")
+    monkeypatch.setattr(store, "_embed", _distinct_embedder())
+
+    n = 200
+    now = datetime.now(UTC)
+    start = time.perf_counter()
+    for i in range(n):
+        await store.add_episode(
+            scope="user", key="u1", content=f"ep-{i} | precision=0.5", valid_at=now
+        )
+    elapsed = time.perf_counter() - start
+    avg_ms = (elapsed / n) * 1000
+    assert avg_ms < 50.0, f"写入均值 {avg_ms:.2f}ms/条 超出宽松上限 50ms（n={n}）"
     store.close()
 
 
