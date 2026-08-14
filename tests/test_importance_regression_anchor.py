@@ -86,12 +86,13 @@ def test_foldin_knowingly_retains_the_backwards_pair() -> None:
 
 
 def test_tagged_content_does_get_separated() -> None:
-    """能力边界的正面证明：**带非零权重 tag** 的内容确实被抬高，信号本身有区分力。
+    """能力边界的正面证明：**带 tag** 的内容确实被抬高，信号本身有区分力。
 
     与上面「无 tag 并列」并读，才是完整图景——不是信号没用，是它只覆盖有 tag 的内容。
-    ⚠ 样本从 commitment 换成 identity（议会二轮张力 3）：w_commitment 临时置 0，
-    commitment 命中已不产生任何增量（那是刻意行为，由
-    test_importance_tags.test_signal_commitment_weight_is_temporarily_zero 钉死）。
+    （样本 2026-08-13 曾因 w_commitment 临时置 0 从 commitment 换成 identity；
+    2026-08-14 权重已凭实跑占比表恢复，样本保留 identity 不回换——两 tag 等权，
+    断言语义不变，沿革见 test_importance_tags 的
+    test_signal_commitment_weight_restored_with_evidence。）
     """
     distress_with_identity = DISTRESS + " | identity=selfstate"
     plain = importance_signal(parse_importance_tags(DISTRESS))

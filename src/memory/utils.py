@@ -27,19 +27,21 @@ _TAG_ANCHOR_RE = re.compile(r"precision=-?[0-9]+(?:\.[0-9]+)?")
 # 未知 tag 键的兜底权重。0.2 使单 tag 命中时 I/b0 = 1.2，精确复现既有 first_contact ×1.2。
 _DEFAULT_TAG_WEIGHT = 0.2
 
-# 各 tag 的当前默认权重。first_contact / identity 等权 0.2（三判据无共同度量单位，
-# 不得由文献效应量反推定序——心理席 Q1-b）。
-# ⚠ commitment 临时置 0（议会二轮张力 3·2026-08-13）：438 轮实测 `_is_commitment`
-# 精确率仅 26%（时间指称被当承诺、方向已知反了），noisy-OR 里 w=0 ⇒ (1−w)^tag ≡ 1，
-# 等价于把该信号移出组合、无需分支代码。恢复非零的前置**顺序强制**：
-# ① `.claude/rules/` 落「确定性文本判据准入标准」CI 门禁 → ② 在门禁下按 T∧F∧A 合取
-# 重写 `_is_commitment`（时间指称 ∧ 未来指向 ∧ commissive 言语行为）→ ③ 验证通过后
-# 恢复权重、之后才扩词表。写入门的 is_commitment 旁路**不受本权重影响**（多写优于漏写，
-# 写入面的失真归「写入门 is_informative」独立 PRP 管）。
-# 消费方留痕：memory_recall 的 trace 会把 w=0 的 tag 记入 importance_zeroed_tags。
+# 各 tag 的当前默认权重：三 tag 等权 0.2（三判据无共同度量单位，不得由文献效应量
+# 反推定序——心理席 Q1-b）。
+# commitment 权重沿革：2026-08-13 议会二轮张力 3 临时置 0（旧版单维时间词表实测精确率
+# 仅 26%）→ 按强制顺序完成 ① 准入门禁（text-predicate-admission）② T∧F∧A 合取重写
+# ③ 生产实跑占比表后，**2026-08-14 恢复 0.2**——依据（准入标准第 6 条）：100 轮实跑
+# 精确率 80%（TP4/FP1）、22 条陷阱负例 0 误报，见
+# `PRP/write-gate-informative/verification-run100-2026-08-14.md`。
+# ⚠ 诚实标注：该占比表的 commitment 命中样本 n=5，统计力弱；自然使用中若精确率
+# 显著回落，先回 0 再查判据，勿直接调权重。扩词表（deadline「之前/发版前」形态）
+# 仍未做——那两条已入册 KNOWN_MISSES，修复须重走准入流程。
+# 消费方留痕：memory_recall 的 trace 会把 w=0 的 tag 记入 importance_zeroed_tags
+# （当前无 w=0 的 tag，该字段不出现）。
 DEFAULT_TAG_WEIGHTS: dict[str, float] = {
     "first_contact": _DEFAULT_TAG_WEIGHT,
-    "commitment": 0.0,
+    "commitment": _DEFAULT_TAG_WEIGHT,
     "identity": _DEFAULT_TAG_WEIGHT,
 }
 
@@ -76,8 +78,8 @@ def importance_signal(
     比较效应量来定序在方法论上不成立。`w` 默认 0.2 使单 tag 命中时 `I/b0 = 1.2`，
     **精确复现既有 `first_contact ×1.2`**——仓内唯一在跑且未被判定为误用的系数，
     非拍脑袋取值。调 `w` 会破坏这个锚定关系，已由单测钉死。
-    ⚠ 例外：`commitment` 当前默认权重为 0（临时移出信号），见 `DEFAULT_TAG_WEIGHTS`
-    上方的恢复前置条件——「等权」自此指**非零权重的 tag 之间**等权。
+    （commitment 曾于 2026-08-13 临时置 0、2026-08-14 凭实跑占比表恢复——沿革见
+    `DEFAULT_TAG_WEIGHTS` 上方注释；「等权」现指三 tag 全体等权。）
 
     ⚠ 这三个 tag 是神经机制的**工程代理**，不是机制本身：真实计算内容是新颖性预测误差 /
     图式一致性 / 奖赏情境（Tse 2007 图式一致性快速巩固与身份自陈对应最紧），

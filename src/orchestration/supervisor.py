@@ -73,9 +73,9 @@ def _is_commitment(text: str) -> bool:
     （「我请了假陪她去」）、无施为动词的计划（「周末去拿桃子」「每周跑三次」）不命中
     ——合取宁漏勿误，样本册 KNOWN_MISSES 钉死。召回缺口的正解是换机制（语言层顺带
     输出标记，须重过议会），不是拆合取。
-    ⚠ **权重恢复前置**：排序侧 w_commitment（`memory.utils.DEFAULT_TAG_WEIGHTS`）仍为 0，
-    恢复非零须以本判据在生产路径实跑的精确率占比表为据（准入标准第 6 条），
-    本次重写的单测绿**不构成**恢复依据。
+    排序侧 w_commitment（`memory.utils.DEFAULT_TAG_WEIGHTS`）已于 2026-08-14 凭生产
+    实跑占比表恢复 0.2（精确率 80%·陷阱负例 0/22 误报，n=5 统计力弱已标注；
+    `PRP/write-gate-informative/verification-run100-2026-08-14.md`）。
     """
     if not text:
         return False
