@@ -43,6 +43,11 @@ graphiti = [
     "kuzu>=0.6",
     "python-dotenv>=1.0",  # 便捷：scripts/verify_graphiti_local 可自动加载 .env（库代码不依赖）
 ]
+# 语音表现出口（TtsSpeechSink 经 HTTP 调本地 Bert-VITS2）：ZERO_TTS_SINK 开启时才需；
+# 默认路径/测试（fake HTTP）不依赖。Bert-VITS2 本体装在独立环境，不进本表。
+tts = [
+    "httpx>=0.27",
+]
 # 文本输入侧句向量化：把 TextAffectRegressor 的哈希词袋换成预训练句向量编码器（冻结、只训 MLP 头），
 # 带语义泛化、跨域更稳。独立于 ml（避免 transformers 几百 MB 拖重 ml）；默认词袋版不引入。
 # 训练/推理句向量版（STTextAffectRegressor / train_text_affect_st）时才需。
