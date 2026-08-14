@@ -417,3 +417,15 @@ class AffectState(BaseModel):
     # 节流更新 access_count（ACT-R 频率）。每轮 step() 归零防 LastValue 残留
     # （仿 external_priors 先例，见 runner.py）；不加 pydantic 约束防反序列化失败。
     recalled_episode_ids: list[str] = Field(default_factory=list)
+
+    # ── is_informative_hint：写入门第四通道（PRP/write-gate-informative）──
+    # False=门关/未产出=零回归；True=本轮用户输入被 LLM（`OpenAILanguageModel
+    # .appraise_text_informative`）判定为"包含可脱离本轮情境独立使用的事实性命题"。
+    # 来源声明：这是**概率通道**（LLM 输出，不承诺逐位可复现，只承诺降级路径确定性），
+    # 与写入门既有三条**确定性**通道（commitment/identity/importance-tag）判定函数不共享、
+    # 不互相调用——design.md §三·前置 6。无任何图节点写此字段——每轮经 state_overrides
+    # 注入（仿 interlocutor_affect / external_priors 先例，见 chat_driver.py）；
+    # runner.py 两处平行入口（step() / run()）的 base dict 每轮显式归零防 LastValue 残留。
+    # 唯一消费者：SupervisorAgent 写入门 OR 判定第四条（门控 env `ZERO_WRITE_GATE_INFORMATIVE`，
+    # 默认关）；不进 affect 热路径数值管线（design.md 热路径边界成文）。
+    is_informative_hint: bool = False

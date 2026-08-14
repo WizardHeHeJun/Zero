@@ -35,6 +35,18 @@ _APPRAISE_SYS = (
     "你是情感分析器。判断给定文本实际传达的情绪，只输出 JSON："
     '{"valence": <-1..1 浮点>, "arousal": <-1..1 浮点>}，不要任何其它内容。'
 )
+# 写入门第四通道（is_informative）专属：在 _APPRAISE_SYS 基线上追加一个二值判据字段，
+# 与 valence/arousal 同一次 JSON 输出、同一次 parse——见 appraise_text_informative。
+# PRP/write-gate-informative/design.md §三·前置 1：候选 a `_appraise` 重锚点版。
+_APPRAISE_INFORMATIVE_ADDENDUM = (
+    "\n另外在同一个 JSON 里追加一个 informative 字段，规则：informative=true 当且仅当"
+    "这句话包含**可脱离本轮对话情境、独立使用的事实性命题**"
+    "（具体的时间/地点/数字/人名/约定/计划/身份陈述等——脱离当前这轮对话仍然成立、"
+    "值得被单独记下来复用的内容）；寒暄、纯情绪宣泄、附和、无实质信息的闲聊一律 informative=false。"
+    "最终只输出一个 JSON："
+    '{"valence": <-1..1 浮点>, "arousal": <-1..1 浮点>, "informative": <true 或 false>}，'
+    "不要任何其它内容。"
+)
 # P3 评价标定校准（议会二轮 PASS；env `ZERO_APPRAISE_CALIBRATE` 门控，默认关=零回归）。
 # LLM 有系统性正向偏置（positivity bias，arXiv:2507.21083），对敌意只给 -0.2~-0.3、远弱于 OCC
 # anger 应有的 -0.7~-0.9。注入**分级**语义锚（按语义距离插值、非硬规则；心理席强调须分级，防把
@@ -374,6 +386,52 @@ class OpenAILanguageModel:
         """
         return await self._appraise(text)
 
+    async def appraise_text_informative(self, text: str) -> tuple[float, float, bool]:
+        """把用户当轮输入评价成 (valence, arousal, informative)——写入门第四通道专属接口。
+
+        `OpenAILanguageModel` 专属方法，**不进 `ConversationModel` Protocol**：写入门
+        第四通道默认关、只有 chat_driver 门开时才经 `getattr` 探测调用（Protocol 安全
+        方案，见 chat_driver 调用点注释）；`appraise_text` / `_appraise` / `generate()`
+        原样不动——本方法与 `_appraise` 共享 `_parse_vad`（v/a 解析降级路径逐字同构），
+        独立发起自己的一次 `chat.completions.create`（temperature=0.0），故本方法本身
+        零新增调用（只在其被选中调用的那一路里，替代而非叠加原 `appraise_text` 那次调用）。
+
+        评价对象=用户当轮输入本身（不是回复、不是历史）：`_appraise` 重锚点消除了
+        prp 原 converse 尾方案的评价对象歧义——PRP/write-gate-informative/design.md
+        §二·张力 2。
+
+        诚实声明（design.md §五，PASS 前置 7，三处均须落代码注释）：
+        ① 单次编码时价值判断、无回看修正机会，校准弱于延迟判断——归因锚是 Nairne 等
+           （2007; 2008）未来相关性评定框架（生存加工提升编码优先级，但不提供事后
+           校正），Nelson & Dunlosky (1991) 的 delayed-JOL（延迟元记忆判断优于即时
+           判断）作对照参照；
+        ② 判断与巩固强度的**因果耦合被拆断**——本方法只产出「判断 → 二值开关」，
+           不构成「判断 → 精细加工 → 巩固强度」的完整中介链；
+        ③ informative ≈ 可提取命题密度的工程代理，**不是**「重要性」构念——命名刻意
+           避开 importance/salience；与写入门既有 T∧F∧A 承诺判据、identity 判据互补
+           而非同构（design.md 表：颗粒度=忠实）。
+
+        Returns:
+            (valence, arousal, informative)。informative 字段缺失/非布尔 → False +
+            `logger.warning` 留痕（暴露"小模型恒 False"的静默退化，供查库统计发现，
+            design.md §三·前置 2）；v/a 解析降级路径与 `_appraise` 逐字同构。
+        """
+        appraise_sys = _APPRAISE_SYS + _APPRAISE_INFORMATIVE_ADDENDUM
+        if os.getenv("ZERO_APPRAISE_CALIBRATE", "").lower() in ("1", "true", "yes"):
+            appraise_sys += _APPRAISE_CALIBRATION
+        resp = await self.client.chat.completions.create(
+            model=self.model,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": appraise_sys},
+                {"role": "user", "content": text},
+            ],
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        result = self._parse_vad_informative(raw)
+        logger.debug("appraise_informative raw=%.80s → vad+informative=%s", raw, result)
+        return result
+
     async def converse(
         self,
         history: list[dict[str, str]],
@@ -556,3 +614,28 @@ class OpenAILanguageModel:
             logger.warning("VAD 解析失败，回退中性 (0,0)；raw=%.80s", raw)
             return (0.0, 0.0)
         return (v, a)
+
+    @staticmethod
+    def _parse_vad_informative(raw: str) -> tuple[float, float, bool]:
+        """同 `_parse_vad`，额外解析 informative（写入门第四通道，见 appraise_text_informative）。
+
+        v/a 直接复用 `_parse_vad`——降级路径（无 JSON/解析失败 → (0,0) + warning）逐字
+        同构，不重复实现。informative 单独解析同一段 raw：字段缺失/非布尔 → False +
+        `logger.warning`（暴露"小模型恒 False"的静默退化，design.md §三·前置 2）；
+        该分支与 `_parse_vad` 各自独立捕获异常，二者互不掩盖对方的 warning。
+        """
+        v, a = OpenAILanguageModel._parse_vad(raw)
+        informative = False
+        start, end = raw.find("{"), raw.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(raw[start : end + 1])
+            except (ValueError, TypeError, json.JSONDecodeError):
+                data = None  # _parse_vad 已就同一段 raw 记过 warning，此处不重复日志
+            if data is not None:
+                informative_raw = data.get("informative")
+                if isinstance(informative_raw, bool):
+                    informative = informative_raw
+                else:
+                    logger.warning("informative 字段缺失/非布尔，回退 False；raw=%.80s", raw)
+        return (v, a, informative)
