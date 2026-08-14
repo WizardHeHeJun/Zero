@@ -80,7 +80,11 @@ async def _chat_repl() -> None:
     try:
         while True:
             try:
-                user = input("你 > ").strip()
+                # ⚠ 必须 to_thread：裸 input() 会阻塞事件循环——等输入期间语音 worker/
+                # 后台任务全部饿死，上一轮的 TTS 要拖到下一句进来才播（2026-08-14 真机实测）。
+                # 代价：Ctrl+C 恰在提示符时 input 线程仍挂着，进程收尾可能等到你按一次回车；
+                # 常规退出走 exit/quit/EOF 不受影响。
+                user = (await asyncio.to_thread(input, "你 > ")).strip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 break
