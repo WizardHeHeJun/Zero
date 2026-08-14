@@ -111,44 +111,43 @@ def test_signal_no_tag_returns_neutral_baseline() -> None:
 
 
 def test_signal_single_tag_reproduces_first_contact_ratio() -> None:
-    """**锚定断言**：非零权重的单 tag 命中时 `I/b0 == 1.2`，精确复现既有 `first_contact ×1.2`。
+    """**锚定断言**：单 tag 命中时 `I/b0 == 1.2`，精确复现既有 `first_contact ×1.2`。
 
     `w=0.2` 这个默认值的**全部依据**就是这个比值（仓内唯一在跑且未被判误用的系数）。
     若有人调了 w 而此关系悄悄断掉，依据即失效却无人知晓——把依据本身写成断言，
     比写在注释里可靠。
     """
-    for tag in ("first_contact", "identity"):
+    for tag in ("first_contact", "commitment", "identity"):
         assert _sig(**{tag: True}) / SIGNAL_B0 == pytest.approx(1.2), tag
 
 
-def test_signal_commitment_weight_is_temporarily_zero() -> None:
-    """⚠ commitment 临时移出信号（议会二轮张力 3·2026-08-13）：命中它 I 仍 == b0。
+def test_signal_commitment_weight_restored_with_evidence() -> None:
+    """commitment 权重恢复 0.2 的沿革锚点（2026-08-14·准入标准第 6 条）。
 
-    依据：438 轮实测 `_is_commitment` 精确率仅 26%（时间指称被当承诺、方向已知反了）。
-    noisy-OR 里 w=0 ⇒ `(1−w)^tag ≡ 1`，等价于移出、无需分支代码。恢复非零的前置顺序
-    （CI 门禁 → T∧F∧A 合取重写 → 验证）见 `utils.DEFAULT_TAG_WEIGHTS` 上方注释；
-    届时**先改那个常量再来改本断言**，别反着来。
+    2026-08-13 因旧判据 26% 精确率临时置 0 → T∧F∧A 重写 + 100 轮实跑占比表
+    （精确率 80%·陷阱负例 0/22 误报，`PRP/write-gate-informative/
+    verification-run100-2026-08-14.md`）后恢复。本断言钉住「恢复后与其它 tag 等权」；
+    若自然使用中精确率显著回落，按 `DEFAULT_TAG_WEIGHTS` 注释先回 0 再查判据——
+    届时改常量并把本测试恢复为置零断言，别只改一头。
     """
-    assert _sig(commitment=True) == pytest.approx(SIGNAL_B0)
-    # 与非零 tag 共现时也不贡献任何增量
-    assert _sig(first_contact=True, commitment=True) == pytest.approx(_sig(first_contact=True))
+    assert _sig(commitment=True) == pytest.approx(1.2 * SIGNAL_B0)
+    # 与其它 tag 共现正常 compound（noisy-OR 乘法衰减）
+    assert _sig(first_contact=True, commitment=True) == pytest.approx(1.0 - 0.5 * 0.8**2)
 
 
 def test_signal_tags_are_equal_weighted() -> None:
-    """等权：非零权重的单 tag 取值相同（心理席 Q1-b——判据无共同度量单位，不得定序）。"""
-    values = {_sig(**{tag: True}) for tag in ("first_contact", "identity")}
+    """等权：任意单 tag 取值相同（心理席 Q1-b——判据无共同度量单位，不得定序）。"""
+    values = {_sig(**{tag: True}) for tag in ("first_contact", "commitment", "identity")}
     assert len(values) == 1, f"各 tag 权重不等：{values}"
 
 
 def test_signal_multi_tag_monotonic_and_never_saturates() -> None:
-    """多 tag 共现严格递增且**不撞硬上界 1.0**（noisy-OR 相对「加和+clamp」的优势）。
-
-    只取非零权重的两个 tag（commitment 当前 w=0，共现不增量，见上一条）。
-    """
+    """多 tag 共现严格递增且**不撞硬上界 1.0**（noisy-OR 相对「加和+clamp」的优势）。"""
     one = _sig(first_contact=True)
-    two = _sig(first_contact=True, identity=True)
-    assert SIGNAL_B0 < one < two < 1.0, (one, two)
-    assert two == pytest.approx(1.0 - 0.5 * 0.8**2)
+    two = _sig(first_contact=True, commitment=True)
+    three = _sig(first_contact=True, commitment=True, identity=True)
+    assert SIGNAL_B0 < one < two < three < 1.0, (one, two, three)
+    assert three == pytest.approx(1.0 - 0.5 * 0.8**3)
 
 
 def test_signal_range_is_bounded() -> None:
