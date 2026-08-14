@@ -331,6 +331,16 @@ class SupervisorAgent:
         # 带 user_id 是对齐 seen_episode_keys 先例，防未来 SupervisorAgent 池化后跨用户串味（#2）。
         # 进程内 set：重启后丢失、同一事实会再写一次（余弦去重不保证拦，见 PRP 架构决策 C.3）。
         self.seen_identity_facts: set[tuple[str, str, str]] = set()
+        # 写入门第四通道（is_informative·PRP/write-gate-informative·design.md 候选 a
+        # `_appraise` 重锚点版·8 条前置 PASS）：默认关=零回归。与 ChatDriver 读的是
+        # **同一个** env（同开同关，仿 ZERO_TAG_IMPORTANCE 双读模式），但两侧各自 os.getenv、
+        # 不挂 SessionConfig/run() 手拷链——构造期一次读，热路径不重读。
+        # 概率通道声明：此信号产自 LLM（`OpenAILanguageModel.appraise_text_informative`），
+        # 不承诺逐位可复现，只承诺降级路径确定性；与下方 is_commitment / identity_fact /
+        # salient 三条**确定性**判据不共享判定函数、互不调用（design.md §三·前置 6）。
+        self.informative_gate_enabled = os.getenv(
+            "ZERO_WRITE_GATE_INFORMATIVE", "0"
+        ).lower() not in ("0", "", "false")
 
     def _is_first_contact(self, key: str) -> bool:
         """首次为该 key 写 episode 时返回 True（并登记），之后恒 False。
@@ -409,10 +419,13 @@ class SupervisorAgent:
                 key=state.user_id,
             )
 
-            # 富 episode：情感显著 或 承诺/日程 或 身份自陈 命中即写。
-            # ⚠ 三者 **OR 进同一条件**、全轮仍只有一次 write_episode 调用——不新增独立写入分支
+            # 写入门第四条：is_informative（概率通道，默认关；命中条件与门控在 __init__ 声明）。
+            informative_hit = self.informative_gate_enabled and state.is_informative_hint
+
+            # 富 episode：情感显著 或 承诺/日程 或 身份自陈 或 informative 命中即写。
+            # ⚠ 四者 **OR 进同一条件**、全轮仍只有一次 write_episode 调用——不新增独立写入分支
             # （否则会重复消费 _is_first_contact 的首因名额，且节流断言失去意义）。
-            if salient or is_commitment or identity_hit:
+            if salient or is_commitment or identity_hit or informative_hit:
                 # B-1 gist：用户原话（stimulus.text）优先，退化到 name[:40]
                 gist = f"你说：{user_text[:200]}" if user_text else f"话题：{stim_name[:40]}"
                 # B-2 language 段：language_text 非空才拼，否则省略（language_enabled=False 干净）
@@ -443,6 +456,12 @@ class SupervisorAgent:
                 identity_seg = (
                     f" | identity={identity_fact[0]}" if identity_fact is not None else ""
                 )
+                # informative=True 留痕：**只写不消费**。刻意不注册进
+                # `memory.utils._TAG_PATTERNS` / `DEFAULT_TAG_WEIGHTS`——未注册子串对
+                # `parse_importance_tags` 天然不可见，零代码保证不会滑进 ②（遗忘调制）/
+                # ③（fold-in noisy-OR）消费链。仅供查库统计/占比表核验用；若未来要开放
+                # ②③ 消费，须独立占比表 + 构念边界论证回议会（design.md §三·前置 4）。
+                informative_seg = " | informative=True" if informative_hit else ""
 
                 # 架构决策 F：身份 episode 的 precision 取下限，否则被召回注入门拦住
                 # （8.56 → Hill 归一 0.222 < inject_min 0.5，写进去也召不回）。
@@ -462,7 +481,7 @@ class SupervisorAgent:
                     f" | precision_raw={ep_precision_raw:.2f}"
                     f" | streams={streams}"
                     f" | value={value:.3f}"
-                    f"{fc_seg}{commit_seg}{identity_seg}"
+                    f"{fc_seg}{commit_seg}{identity_seg}{informative_seg}"
                 )
                 # 无语义后端时 no-op（零回归）；只对 gist_text 嵌入（embed_text），全文仅存储/展示
                 await self.memory.write_episode(

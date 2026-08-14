@@ -249,6 +249,28 @@ async def test_boundary_forbids_absence_assertion(monkeypatch: pytest.MonkeyPatc
     assert "找不到，就是没有" not in sys_prompt, "旧措辞授权断言否定，必须移除"
 
 
+# ---------------------------------------------------------------------------
+# 写入门第四通道（PRP/write-gate-informative）与事实化模式互不相交
+# ---------------------------------------------------------------------------
+# `_APPRAISE_INFORMATIVE_ADDENDUM` 只拼进 `appraise_text_informative` 自己的一次评价
+# 调用（design.md 候选 a `_appraise` 重锚点版），绝不进入 `converse` 的 system prompt——
+# 两条管线锚点不同、互不相交，事实化模式（改的是 converse）不该看见它。
+
+
+async def test_converse_prompt_never_contains_informative_addendum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """converse 的 system prompt 不含 `_APPRAISE_INFORMATIVE_ADDENDUM`（事实化开/关均不含）。"""
+    from src.agents.language_openai import _APPRAISE_INFORMATIVE_ADDENDUM
+
+    sys_prompt_default = await _system_prompt(monkeypatch, factual=None)
+    sys_prompt_factual = await _system_prompt(monkeypatch, factual="1")
+    assert _APPRAISE_INFORMATIVE_ADDENDUM not in sys_prompt_default
+    assert _APPRAISE_INFORMATIVE_ADDENDUM not in sys_prompt_factual
+    assert "informative" not in sys_prompt_default
+    assert "informative" not in sys_prompt_factual
+
+
 def test_strip_stage_directions_line_leading() -> None:
     """行首括号段逐段剥（排除表外的开场白括号即舞台说明——实跑 105/105）。"""
     from src.agents.language_openai import strip_stage_directions

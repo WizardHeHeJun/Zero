@@ -523,6 +523,10 @@ async def run(
                 "recalled_facts": [],
                 "recalled_disposition": None,
                 "task_complete": False,
+                # is_informative_hint：写入门第四通道（PRP/write-gate-informative）每轮防御
+                # 归零——run() 无 state_overrides 注入口，本字段恒 False（run() 批量接口无
+                # LLM appraise_text_informative 调用），仿 external_priors 归零先例。
+                "is_informative_hint": False,
             },
             config={"configurable": {"thread_id": thread_id}},
         )
@@ -804,6 +808,11 @@ class ConversationSession:
             # 仅存储瞬时故障（memory.client 降级返回 [] 的韧性路径）才会漏写；归零使该轮
             # 干净地退化为「无倾向」，而非错用上一轮的（code-reviewer WARN-6·2026-08-05）。
             "recalled_disposition": None,
+            # is_informative_hint 每轮显式归零（写入门第四通道·PRP/write-gate-informative）：
+            # LastValue channel，chat_driver 只在门开且本轮判定为 True 时经 state_overrides
+            # 注入；不归零会从 checkpoint 恢复上一轮的 True 造成跨轮误判——两条平行入口
+            # （本 base 与 run() 的 base）归零基准必须同步（仿 external_priors 归零先例）。
+            "is_informative_hint": False,
         }
         if state_overrides is not None:
             # motion_backend 护栏（议会 CS 席·2026-08-07）：它是会话级固定门控（state.py 注释

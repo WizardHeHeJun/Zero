@@ -22,7 +22,7 @@ import os
 import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from src.agents.affect_math import (
     ATTITUDE_RATE,
@@ -418,13 +418,33 @@ class ChatDriver:
             "",
             "false",
         )
+        # 写入门第四通道（PRP/write-gate-informative·design.md）：默认关=零回归。
+        # 与 SupervisorAgent 读的是**同一个** env（同开同关，仿 ZERO_TAG_IMPORTANCE 双读模式），
+        # 但两侧各自 os.getenv、不经 SessionConfig/run() 手拷链——构造期一次读，热路径不重读。
+        self.write_gate_informative_enabled = os.getenv(
+            "ZERO_WRITE_GATE_INFORMATIVE", "0"
+        ).lower() not in ("0", "", "false")
 
     async def step(self, user_text: str) -> ChatTurn:
         """推进一轮：评价→引擎→两时间尺度情绪→生成回复→落盘，返回本轮结果。"""
         # L3：首次接触此人时，先把预置的共同记忆灌进语义库（只一次），使本轮起即可召回。
         await self._maybe_seed_memories()
-        # 评价桥：读这句话情绪（真 LLM 或词典回退）
-        if self.lm is not None:
+        # 评价桥：读这句话情绪（真 LLM 或词典回退）。
+        # 写入门第四通道（ZERO_WRITE_GATE_INFORMATIVE·PRP/write-gate-informative）：门开
+        # 且 self.lm 具备 appraise_text_informative（Protocol 安全方案——该方法**不进**
+        # ConversationModel 协议，用 `getattr` 探测而非 isinstance；SteeringLanguageModel /
+        # 词典回退天然没有这个属性，标记因此只产自 LLM 已在场的节点，design.md 热路径边界）
+        # 时，同一次调用换成扩展版拿 (v, a, informative)；否则走原 appraise_text，
+        # informative_hint 恒缺省 False——门关路径与改前逐字一致（零回归）。
+        informative_hint = False
+        appraise_informative = (
+            getattr(self.lm, "appraise_text_informative", None)
+            if (self.lm is not None and self.write_gate_informative_enabled)
+            else None
+        )
+        if appraise_informative is not None:
+            v, a, informative_hint = await appraise_informative(user_text)
+        elif self.lm is not None:
             v, a = await self.lm.appraise_text(user_text)
         else:
             v, a = lexicon_appraise(user_text)
@@ -457,16 +477,23 @@ class ChatDriver:
         tom_gate_open = (
             self.contagion_alpha > 0.0 or self.care_bias_alpha > 0.0 or self.vicarious_alpha > 0.0
         )
+        state_overrides: dict[str, Any] = {}
         if tom_gate_open:
             # 图外独立估计对方情绪 VAD（确定性词典法）。⚠ 语义边界：lm.appraise_text 是
             # 「对我目标一致性」(自身 OCC)，此处是「对方情绪 VAD」——语义不同、字段独立、
             # 绝不复用同一 (v,a)。仅门开时计算；估计在图外、不进 StateGraph 确定性节点。
-            interlocutor_va = lexicon_appraise(user_text)
-            step_out = await self.session.step(
-                stim, state_overrides={"interlocutor_affect": interlocutor_va}
-            )
-        else:
-            step_out = await self.session.step(stim)
+            state_overrides["interlocutor_affect"] = lexicon_appraise(user_text)
+        if informative_hint:
+            # 写入门第四通道：仅命中（True）时注入——未命中沿用 state.py 默认 False，
+            # 与 runner.py 两处平行入口的每轮归零基准一致，不多此一举地显式覆写默认值。
+            state_overrides["is_informative_hint"] = True
+        # 两旋钮皆关时 state_overrides 为空 dict → 不传该 kwarg，session.step(stim) 调用签名
+        # 与改前逐字一致（零回归；测试替身的 step() 桩函数签名亦按此约定）。
+        step_out = (
+            await self.session.step(stim, state_overrides=state_overrides)
+            if state_overrides
+            else await self.session.step(stim)
+        )
         e = step_out["valence_arousal"] or (0.0, 0.0)
         # B（A-P3-D）：双过程习惯化+敏化。intensity 取本轮 e 的 |arousal|（唤醒=刺激强度指标）。
         # 默认 sens_gain=0.0 → 退化为纯习惯化 exp(-n/τ)（零回归）；sens_gain>0 时强刺激敏化主导。
