@@ -38,6 +38,7 @@ class FakeSemanticStore:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         self.episodes.append((scope, key, content, valid_at))
 

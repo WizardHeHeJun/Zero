@@ -9,14 +9,14 @@
 | --- | --- | --- |
 | `framework-current` | `.mmd` / `.json` / `.png` | **情绪引擎框架图**（总览）：评价桥 → 引擎 → 三时间尺度(含稳态回弹) → 双路语言 + 表达双通路 → 表现；记忆桥与人格注入旁挂；**+ 四条虚线旁挂（默认关闭）：🧭 情感第三维 coping_potential（可选·区分愤怒/恐惧）/ 🫂 ToM 共情 / 🧪 HPA 皮质醇慢回路 / 🏛️ 层级预测编码（实验特性）** |
 | `runtime-flow` | `.mmd` / `.json` / `.png` | **项目运作流程图（LLM ⊗ 情感引擎）**：一轮对话怎么走，标注 LLM 接点 / 确定性引擎 / 跨轮持久(emotion 会话内·attitude 落盘) / 人格接点 / 记忆·态度反哺评价先验两条回边 |
-| `memory-architecture` | `.mmd` / `.json` / `.png` | **记忆架构图（注意力↔记忆桥）**：显著性门控写(含写入 dedup) → 情景库(容量遗忘·语义侧信道) → 三维召回重排 → 注入注意力预算；disposition 确定性图谱·时序失效·偏置评价；**+ 可选的巩固与遗忘旁挂（默认关）：睡眠巩固 SESSION→USER / 分层幂律遗忘 / ACT-R 频率召回** |
+| `memory-architecture` | `.mmd` / `.json` / `.png` | **记忆架构图（注意力↔记忆桥）**：显著性门控写(含写入 dedup) → 情景库(容量遗忘·语义侧信道) → 三维召回重排 → 注入注意力预算；disposition 确定性图谱·时序失效·偏置评价；**+ 可选的巩固与遗忘旁挂（默认关）：分层幂律遗忘 / ACT-R 频率召回** |
 | `persona-injection` | `.mmd` / `.json` / `.png` | **人格注入图**：Persona 三层（L1 人设卡→语言 / L2 气质底色·大五→PAD·va_coupling→引擎 / L3 预置关系→记忆），默认中性、行为不变 |
 | `chat-persistence-map` | `.mmd` / `.png` | **--chat 数据落点地图**：一轮对话的数据各落哪个存储（对话运行态 / Checkpointer / 确定性图谱 / 语义侧信道 / 日志）、归哪个 env 变量管、chat 默认值 |
 | `layered-architecture` | `.mmd` / `.png` | **三层架构图**：编排 → 记忆 → 存储只能向下依赖，observability 横切 |
 | `mcp-boundary` | `.mmd` / `.png` | **MCP 接点边界图**：内核内建 MCP server（open/step/close 三工具）← MCP 协议 → 配套项目的感知输入 client + 执行操控 client；标出哪些在本仓、哪些在对面 |
 | `workspace-ignition` | `.mmd` / `.png` | **工作空间点燃图**：并行流 (μ,π)（OCC 评价 / TD 价值 / 快生存 / 心境 / 文本语义 + 经 MCP 注入的外部多模态先验）→ 显著网络打分 → 过阈点燃广播 → 精度加权融合 → 后验读出 e*；另标出可选的「数值通路 ⊥ 报告通路」分离（`ZERO_IGNITION_GATE_FUSION`）与生理流排除（`ZERO_EXCLUDE_PHYSIO_FUSION`） |
 | `coping-third-dimension` | `.mmd` / `.png` | **第三维分岔图**：同一个负效价高唤醒坐标 (v&lt;0,a&gt;0)，由情境控制感 `control_appraisal` 驱动的独立标量流分成愤怒(有掌控)/恐惧(失控)，再下传到判别性表情 AU（愤怒 AU23 / 恐惧 AU01·02·20）；默认关、核心 (v,a) 不受影响。总览图 `framework-current` 只标该能力存在，机制细节看这张 |
-| `consolidation-forgetting` | `tools/plot_consolidation.py` / `.png` | **巩固与遗忘曲线**：左=分层幂律遗忘（SESSION d=0.8 快衰 vs USER d=0.3 慢衰，叠高显著度的振幅调制），右=一条被反复强化的记忆在双准则达标那天升迁 SESSION→USER 后改走慢衰。直接调 `src/memory/consolidation.py` 真实现生成，改参数重跑脚本即同步；该机制默认关 |
+| `consolidation-forgetting` | `tools/plot_consolidation.py` / `.png` | **分层幂律遗忘曲线**：SESSION d=0.8 快衰 vs USER d=0.3 慢衰，叠高显著度的振幅调制。直接调 `src/memory/consolidation.py` 真实现生成，改参数重跑脚本即同步；该机制默认关（图/脚本已同步收窄为单一衰减曲线：原 SESSION→USER 升迁分支已随该机制移除） |
 | `timescales-dynamics` | `tools/plot_timescales.py` / `.png` | **三时间尺度冲击-响应曲线**：单次冲击 vs 反复刺激双面板，`affect_math` 真方程轨迹（matplotlib 生成，改动力学参数后重跑脚本即同步） |
 
 ## 结构（情绪引擎框架图 · 左→右流水线）

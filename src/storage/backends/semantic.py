@@ -39,6 +39,7 @@ class SemanticStore(Protocol):
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None: ...
 
     async def search(
@@ -89,11 +90,13 @@ class GraphitiGraphStore:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         """写一条自然语言 episode；Graphiti 抽取实体/关系入图，按 group_id 隔离。
 
         `embed_text` 仅对自管向量的后端（SqliteVector）有意义；Graphiti 自行从 content 抽取
-        实体/关系与向量，故此处忽略该参数（保协议兼容）。
+        实体/关系与向量，故此处忽略该参数（保协议兼容）。`importance_tag` 同理：
+        Graphiti 自管抽取/无独立重要性列，忽略该参数（保协议兼容）。
         """
         from graphiti_core.nodes import EpisodeType  # 延迟导入：缺驱动由工厂回退
 
@@ -193,16 +196,18 @@ class SqliteVectorStore:
             "valid_at TEXT NOT NULL, embedding TEXT NOT NULL, "
             "access_count INTEGER DEFAULT 0, last_accessed TEXT, "
             "consolidation_count INTEGER DEFAULT 0, "
-            "decay_weight REAL DEFAULT 1.0, invalid_at TEXT)"
+            "decay_weight REAL DEFAULT 1.0, invalid_at TEXT, "
+            "importance_tag REAL DEFAULT 0.5)"
         )
-        # 旧库兼容迁移：新增 5 列（已有列跳过 OperationalError：duplicate column name）。
-        # 新库由 CREATE TABLE 直接含 10 列；此段对新库无害（try/except 吞掉已有列错误）。
+        # 旧库兼容迁移：新增 6 列（已有列跳过 OperationalError：duplicate column name）。
+        # 新库由 CREATE TABLE 直接含 11 列；此段对新库无害（try/except 吞掉已有列错误）。
         for _col_ddl in (
             "ALTER TABLE episodes ADD COLUMN access_count INTEGER DEFAULT 0",
             "ALTER TABLE episodes ADD COLUMN last_accessed TEXT",
             "ALTER TABLE episodes ADD COLUMN consolidation_count INTEGER DEFAULT 0",
             "ALTER TABLE episodes ADD COLUMN decay_weight REAL DEFAULT 1.0",
             "ALTER TABLE episodes ADD COLUMN invalid_at TEXT",
+            "ALTER TABLE episodes ADD COLUMN importance_tag REAL DEFAULT 0.5",
         ):
             try:
                 self.conn.execute(_col_ddl)
@@ -245,6 +250,7 @@ class SqliteVectorStore:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         """写一条 episode：存 `content` 全文 + 对 `embed_text`（缺省=content）的 embedding。
 
@@ -252,6 +258,11 @@ class SqliteVectorStore:
         与**存储/展示全文**（content，含 情绪/precision/streams/value 等结构化元数据）分离——
         否则元数据数字会稀释向量，使「下午两点」这类细节按句意检索时相似度被拉低（encoding
         specificity，Tulving 1973）。`embed_text=None` 时退化为对全文嵌入（旧行为，零回归）。
+
+        `importance_tag`（PRP sleep-consolidation-verdict 案 i）：纯 tag 分量的写入时身份
+        重要性（`memory.utils.importance_signal(parse_importance_tags(content))`，由
+        `MemoryClient.write_episode` 计算传入），供 `_trim_capacity` 驱逐排序第二键；
+        缺省 None → 落 DB 列默认值 0.5（与建表 DEFAULT 对齐，不代表「高重要性」）。
 
         SQLite I/O 经 asyncio.to_thread 桥接，不阻塞事件循环；db_lock 串行化并发写段。
         """
@@ -264,6 +275,7 @@ class SqliteVectorStore:
         dedup_threshold = self.dedup_threshold
         valid_at_iso = valid_at.isoformat()
         emb_json = json.dumps(emb)
+        importance_tag_val = importance_tag if importance_tag is not None else 0.5
 
         def _sync_dedup_and_insert() -> bool:
             """dedup 检查 + INSERT 原子执行（在同一线程内，不跨 await）。
@@ -280,12 +292,14 @@ class SqliteVectorStore:
                 if cosine(emb, existing_emb) > dedup_threshold:
                     return False
             conn.execute(
+                # consolidation_count 不写（2026-08-13 复裁：路 B 停写停读，列保留仅供
+                # 兼容——DEFAULT 0 自动生效，不在此显式赋值）。
                 "INSERT INTO episodes "
                 "(scope, key, content, valid_at, embedding, "
-                "access_count, last_accessed, consolidation_count, "
-                "decay_weight, invalid_at) "
-                "VALUES (?, ?, ?, ?, ?, 0, NULL, 0, 1.0, NULL)",
-                (scope, key, content, valid_at_iso, emb_json),
+                "access_count, last_accessed, "
+                "decay_weight, invalid_at, importance_tag) "
+                "VALUES (?, ?, ?, ?, ?, 0, NULL, 1.0, NULL, ?)",
+                (scope, key, content, valid_at_iso, emb_json, importance_tag_val),
             )
             conn.commit()
             return True
@@ -337,17 +351,20 @@ class SqliteVectorStore:
             conn.execute(
                 "DELETE FROM episodes WHERE scope = ? AND key = ? AND rowid NOT IN ("
                 "SELECT rowid FROM episodes WHERE scope = ? AND key = ? "
-                # 优先保留高 decay_weight（巩固度高）的 episode；同等则保留最新；
-                # rowid 作末位排歧（最后插入=更新=优先保留）。
-                # ⚠ 已知缺陷（议会二轮张力 2a·2026-08-13·本批**未修**）：巩固子系统默认关
-                # ⇒ decay_weight 恒为建表默认 1.0 ⇒ 第一排序键失效、退化纯 FIFO，最早的
-                # 身份自陈会被超容量驱逐（438 轮实测已发生，findings §四点五 成因 B）。
-                # 裁定的修法是加 importance 键，但 importance 由记忆层
-                # `memory.utils.importance_signal` 从 content 算出——本存储层**不得**反向
-                # import 记忆层（红线 1），也不得加 DB 列（议会 D1 BLOCK：两后端能力分叉）
-                # ⇒ 需要写入时预计算或注入式回调，属记忆生命周期语义，归入
-                # SleepConsolidation「修 vs 退役」独立 PRP 一并裁，勿在此顺手实现。
-                "ORDER BY decay_weight DESC, valid_at DESC, rowid DESC LIMIT ?)",
+                # 优先保留高 decay_weight（巩固度高）的 episode；同等则优先保留高
+                # importance_tag（写入时身份标签）；再同等则保留最新；rowid 作末位
+                # 排歧（最后插入=更新=优先保留）。
+                # importance_tag 列（PRP sleep-consolidation-verdict 案 i·2026-08-13 裁定）：
+                # 由 `MemoryClient.write_episode` 写入前算好
+                # `importance_signal(parse_importance_tags(content))` 经 `add_episode`
+                # kwarg 传入，本存储层不反向 import 记忆层（红线 1）。驱逐因果链是「写入时
+                # 打了身份标签」（纯 tag 分量），不是「当时情绪多确定」——这正是不用
+                # fold-in 全量 I（含 precision 分量）的原因：precision 衡量的是「情绪判断
+                # 有多确定」而非「内容有多重要」，把它折进排序会把排序侧刚切干净的污染
+                # 缝回驱逐侧。decay_weight 默认关（子系统门关时恒 1.0）时，importance_tag
+                # 是唯一在容量溢出场景仍能区分身份自陈与普通闲聊的信号。
+                "ORDER BY decay_weight DESC, importance_tag DESC, valid_at DESC, rowid DESC "
+                "LIMIT ?)",
                 (scope, key, scope, key, max_per_key),
             )
             conn.commit()
@@ -468,71 +485,6 @@ class SqliteVectorStore:
             await asyncio.to_thread(_sync_apply)
         logger.debug("sqlite_vector apply_decay_weights n=%d", len(updates))
 
-    async def consolidate_session_to_user(
-        self,
-        scope_from: str,
-        scope_to: str,
-        rowids: list[str],
-    ) -> None:
-        """把 SESSION episode 升迁到 USER scope（睡眠巩固·系统巩固工程近似）。
-
-        流程：复制指定 rowid 行到 scope_to（consolidation_count+1）→ 原行 invalid_at=now 软删。
-        不物理删：保留历史溯源；search 路径过滤 invalid_at IS NULL 自动跳过软删行。
-        SQLite I/O 经 asyncio.to_thread 桥接；db_lock 串行化写段。
-        """
-        if not rowids:
-            return
-        conn = self.conn
-        now_iso = datetime.now(UTC).isoformat()
-
-        def _sync_consolidate() -> None:
-            for eid in rowids:
-                try:
-                    rid = int(eid)
-                    row = conn.execute(
-                        "SELECT key, content, valid_at, embedding, "
-                        "access_count, consolidation_count, decay_weight "
-                        "FROM episodes WHERE rowid = ?",
-                        (rid,),
-                    ).fetchone()
-                    if row is None:
-                        continue
-                    key, content, valid_at, emb, ac, cc, dw = row
-                    conn.execute(
-                        "INSERT INTO episodes "
-                        "(scope, key, content, valid_at, embedding, "
-                        "access_count, last_accessed, consolidation_count, "
-                        "decay_weight, invalid_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)",
-                        (
-                            scope_to,
-                            key,
-                            content,
-                            valid_at,
-                            emb,
-                            ac if ac is not None else 0,
-                            (cc if cc is not None else 0) + 1,
-                            dw if dw is not None else 1.0,
-                        ),
-                    )
-                    # 原 SESSION 行软删（invalid_at=now）
-                    conn.execute(
-                        "UPDATE episodes SET invalid_at = ? WHERE rowid = ?",
-                        (now_iso, rid),
-                    )
-                except (ValueError, sqlite3.Error) as exc:
-                    logger.warning("consolidate_session_to_user rowid=%s 失败: %s", eid, exc)
-            conn.commit()
-
-        async with self.db_lock:
-            await asyncio.to_thread(_sync_consolidate)
-        logger.debug(
-            "sqlite_vector consolidate_session_to_user %s→%s n=%d",
-            scope_from,
-            scope_to,
-            len(rowids),
-        )
-
     async def fetch_episodes_for_consolidation(
         self,
         scope_session: str,
@@ -548,9 +500,10 @@ class SqliteVectorStore:
           content          — 内容全文（供 salience 代理解析）
           valid_at         — valid_at 原始 ISO 字符串（调用方自行 fromisoformat）
           access_count     — int（None 时归 0）
-          consolidation_count — int（None 时归 0）
           decay_weight     — float（None 时归 1.0）
 
+        （不含 consolidation_count：2026-08-13 复裁，路 B 停写停读——DB 列仅为兼容保留，
+        本读取路径不再消费。）
         只返回 invalid_at IS NULL（有效）行；不含 embedding（避免大对象进记忆层）。
         SQLite I/O 经 asyncio.to_thread 桥接；db_lock 串行化读段（与 apply_decay_weights 对齐）。
         """
@@ -559,7 +512,7 @@ class SqliteVectorStore:
         def _sync() -> list[tuple]:
             return conn.execute(
                 "SELECT rowid, scope, key, content, valid_at, "
-                "access_count, consolidation_count, decay_weight "
+                "access_count, decay_weight "
                 "FROM episodes "
                 "WHERE (scope = ? OR scope = ?) AND key = ? AND invalid_at IS NULL",
                 (scope_session, scope_user, key),
@@ -569,7 +522,7 @@ class SqliteVectorStore:
             rows = await asyncio.to_thread(_sync)
 
         result: list[dict[str, Any]] = []
-        for rowid, scope, ep_key, content, valid_at_str, ac, cc, dw in rows:
+        for rowid, scope, ep_key, content, valid_at_str, ac, dw in rows:
             result.append(
                 {
                     "episode_id": str(rowid),
@@ -578,7 +531,6 @@ class SqliteVectorStore:
                     "content": content,
                     "valid_at": valid_at_str,
                     "access_count": ac if ac is not None else 0,
-                    "consolidation_count": cc if cc is not None else 0,
                     "decay_weight": dw if dw is not None else 1.0,
                 }
             )

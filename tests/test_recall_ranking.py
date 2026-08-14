@@ -426,6 +426,7 @@ class _RankRecallStore:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         return None
 
@@ -492,6 +493,7 @@ class _EpisodeRecorder:
         content: str,
         valid_at: datetime,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         self.contents.append(content)
 

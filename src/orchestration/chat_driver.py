@@ -280,12 +280,10 @@ class ChatDriver:
     - care_bias_alpha: ZERO_CARE_BIAS_ALPHA 默认 0.0（零回归）
     - vicarious_alpha: ZERO_VICARIOUS_ALPHA 默认 0.0（零回归）
     - vicarious_threshold: ZERO_VICARIOUS_THRESHOLD 默认 0.3
-    - consolidation_enabled: ZERO_CONSOLIDATION_ENABLED 默认 False（B 类·零回归）
+    - consolidation_enabled: ZERO_CONSOLIDATION_ENABLED 默认 False（记忆衰减批处理门·零回归）
     - actr_enabled: ZERO_ACTR_ENABLED 默认 False（B 类·零回归）
     - d_session: ZERO_CONSOLIDATION_D_SESSION 默认 0.8
     - d_user: ZERO_CONSOLIDATION_D_USER 默认 0.3
-    - consolidation_count_min: ZERO_CONSOLIDATION_COUNT_MIN 默认 3
-    - consolidation_salience_threshold: ZERO_CONSOLIDATION_SALIENCE_THRESHOLD 默认 0.25
     - actr_b_scale: ZERO_ACTR_B_SCALE 默认 3.0
     - consolidation_timeout: ZERO_CONSOLIDATION_TIMEOUT 默认 30.0
     """
@@ -334,17 +332,14 @@ class ChatDriver:
         care_bias_alpha: float = 0.0,
         vicarious_alpha: float = 0.0,
         vicarious_threshold: float = 0.3,
-        # B 类·记忆巩固旋钮（默认全关=零回归；aclose 时触发·不在 step 热路径）
-        # ZERO_CONSOLIDATION_ENABLED=0 → aclose no-op；开启后会话结束时跑 Ebbinghaus+睡眠巩固。
+        # B 类·记忆衰减批处理旋钮（默认全关=零回归；aclose 时触发·不在 step 热路径）
+        # ZERO_CONSOLIDATION_ENABLED=0 → aclose no-op；开启后会话结束时跑 Ebbinghaus 衰减批处理。
         consolidation_enabled: bool = False,
         actr_enabled: bool = False,  # ACT-R recency 替换门（ZERO_ACTR_ENABLED）
         d_session: float = 0.8,  # SESSION 幂律衰减指数（ZERO_CONSOLIDATION_D_SESSION）
         d_user: float = 0.3,  # USER 幂律衰减指数（ZERO_CONSOLIDATION_D_USER）
-        consolidation_count_min: int = 3,  # 睡眠巩固最低强化次数门（ZERO_CONSOLIDATION_COUNT_MIN）
         actr_b_scale: float = 3.0,  # Petrov B sigmoid scale（ZERO_ACTR_B_SCALE）
         consolidation_timeout: float = 30.0,  # aclose 巩固超时秒（ZERO_CONSOLIDATION_TIMEOUT）
-        # salience 升迁门（Hill 归一后·默认 0.25·议会 2026-07-22）
-        consolidation_salience_threshold: float = 0.25,
         # 表现层出口（src/expression_out）：本轮情绪+回复的下游消费者，如皮套动作、语音。
         # 只认协议（鸭子类型），本模块不 import 任何实现——加表现形式不动对话核心。
         # 空列表=不表现（默认，零回归）。表现失败由各 sink 自行降级，不回灌本层。
@@ -409,15 +404,13 @@ class ChatDriver:
         self.care_bias_alpha = care_bias_alpha
         self.vicarious_alpha = vicarious_alpha
         self.vicarious_threshold = vicarious_threshold
-        # B 类·记忆巩固旋钮（构造期固化；aclose 时消费；不在 step 热路径）
+        # B 类·记忆衰减批处理旋钮（构造期固化；aclose 时消费；不在 step 热路径）
         self.consolidation_enabled = consolidation_enabled
         self.actr_enabled = actr_enabled
         self.d_session = d_session
         self.d_user = d_user
-        self.consolidation_count_min = consolidation_count_min
         self.actr_b_scale = actr_b_scale
         self.consolidation_timeout = consolidation_timeout
-        self.consolidation_salience_threshold = consolidation_salience_threshold
         # ③ 遗忘调制是否改吃 tag importance（默认关=旧 salience^κ 口径逐字等价）。
         # 与 MemoryRecallAgent 读的是**同一个** env，保证 ②③ 同开同关、不出现半切换态。
         self.tag_importance_enabled = os.getenv("ZERO_TAG_IMPORTANCE", "0").lower() not in (
@@ -649,12 +642,13 @@ class ChatDriver:
                 logger.warning("表现层 %s 投递失败（对话继续）：%s", type(sink).__name__, exc)
 
     async def aclose(self) -> None:
-        """会话结束清理：触发记忆巩固批处理，关闭语义后端连接。
+        """会话结束清理：触发记忆衰减批处理（Ebbinghaus），关闭语义后端连接。
 
-        B 类·记忆巩固（2026-07-22）：
-        - consolidation_enabled=False（默认）→ 巩固段 no-op，直接关连接（零回归）。
-        - 开启后：asyncio.wait_for 包裹巩固，超时（consolidation_timeout 秒）降级 warning，
-          不崩对话退出流程。巩固经 MemoryClient.run_consolidation_batch（守三层单向）。
+        B 类·记忆衰减批处理（2026-07-22 引入；2026-08-13 复裁收窄为单一 Ebbinghaus 衰减，
+        原「睡眠巩固迁移」已退役，见 PRP/sleep-consolidation-verdict/design.md）：
+        - consolidation_enabled=False（默认）→ 批处理段 no-op，直接关连接（零回归）。
+        - 开启后：asyncio.wait_for 包裹批处理，超时（consolidation_timeout 秒）降级 warning，
+          不崩对话退出流程。经 MemoryClient.run_consolidation_batch（守三层单向）。
         - 末尾调 self.memory.aclose() 关闭语义后端（SqliteVectorStore/Graphiti 连接）。
         - 无记忆句柄时整体 no-op。
         延迟 import consolidation 模块（aclose 路径·非热路径；仅门开时实际触发）。
@@ -671,8 +665,6 @@ class ChatDriver:
                         consolidation_enabled=self.consolidation_enabled,
                         d_session=self.d_session,
                         d_user=self.d_user,
-                        salience_threshold=self.consolidation_salience_threshold,
-                        consolidation_count_min=self.consolidation_count_min,
                         actr_b_scale=self.actr_b_scale,
                         tag_importance_enabled=self.tag_importance_enabled,
                     ),
@@ -1041,8 +1033,8 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     # k_arousal/k_coping：⚖ 方向议会定、幅度工程可动——占位路径用 decode_channels 内置默认
     # （1.5/1.2，不为系数拉 state 字段）；composite 路径经 ZERO_FACS_K_AROUSAL/K_COPING 构造期读入。
     expression_decoder = _build_expression_decoder(facs_extended, canonical_physiology)
-    # B 类·记忆巩固旋钮（仿 cortisol_tau 模式：env 读一次传构造，默认全关=零回归）
-    # ZERO_CONSOLIDATION_ENABLED：主门，默认 0=关；开启后 aclose 触发 Ebbinghaus+睡眠巩固。
+    # B 类·记忆衰减批处理旋钮（仿 cortisol_tau 模式：env 读一次传构造，默认全关=零回归）
+    # ZERO_CONSOLIDATION_ENABLED：主门，默认 0=关；开启后 aclose 触发 Ebbinghaus 衰减批处理。
     consolidation_enabled = os.getenv("ZERO_CONSOLIDATION_ENABLED", "").lower() in (
         "1",
         "true",
@@ -1055,18 +1047,12 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     d_session = float(os.getenv("ZERO_CONSOLIDATION_D_SESSION", "0.8"))
     # USER 幂律衰减指数（ZERO_CONSOLIDATION_D_USER 默认 0.3；慢衰对应新皮层慢整合）
     d_user = float(os.getenv("ZERO_CONSOLIDATION_D_USER", "0.3"))
-    # 睡眠巩固最低强化次数门（ZERO_CONSOLIDATION_COUNT_MIN 默认 3）
-    consolidation_count_min = int(os.getenv("ZERO_CONSOLIDATION_COUNT_MIN", "3"))
     # Petrov B sigmoid 归一 scale（ZERO_ACTR_B_SCALE 默认 3.0；越小频率效应越激进）
     actr_b_scale = float(os.getenv("ZERO_ACTR_B_SCALE", "3.0"))
     # aclose 巩固超时秒（ZERO_CONSOLIDATION_TIMEOUT 默认 30.0；超时降级 warning 不崩）
     _consolidation_timeout_env = os.getenv("ZERO_CONSOLIDATION_TIMEOUT")
     consolidation_timeout = (
         float(_consolidation_timeout_env) if _consolidation_timeout_env else 30.0
-    )
-    # salience 升迁门（Hill 归一后·默认 0.25·议会 2026-07-22）
-    consolidation_salience_threshold = float(
-        os.getenv("ZERO_CONSOLIDATION_SALIENCE_THRESHOLD", "0.25")
     )
     # user_id=thread：让 disposition/episode 的 user scope 与 ConversationLog 的 thread 对齐，
     # 避免切 ZERO_CHAT_THREAD 时共享 "default-user" 记忆造成串味。
@@ -1191,13 +1177,11 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         care_bias_alpha=care_bias_alpha,
         vicarious_alpha=vicarious_alpha,
         vicarious_threshold=vicarious_threshold,
-        # B 类·记忆巩固旋钮透传（默认全关=零回归）
+        # B 类·记忆衰减批处理旋钮透传（默认全关=零回归）
         consolidation_enabled=consolidation_enabled,
         actr_enabled=actr_enabled,
         d_session=d_session,
         d_user=d_user,
-        consolidation_count_min=consolidation_count_min,
         actr_b_scale=actr_b_scale,
         consolidation_timeout=consolidation_timeout,
-        consolidation_salience_threshold=consolidation_salience_threshold,
     )

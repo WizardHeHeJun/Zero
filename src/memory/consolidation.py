@@ -1,8 +1,14 @@
-"""记忆巩固与遗忘：Ebbinghaus 分层幂律衰减 + 睡眠巩固迁移 + ACT-R 频率归一。
+"""记忆巩固与遗忘：Ebbinghaus 分层幂律衰减 + ACT-R 频率归一。
 
 本模块属**记忆层**（src/memory/），不 import 编排层（src/orchestration/）。
 所有算法确定性、无 LLM、无 torch——守 affect 热路径红线（确定性可复现）。
-三策略均由 run_consolidation_batch 统一调用，默认全部门关（零回归）。
+两策略均由 run_consolidation_batch 统一调用，默认全部门关（零回归）。
+
+⚠ 2026-08-13 复裁（PRP/sleep-consolidation-verdict/design.md）：
+原「睡眠巩固迁移」（SESSION→USER 双准则升迁）策略已退役——该策略从未在生产生效
+（`ZERO_CONSOLIDATION_ENABLED` 从未默认开），议会裁定不构成学术降级（没跑过的机制
+无法被「退役」）。不得把「对应生物记忆巩固再激活机制」等措辞挪到本模块或任何文档
+留存「曾经忠实对应」的暗示。
 
 生物学注释（工程近似声明）：
 ① salience = normalize_precision(precision) × |rpe| 是 BLA-NE 情绪唤醒调制的**工程代理**，
@@ -12,8 +18,10 @@
   - rpe=0.5 为常数代理（事后不可得）。**机制限制（神经席 WARN-3b）**：
     此代理不区分高/低 RPE episode 的意外度差异——所有 episode 获同等意外度权重，
     丢失了 BLA-NE 轴中因突发/意外事件引起的差异化巩固效应。
-② 会话结束触发巩固 = **生物睡眠周期工程近似**（生物实际跨天至数周；
-  此处以对话结束作周期近似，Davis & Zhong 2017 DOI 10.1016/j.neuron.2017.05.039）。
+② 会话结束触发**衰减批处理**（EbbinghausDecay，非已退役的「巩固迁移」）=
+  **生物睡眠周期工程近似**（生物实际跨天至数周；此处以对话结束作周期近似，
+  Davis & Zhong 2017 DOI 10.1016/j.neuron.2017.05.039；⚠ 该依据独立于 SESSION/USER
+  双 scope 的巩固迁移机制，2026-08-13 复裁：路 B 退役迁移后此引文照常成立、不动）。
 ③ 分层幂律 d_session/d_user 对应系统巩固快/慢双阶段
   （McClelland et al. 1995 互补学习系统；MCM 4 参数模型留为理论参照，
   本实现用更轻量的幂律近似而非完整 MCM）。
@@ -49,9 +57,11 @@ logger = logging.getLogger(__name__)
 class ConsolidationStrategy(Protocol):
     """记忆巩固策略协议：接收 episode 元数据列表，返回操作指令。
 
-    返回值约定（均为 episode_id str 列表）：
+    返回值约定：
       decay_updates: list[tuple[float, str]]  — (new_decay_weight, episode_id)
-      consolidate_ids: list[str]              — 升迁到 user scope 的 episode_id
+      第二个返回值现恒为 `[]`——原「升迁到 user scope 的 episode_id」用途随
+      SleepConsolidation 退役（2026-08-13 复裁），协议签名保留供未来扩展占位，
+      不承载任何巩固迁移语义。
     """
 
     def compute(
@@ -140,48 +150,7 @@ class EbbinghausDecay:
         return updates, []
 
 
-# ── 策略二：睡眠巩固迁移 ────────────────────────────────────────────────────────
-
-
-class SleepConsolidation:
-    """双准则 SESSION→USER 巩固迁移（工程近似生物睡眠周期·Davis & Zhong 2017）。
-
-    升迁条件（AND）：salience ≥ salience_threshold AND consolidation_count ≥ min_count。
-    两条件同时满足才升迁，防止「低 consolidation_count 高 salience」的偶发突出事件
-    在未经足够强化前被误升迁为长期记忆（对应生物记忆巩固需要重复激活的再激活机制）。
-    升迁后原 SESSION 行 invalid_at 软删（由 consolidate_session_to_user 执行）。
-    """
-
-    def __init__(
-        self,
-        salience_threshold: float = 0.25,
-        consolidation_count_min: int = 3,
-    ) -> None:
-        self.salience_threshold = salience_threshold
-        self.consolidation_count_min = consolidation_count_min
-
-    def compute(
-        self,
-        episodes: list[dict[str, Any]],
-        *,
-        now: datetime,
-    ) -> tuple[list[tuple[float, str]], list[str]]:
-        """筛选满足双准则的 SESSION episode id，供升迁到 USER scope。"""
-        consolidate_ids: list[str] = []
-        for ep in episodes:
-            eid = ep.get("episode_id")
-            if not eid:
-                continue
-            if ep.get("scope", "") != "session":
-                continue
-            salience = ep.get("salience", 0.0)
-            cc = ep.get("consolidation_count", 0) or 0
-            if salience >= self.salience_threshold and cc >= self.consolidation_count_min:
-                consolidate_ids.append(eid)
-        return [], consolidate_ids
-
-
-# ── 策略三：ACT-R 频率归一 ──────────────────────────────────────────────────────
+# ── 策略二：ACT-R 频率归一 ──────────────────────────────────────────────────────
 
 
 class ACTRFrequency:
@@ -263,12 +232,10 @@ async def run_consolidation_batch(
     consolidation_enabled: bool = False,
     d_session: float = 0.8,
     d_user: float = 0.3,
-    salience_threshold: float = 0.25,
-    consolidation_count_min: int = 3,
     actr_b_scale: float = 3.0,
     tag_importance_enabled: bool = False,
 ) -> None:
-    """记忆巩固批处理：Ebbinghaus 衰减 + 睡眠巩固迁移（会话结束触发）。
+    """记忆衰减批处理：Ebbinghaus 分层幂律衰减（会话结束触发）。
 
     参数：
       semantic            — SemanticStore 实例（duck-type，需具备 episode 查询/更新方法）
@@ -276,8 +243,6 @@ async def run_consolidation_batch(
       key                 — user/session key（通常 = user_id）
       consolidation_enabled — 主门：False → 整体 no-op（零回归）
       d_session/d_user    — 分层幂律指数（SESSION 快衰 / USER 慢衰）
-      salience_threshold  — 睡眠巩固 salience 门（≥ 此值才候选）
-      consolidation_count_min — 睡眠巩固 consolidation_count 门（≥ 此值才升迁）
       actr_b_scale        — Petrov B sigmoid 归一 scale（越小越激进）
 
     整体门控：consolidation_enabled=False → 直接 return（不查 DB、不写任何内容）。
@@ -285,7 +250,8 @@ async def run_consolidation_batch(
 
     注意事项（工程近似声明）：
     - Ebbinghaus 衰减走 decay_weight 字段，不物理删除（_trim_capacity 按 decay_weight 驱逐）。
-    - 睡眠巩固迁移：SESSION→USER 复制行，原行 invalid_at 软删（search 路径自动跳过）。
+    - 双阶段「巩固迁移」（SESSION→USER 双准则升迁）从未在生产生效并已退役
+      （2026-08-13 复裁，见 PRP/sleep-consolidation-verdict/design.md）。
     - 本函数确定性、无 LLM、无 torch（守 affect 热路径红线）。
     - ACT-R 频率归一（ACTRFrequency）仅控召回侧 _rank_episodes recency 替换，巩固批处理不消费。
     """
@@ -333,8 +299,10 @@ async def run_consolidation_batch(
         precision = parse_importance(content)
         salience = normalize_precision(precision, scale=30.0) * 0.5
         # importance：tag 派生的内容重要性（值域 [0.5,1)），供 EbbinghausDecay 的振幅调制。
-        # 与上面的 salience 并存而非替代——salience 仍供 SleepConsolidation 的升迁门使用
-        # （那是「情绪显著度」语义，对应 McGaugh 唤醒调制，本 PRP 不改；D-B 只解耦 ②③）。
+        # 与上面的 salience 并存而非替代——salience 现唯一消费者是 EbbinghausDecay 旧口径
+        # 分支（tag_importance_enabled=False 时的 a_eff = a×salience^κ，见类 docstring）；
+        # 原「睡眠巩固迁移」升迁门消费者已随 SleepConsolidation 一并退役（2026-08-13 复裁）。
+        # consolidation_count 不读（同一复裁：路 B 停写停读，DB 列仅为兼容保留）。
         importance = importance_signal(parse_importance_tags(content))
         episodes.append(
             {
@@ -344,7 +312,6 @@ async def run_consolidation_batch(
                 "content": content,
                 "valid_at": valid_at,
                 "access_count": row.get("access_count", 0),
-                "consolidation_count": row.get("consolidation_count", 0),
                 "decay_weight": row.get("decay_weight", 1.0),
                 "salience": salience,
                 "importance": importance,
@@ -362,16 +329,3 @@ async def run_consolidation_batch(
             logger.debug("consolidation decay_updates n=%d", len(decay_updates))
         except Exception as exc:
             logger.warning("apply_decay_weights failed: %s", exc, exc_info=True)
-
-    # ── 4. 睡眠巩固迁移：SESSION→USER（双准则门） ────────────────────────────
-    sleep_strategy = SleepConsolidation(
-        salience_threshold=salience_threshold,
-        consolidation_count_min=consolidation_count_min,
-    )
-    _, consolidate_ids = sleep_strategy.compute(episodes, now=now)
-    if consolidate_ids and hasattr(semantic, "consolidate_session_to_user"):
-        try:
-            await semantic.consolidate_session_to_user(scope_session, scope_user, consolidate_ids)
-            logger.info("consolidation session→user key=%s n=%d", key, len(consolidate_ids))
-        except Exception as exc:
-            logger.warning("consolidate_session_to_user failed: %s", exc, exc_info=True)

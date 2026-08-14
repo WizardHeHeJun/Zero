@@ -51,6 +51,7 @@ class _RecordingStore:
         key: str,
         valid_at: object = None,
         embed_text: str | None = None,
+        importance_tag: float | None = None,
     ) -> None:
         self.calls.append({"content": content, "scope": scope, "key": key})
 
