@@ -23,9 +23,12 @@ import math
 import wave
 from array import array
 
-# 唯一允许语音流写入的嘴部参数集合（Live2D 标准参数：+ 为张嘴）。
-# v1 只驱动嘴部开合一维；若加 ParamMouthForm 须同步更新融合锚点测试与跨仓规范。
-MOUTH_PARAMS: tuple[str, ...] = ("ParamMouthOpenY",)
+# 唯一允许语音流写入的嘴部参数集合。
+# ⚠ 命名空间是 **VTS 输入参数**（params_list 实测 127 个，嘴部开合 = `MouthOpen`∈[0,1]），
+# 不是 Live2D 输出参数（`ParamMouthOpenY`）——2026-08-14 首次真机联调实测：后者被渲染端
+# `[vtsb:invalid_params] 参数缺席` 拒收，音频照播、嘴不动。
+# v1 只驱动开合一维；若加 `MouthSmile` 须同步更新融合锚点测试与跨仓规范。
+MOUTH_PARAMS: tuple[str, ...] = ("MouthOpen",)
 
 # 包络平滑：单极点 attack/release 不对称——嘴张开快（跟上爆破音）、闭合稍慢（避免抖动）。
 # 系数按 20fps 帧节奏取值；确定性常数，非可调 env（观感常数，改动走真机盲测口径）。

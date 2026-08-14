@@ -106,6 +106,10 @@ class VtsTransport:
         env.update(
             {
                 "VTS_BEHAVIOR_ENABLED": "true",
+                # ⚠ server 是**我方 spawn 的**——对方部署侧开的 flag 对这条链路不生效，
+                # 环境由这里注入（2026-08-14 首次真机联调实测：漏传 ⇒ speech_play 吃
+                # [vtsb:speech_disabled]）。speech 工具开着但无人调时惰性无副作用，故恒开。
+                "VTS_SPEECH_ENABLED": "true",
                 "VTS_TOKEN_FILE": str(self.token_file),
                 "PYTHONPATH": str(self.mcp_repo),
                 "PYTHONIOENCODING": "utf-8",
