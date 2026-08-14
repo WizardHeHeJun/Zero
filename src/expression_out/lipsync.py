@@ -32,14 +32,38 @@ MOUTH_PARAMS: tuple[str, ...] = ("MouthOpen",)
 
 # 包络平滑：单极点 attack/release 不对称——嘴张开快（跟上爆破音）、闭合稍慢（避免抖动）。
 # 系数按 20fps 帧节奏取值；确定性常数，非可调 env（观感常数，改动走真机盲测口径）。
-ATTACK_ALPHA = 0.6
-RELEASE_ALPHA = 0.25
+# 2026-08-14 三轮真机盲测定档：一轮「一味一张一闭」⇒ 加快跟随；二轮「频率快、机械」⇒
+# 回落 0.55/0.35；三轮「张闭仍快、回落太快、僵硬」⇒ **0.35/0.18**。能这样一路调慢而不
+# 回到一轮的「恒张」，是因为起伏**深度**已交给对比度拉伸（FLOOR_PERCENTILE 重标定每句
+# 的谷底）、平滑系数只管起伏**速度**——两轴解耦，速度可独立压慢。
+ATTACK_ALPHA = 0.35
+RELEASE_ALPHA = 0.18
 
-# 噪声门：低于峰值标度这一比例的能量视为静音（嘴闭合），滤掉底噪让静音段真正闭嘴。
-NOISE_GATE_RATIO = 0.06
+# 低能量忽略门：低于峰值标度这一比例的能量一律视为静音（嘴渐合）。初值 0.06 只滤底噪；
+# 五轮盲测（用户提议「忽略一些低能量的部分」）提到 0.20；六轮「去掉的有点狠」回落
+# 0.15；七轮「再降低一点」定 0.11——弱音节尾/气声仍忽略，次强段驱动完整保留。
+NOISE_GATE_RATIO = 0.11
 
 # 归一标度取包络的该分位数（而非 max）：单个爆破峰不该把整句其余部分压瘪。
 NORM_PERCENTILE = 0.95
+
+# 对比度拉伸的"闭合参考"分位（有声帧内取）：低于它的有声帧映射到近闭合。
+# 动机（一轮盲测）：中文语流能量连续，直接 v/scale 会把大半有声帧顶到高位
+# （实测有声均值 0.78）——音节间的浅谷要拉伸成可见的闭合动作才有"说话感"。
+# 二轮盲测「机械」后 0.30 → 0.20：拉伸变浅，浅谷不再砸到底。
+FLOOR_PERCENTILE = 0.20
+
+# 拉伸后的伽马（<1 提亮中段）：避免拉伸把中等能量压得太闭、观感变"嘴瓢"。
+OPENING_GAMMA = 0.75
+
+# 有声段的最小开度：**说话中不完全闭嘴**（人语流的唇闭只在爆破音瞬间，砸到 0 是方波感
+# 「机械」的主因，二轮盲测定）；只有过不了噪声门的真静音帧才归零闭嘴。
+VOICED_MIN_OPENING = 0.12
+
+# 开度限速（四轮盲测「嘴部变化太快」定）：每帧开度变化的硬上界——平滑系数只能压
+# 平均速度，能量突跳时单帧仍可蹦 0.3+；限速给速度一个**无条件上界**（20fps 下
+# 闭→全张至少 0.5s），起张与回落对称生效，静音收口也顺此渐合而非弹回。
+MAX_DELTA_PER_FRAME = 0.10
 
 
 def energy_envelope(wav_bytes: bytes, fps: float) -> list[float]:
@@ -97,26 +121,36 @@ def _percentile(values: list[float], q: float) -> float:
 
 
 def envelope_to_mouth_track(envelope: list[float], fps: float) -> list[dict[str, object]]:
-    """平滑+归一后的包络 → `MOUTH_PARAMS` 关键帧轨迹（形状同 `motion_synth`）。
+    """平滑+归一+对比度拉伸后的包络 → `MOUTH_PARAMS` 关键帧轨迹（形状同 `motion_synth`）。
 
-    归一按整句 `NORM_PERCENTILE` 分位标度（轻声句也张得开嘴）。噪声门作用在
+    归一按整句 `NORM_PERCENTILE` 分位标度（轻声句也张得开嘴）；有声帧再做**对比度
+    拉伸**（`FLOOR_PERCENTILE` 低分位为闭合参考 + `OPENING_GAMMA`）——否则中文语流
+    的连续能量会把嘴顶成"整句恒张、句尾才闭"（2026-08-14 真机反馈）。噪声门作用在
     **原始包络**上：静音帧必闭嘴——release 平滑只塑造有声段内的衰减，不许外溢到
-    静音段拖出"余音张嘴"（实测拖尾 0.32，闭嘴要 6+ 帧）。全静音（标度 0）输出
-    全零轨迹而非除零。
+    静音段拖出"余音张嘴"。全静音（标度 0）输出全零轨迹而非除零。
     """
     smoothed = smooth_envelope(envelope)
     scale = _percentile(smoothed, NORM_PERCENTILE)
     gate = scale * NOISE_GATE_RATIO
+    voiced = [smoothed[i] for i in range(len(smoothed)) if scale > 0.0 and envelope[i] >= gate]
+    floor = _percentile(voiced, FLOOR_PERCENTILE)
+    span = _percentile(voiced, NORM_PERCENTILE) - floor
     track: list[dict[str, object]] = []
+    limited = 0.0
     for i, value in enumerate(smoothed):
         if scale <= 0.0 or envelope[i] < gate:
             opening = 0.0
+        elif span <= 0.0:
+            opening = min(1.0, value / scale)  # 退化：能量近恒定时回落旧口径
         else:
-            opening = min(1.0, value / scale)
+            stretched = min(1.0, max(0.0, (value - floor) / span))
+            opening = VOICED_MIN_OPENING + (1.0 - VOICED_MIN_OPENING) * stretched**OPENING_GAMMA
+        delta = max(-MAX_DELTA_PER_FRAME, min(MAX_DELTA_PER_FRAME, opening - limited))
+        limited += delta
         track.append(
             {
                 "t_ms": int(round(i * 1000.0 / fps)),
-                "params": {MOUTH_PARAMS[0]: round(opening, 4)},
+                "params": {MOUTH_PARAMS[0]: round(limited, 4)},
             }
         )
     return track

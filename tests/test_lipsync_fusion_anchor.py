@@ -127,14 +127,20 @@ def test_track_shape_matches_motion_synth_contract() -> None:
 
 
 def test_silence_keeps_mouth_closed_and_speech_opens_it() -> None:
-    """静音段全零（闭嘴）、有声段有开口——方向层锚点。"""
+    """静音段闭嘴、有声段开口、尾部渐合——方向层锚点。
+
+    尾部判据是「持续渐合 + 句末接近闭合」而非「立即闭死」：开度限速
+    `MAX_DELTA_PER_FRAME`（2026-08-14 四轮盲测「嘴部变化太快」定）下，闭合是
+    每帧 ≤0.10 的渐进动作，0.3s 静音尾恰好走完大半段闭合行程。
+    """
     track = mouth_track_from_wav(_wav([(0.3, 0.0), (0.4, 0.8), (0.3, 0.0)]), FPS)
     values = [float(f["params"][MOUTH_PARAMS[0]]) for f in track]  # type: ignore[index]
     n = len(values)
     head, mid, tail = values[: n // 4], values[n // 3 : 2 * n // 3], values[-n // 8 :]
     assert max(head) == 0.0, "前置静音就该闭嘴"
     assert max(mid) > 0.5, "有声段开口应显著"
-    assert max(tail) < 0.2, "尾部静音应闭回去（release 平滑允许小残量）"
+    assert all(b < a for a, b in zip(tail, tail[1:], strict=False)), "尾部静音应持续渐合"
+    assert values[-1] < 0.2, "句末应接近闭合（限速下允许收口残量）"
     assert all(0.0 <= v <= 1.0 for v in values)
 
 
