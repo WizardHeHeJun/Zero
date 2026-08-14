@@ -1,6 +1,6 @@
 # docs/ — 框架图（v1 旧版存档 / v2 当前）
 
-- **`v2/`** — **现阶段权威架构图**（共 **11 张**：9 张架构图 + 2 张动力学曲线；与当前实现对齐）。README 内嵌的就是这套。架构图有 `.mmd`（Mermaid 源，**当前 PNG 由它经飞书画板渲染**）+ `.png`（渲染图）；旧四图另有 `.json`（whiteboard-cli DSL 富样式备选，**已不再维护、不保证与 `.mmd` 一致——一律以 `.mmd` 为准**；已知 `framework-current.json` 未收录实验特性旁挂等较新标注）。
+- **`v2/`** — **现阶段权威架构图**（共 **12 张**：10 张架构图 + 2 张动力学曲线；与当前实现对齐）。README 内嵌的就是这套。架构图有 `.mmd`（Mermaid 源，**当前 PNG 由它经飞书画板渲染**）+ `.png`（渲染图）；旧四图另有 `.json`（whiteboard-cli DSL 富样式备选，**已不再维护、不保证与 `.mmd` 一致——一律以 `.mmd` 为准**；已知 `framework-current.json` 未收录实验特性旁挂等较新标注）。
 - **`v1/`** — 上一版存档（2026-06-25）：仅 `framework-current` / `runtime-flow` 两张的 `.json` + `.png`（whiteboard-cli DSL 渲染）。保留供对照，不再内嵌、不再维护。
 
 ## v2 文件
@@ -16,6 +16,7 @@
 | `mcp-boundary` | `.mmd` / `.png` | **MCP 接点边界图**：内核内建 MCP server（open/step/close 三工具）← MCP 协议 → 配套项目的感知输入 client + 执行操控 client；标出哪些在本仓、哪些在对面 |
 | `workspace-ignition` | `.mmd` / `.png` | **工作空间点燃图**：并行流 (μ,π)（OCC 评价 / TD 价值 / 快生存 / 心境 / 文本语义 + 经 MCP 注入的外部多模态先验）→ 显著网络打分 → 过阈点燃广播 → 精度加权融合 → 后验读出 e*；另标出可选的「数值通路 ⊥ 报告通路」分离（`ZERO_IGNITION_GATE_FUSION`）与生理流排除（`ZERO_EXCLUDE_PHYSIO_FUSION`） |
 | `coping-third-dimension` | `.mmd` / `.png` | **第三维分岔图**：同一个负效价高唤醒坐标 (v&lt;0,a&gt;0)，由情境控制感 `control_appraisal` 驱动的独立标量流分成愤怒(有掌控)/恐惧(失控)，再下传到判别性表情 AU（愤怒 AU23 / 恐惧 AU01·02·20）；默认关、核心 (v,a) 不受影响。总览图 `framework-current` 只标该能力存在，机制细节看这张 |
+| `speech-pipeline` | `.mmd` / `.png` | **语音与口型同步链路图**：对话轮完成 → 语音出口（剥舞台说明→本地 Bert-VITS2 整句合成）→ 口型合成（能量包络→嘴部关键帧，对比度拉伸·开度限速·低能量忽略）→ `speech_play` 交渲染端同一时钟播放+注入；皮套出口并行走 `params_animate`/`behavior_trigger`，两出口共享同一条 MCP 连接；融合规则「嘴归语音（MouthOpen）·其余归情绪」标在边上 |
 | `consolidation-forgetting` | `tools/plot_consolidation.py` / `.png` | **分层幂律遗忘曲线**：SESSION d=0.8 快衰 vs USER d=0.3 慢衰，叠高显著度的振幅调制。直接调 `src/memory/consolidation.py` 真实现生成，改参数重跑脚本即同步；该机制默认关（图/脚本已同步收窄为单一衰减曲线：原 SESSION→USER 升迁分支已随该机制移除） |
 | `timescales-dynamics` | `tools/plot_timescales.py` / `.png` | **三时间尺度冲击-响应曲线**：单次冲击 vs 反复刺激双面板，`affect_math` 真方程轨迹（matplotlib 生成，改动力学参数后重跑脚本即同步） |
 

@@ -1,0 +1,19 @@
+flowchart LR
+    A["对话轮完成
+回复文本 + 当前情绪"] --> B["语音出口 TtsSpeechSink
+剥离舞台说明 → 本地 Bert-VITS2 整句合成"]
+    A --> D["皮套出口 VtsSink
+连续动作轨迹 + 离散行为"]
+    B --> C["口型合成 lipsync
+能量包络 → 嘴部关键帧
+对比度拉伸 · 开度限速 · 低能量忽略"]
+    C --> E["speech_play
+wav + 口型轨迹"]
+    D --> F["params_animate
+behavior_trigger"]
+    E -->|"嘴归语音 MouthOpen"| G["渲染端（配套 MCP 项目）
+同一时钟：音频播放 ∥ 口型注入"]
+    F -->|"其余归情绪：头部 / 表情"| G
+    G --> H["VTube Studio
+Live2D 皮套"]
+    E -.-|"共享同一条 MCP 连接"| F

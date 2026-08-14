@@ -103,6 +103,8 @@ MIT 许可）：三轴幅度比、转头带侧倾的耦合、低频漂移频率�
 观感沉稳自然；每句合成同时产出**韵律帧序列**（时间戳 + 能量），为"说话时头动与语音
 锁相"预留了数据源。语音链路全程可静默降级：TTS 或渲染端不可用时对话照常进行。
 
+<img src="docs/v2/speech-pipeline.png" alt="语音与口型同步链路：语音出口经本地 TTS 合成与口型合成后交渲染端同一时钟播放注入，皮套出口并行驱动动作，嘴归语音、其余归情绪" width="760">
+
 ### 8. 记忆 / 持久：短时注意力 ⊗ 长时记忆
 
 多层记忆让数字人**跨重启记得你**，并在"当下注意得过来"与"长期记得住"之间架一座桥：
@@ -212,18 +214,24 @@ Zero/
 │   │   ├── conversation_log.py  #   --chat 对话运行态：transcript + 跨重启 attitude 落本地 SQLite
 │   │   └── backends/        #   deterministic（InMemory/Sqlite/Neo4j）+ semantic（Graphiti/SqliteVector）
 │   ├── observability/       # 横切：统一日志 setup_logging + 对话人读日志 setup_conversation_log（每启动落 logs/、级别可配）
+│   ├── expression_out/      # 表现层出口（边界适配层·三层之外）：同一份情绪的多形式表现，默认全关、失败静默降级
+│   │   ├── base.py · factory.py   #   ExpressionFrame + ExpressionSink 协议（纯定义）· 按 env 装配出口
+│   │   ├── transport.py     #   渲染端 MCP 共享连接（皮套与语音共用一条通道）
+│   │   ├── vts.py           #   皮套出口：连续动作轨迹 + 离散行为投递
+│   │   ├── speech.py        #   语音出口：本地 Bert-VITS2 合成 → 渲染端播放 + 口型同步（韵律帧接口预留）
+│   │   └── lipsync.py       #   口型合成：音频能量包络 → 嘴部关键帧（嘴归语音、其余归情绪）
 │   └── mcp_server/          # zero-link：情感引擎会话包成 MCP 五工具（主回路 open/step/close + 只读回读 describe_config + 清持久运行态 purge_session；边界适配层·三层之外，stdio/streamable-http + Bearer 鉴权）
 ├── tests/                   # 单测 + 行为/记忆回归
 ├── scripts/                 # 训练 train_*.py + 运行入口（cli_modes 承接 main.py 三模式 / run_pipeline 端到端）+ 验证 verify_*.py（含 verify_text_input 文本输入）+ 数据构建 build_*.py + 泛化/门控评测（*_direction_ood.py · gate_*.py 等，研究用）
 ├── tools/                   # 运维/文档工具（reset_db.py 清库 · plot_timescales.py / plot_consolidation.py 生成曲线图）
-├── docs/                    # 对外架构图 11 张（框架 / 运作流程 / 记忆架构 / 人格注入 / 三层架构 / 工作空间点燃 / 数据落点 / MCP 边界 / 第三维分岔 + 三时间尺度·巩固遗忘两条曲线，v1·v2 谱系，详见 docs/README.md）
+├── docs/                    # 对外架构图 12 张（框架 / 运作流程 / 记忆架构 / 人格注入 / 三层架构 / 工作空间点燃 / 数据落点 / MCP 边界 / 第三维分岔 / 语音口型链路 + 三时间尺度·巩固遗忘两条曲线，v1·v2 谱系，详见 docs/README.md）
 ├── notes/                   # 研究笔记 / 设计决策 / 工程实践（本地维护、不入库）
 ├── DATASETS.md              # 真网络化数据集获取指南（RAVDESS / WESAD / EmoBank / FACS）
 ├── WEIGHTS.md               # 现成权重清单：sha256 校验值 / 网络结构 / 训练配方与实测指标
 ├── .env.example                                     # 配置模板（cp 为 .env 启用）
 ├── personas/                                        # --chat 人格卡目录：*.example.json 模板随仓库共享 / 个人 *.json 走 gitignore；放多份 persona 改 ZERO_PERSONA_FILE 即切换
 ├── Dockerfile · docker-compose.yml                  # 容器化部署
-└── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti / mcp / data 按需）
+└── pyproject.toml · environment.yml                 # 依赖与环境（core + ml/llm/nlp/steer/db 默认装；graphiti / mcp / data / tts 按需）
 ```
 
 ---
