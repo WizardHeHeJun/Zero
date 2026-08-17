@@ -625,4 +625,3 @@ python -m scripts.run_pipeline                                    # 端到端：
 - **[tools/motion/](tools/motion/README.md)** — 动作层的标定与验收工具：
   [使用教程](tools/motion/TUTORIAL.md)（按「我想做什么」组织）·
   [自采协议](tools/motion/CAPTURE.md)（采什么 / 多少 / 怎么验）
-- **`notes/`** — 研究笔记：情感数学、文本输出情绪、并行脑路与工作空间、数字人路线图（本地维护、不随仓库分发）
