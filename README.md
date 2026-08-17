@@ -305,7 +305,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 ### 读取时机与常见陷阱
 
-`.env.example` 当前按**全能力验证态**赋值（真通道权重 + 情感第三维 + 人格卡 + 记忆巩固均已开启，权重文件须在 `artifacts/` 下）。整份粘贴后须改 `ZERO_OPENAI_API_KEY` 与 `ZERO_OPENAI_MODEL` 两行；要回到零依赖占位态，把「真通道解码器注入」「情感第三维」「文本情感回归」三节整节注释掉即可。
+`.env.example` 当前按**全能力验证态**赋值（真通道权重 + 情感第三维 + 人格卡 + 记忆巩固 + 语音出口均已开启，权重文件须在 `artifacts/` 下；语音出口在本地没起 Bert-VITS2 服务时静默降级、不影响对话）。整份粘贴后须改 `ZERO_OPENAI_API_KEY` 与 `ZERO_OPENAI_MODEL` 两行；要回到零依赖占位态，把「真通道解码器注入」「情感第三维」「文本情感回归」三节整节注释掉即可。
 
 **哪些入口会读 `.env`**——库代码从不读，只有入口脚本加载，因此并非每条命令都吃这份配置：
 
@@ -460,6 +460,31 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 > **工程近似声明**：巩固触发是生物睡眠周期的工程近似（真实的系统级巩固跨天至周，Davis & Zhong 2017），分层幂律是快 / 慢双阶段的工程代理，并非完整的多时间尺度巩固模型。
 
+### 表现层出口与动作层（皮套 / 语音·口型 / `zero.motion`，默认全关）
+
+同一份情绪的对外表现形式（能力 6 / 7 的开关面）：皮套与语音两个出口共享同一条渲染端 MCP 连接，**全未开即不表现、逐字零回归**。协议分界是「表现 vs 行动」——表现类出口**运行期失败一律静默降级**（TTS 或渲染端不可用时对话照常进行），但**配置缺失是另一回事**：开了门却缺必填项会在启动时直接报错，不静默。
+
+**动作层**（头部 / 眼球连续轨迹，见能力 6）：
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_MOTION_ENABLED` | 关 | MCP 工具 `zero.motion` 总开关：渲染端按自己的帧率独立拉取轨迹（只读引擎状态、不推进内核）；未开时该工具返回 motion-disabled 错误 |
+| `ZERO_MOTION_BACKEND` | `synth` | 轨迹产地：`synth` 拉取侧现算（默认）/ `directive` 图内 MotionAgent 决策 / `efference` 在 directive 基础上再留一份指令副本（供行为反馈流消费） |
+| `ZERO_BEHAVIOR_FEEDBACK` | 关 | 行为反馈流总门（efference copy 回流进工作空间竞争，研究级）：须配 `ZERO_MOTION_BACKEND=efference` 才有数据源，且默认硬门下该低精度流恒被滤除——要真参与计算还须 `ZERO_IGNITION_GATE_FUSION=false` 或设软门 `ZERO_IGNITION_BETA` |
+
+**表现层出口**（对话情绪 → 外部表现，见能力 7）：
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `ZERO_VTS_SINK` | 关 | 皮套出口：对话时 Live2D 形象随情绪动（连续动作轨迹 + 离散行为投递给渲染端） |
+| `ZERO_VTS_MCP_REPO` | `../Zero_MCP`（本仓兄弟目录） | 渲染端（配套项目）仓路径 |
+| `ZERO_VTS_TOKEN_FILE` | `data/steering/motion/vts_token` | 皮套授权 token 落盘位置 |
+| `ZERO_TTS_SINK` | 关（`.env.example` 已按荐值开启） | 语音出口：回复经本地 Bert-VITS2 合成 → 渲染端播放 + 口型同步（需 `tts` extra；本地无 TTS 服务时静默降级、不影响对话） |
+| `ZERO_TTS_SERVER_URL` | —（门开必填，无代码默认） | 本地 Bert-VITS2 服务地址（如 `http://127.0.0.1:5000/voice`）；开了 `ZERO_TTS_SINK` 却缺这项**启动即报错** |
+| `ZERO_TTS_SPEAKER` | —（门开必填） | 说话人名（取决于所装底模）；同上，缺失启动即报错 |
+| `ZERO_TTS_LANGUAGE` · `_MODEL_ID` | `ZH` · `0` | 合成语言（ZH/JP/EN）/ TTS 服务端加载的模型序号（hiyoriUI 多模型时选用）——二者是协议枚举 / 序号，故例外地带代码默认 |
+| `ZERO_REGULATION_ENABLED` | 关 | 双通路调节（自发 vs 随意）总开关；开后表现层可走随意通路（社交掩饰 / 压制） |
+
 ### 指定人格（`--chat`）
 
 给数字人指定一份人格（能力详见上文「指定人格」一节）：`ZERO_PERSONA_FILE` 指向一个**人格 JSON**（默认不设 = 中性无偏人格、即现有行为）。仓库自带一份「诚实陌生人」模板 `personas/persona.example.json`（与真正的 `personas/persona.json` 同处一目录），`cp personas/persona.example.json personas/persona.json` 改改即用（想要多重人格就在 `personas/` 放多份、切换时改 `ZERO_PERSONA_FILE` 指向即可）。字段全可选（L1 人设卡 + L2 气质底色 + L3 预置关系）——**只想要人设卡就只写 `card` 一个字段**，不必写全、也不用往 `.env` 塞长文本：
@@ -586,7 +611,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 
 ## 文档
 
-- **[docs/](docs/README.md)** — 架构图集（11 张）：框架总览 / 运作流程 / 记忆架构 / 人格注入 / MCP 边界 / 三层依赖 / 工作空间点燃 / 数据落点 / 第三维分岔 / 三时间尺度曲线 / 巩固遗忘曲线
+- **[docs/](docs/README.md)** — 架构图集（12 张）：框架总览 / 运作流程 / 记忆架构 / 人格注入 / MCP 边界 / 三层依赖 / 工作空间点燃 / 数据落点 / 第三维分岔 / 语音口型链路 / 三时间尺度曲线 / 巩固遗忘曲线
 - **[DATASETS.md](DATASETS.md)** — 真网络化所需数据集清单（获取方式 / 许可）
 - **[WEIGHTS.md](WEIGHTS.md)** — 现成权重清单：sha256 校验值 / 网络结构 / 训练配方与实测指标
 - **[tools/motion/](tools/motion/README.md)** — 动作层的标定与验收工具：

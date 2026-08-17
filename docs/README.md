@@ -13,7 +13,7 @@
 | `persona-injection` | `.mmd` / `.json` / `.png` | **人格注入图**：Persona 三层（L1 人设卡→语言 / L2 气质底色·大五→PAD·va_coupling→引擎 / L3 预置关系→记忆），默认中性、行为不变 |
 | `chat-persistence-map` | `.mmd` / `.png` | **--chat 数据落点地图**：一轮对话的数据各落哪个存储（对话运行态 / Checkpointer / 确定性图谱 / 语义侧信道 / 日志）、归哪个 env 变量管、chat 默认值 |
 | `layered-architecture` | `.mmd` / `.png` | **三层架构图**：编排 → 记忆 → 存储只能向下依赖，observability 横切 |
-| `mcp-boundary` | `.mmd` / `.png` | **MCP 接点边界图**：内核内建 MCP server（open/step/close 三工具）← MCP 协议 → 配套项目的感知输入 client + 执行操控 client；标出哪些在本仓、哪些在对面 |
+| `mcp-boundary` | `.mmd` / `.png` | **MCP 接点边界图**：内核内建 MCP server（图示会话主回路 open/step/close 三工具；另有只读回读 describe_config 与清运行态 purge_session 两工具未入图）← MCP 协议 → 配套项目的感知输入 client + 执行操控 client；标出哪些在本仓、哪些在对面 |
 | `workspace-ignition` | `.mmd` / `.png` | **工作空间点燃图**：并行流 (μ,π)（OCC 评价 / TD 价值 / 快生存 / 心境 / 文本语义 + 经 MCP 注入的外部多模态先验）→ 显著网络打分 → 过阈点燃广播 → 精度加权融合 → 后验读出 e*；另标出可选的「数值通路 ⊥ 报告通路」分离（`ZERO_IGNITION_GATE_FUSION`）与生理流排除（`ZERO_EXCLUDE_PHYSIO_FUSION`） |
 | `coping-third-dimension` | `.mmd` / `.png` | **第三维分岔图**：同一个负效价高唤醒坐标 (v&lt;0,a&gt;0)，由情境控制感 `control_appraisal` 驱动的独立标量流分成愤怒(有掌控)/恐惧(失控)，再下传到判别性表情 AU（愤怒 AU23 / 恐惧 AU01·02·20）；默认关、核心 (v,a) 不受影响。总览图 `framework-current` 只标该能力存在，机制细节看这张 |
 | `speech-pipeline` | `.mmd` / `.png` | **语音与口型同步链路图**：对话轮完成 → 语音出口（剥舞台说明→本地 Bert-VITS2 整句合成）→ 口型合成（能量包络→嘴部关键帧，对比度拉伸·开度限速·低能量忽略）→ `speech_play` 交渲染端同一时钟播放+注入；皮套出口并行走 `params_animate`/`behavior_trigger`，两出口共享同一条 MCP 连接；融合规则「嘴归语音（MouthOpen）·其余归情绪」标在边上 |
