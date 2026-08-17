@@ -342,6 +342,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 | --- | --- | --- |
 | `ZERO_CHECKPOINT_BACKEND` | `memory` | 运行态后端：`memory` / `sqlite`；`postgres` **尚未接线，设了会在会话构造时直接报错**（不是静默回退到内存），部署 PG 需先在异步入口接上 `AsyncPostgresSaver` |
 | `ZERO_CHECKPOINT_DB` | `data/checkpoints.sqlite3` | sqlite 后端的库文件路径 |
+| `ZERO_PG_DSN` | — | postgres 连接 DSN，为上述接线**预留**；当前代码不读取它，单设本项不会让 postgres 生效 |
 | `ZERO_MEMORY_BACKEND` | `memory` | 长期记忆图谱（确定性 `(scope,key)` 失效）：`memory` / `sqlite`（落盘）/ `neo4j`（需 `db` extra） |
 | `ZERO_GRAPH_DB` | `data/graph.sqlite3` | sqlite 图谱的库文件路径 |
 | `ZERO_NEO4J_URI` · `_USER` · `_PASSWORD` | `bolt://localhost:7687` · `neo4j` · `password` | neo4j 连接（`ZERO_MEMORY_BACKEND=neo4j` 或 Graphiti 用 neo4j 图库时生效） |
@@ -425,6 +426,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_MCP_COPING_ENABLED` · `_TEXT_COPING_ENABLED` · `_FEAR_DOMAIN_ENABLED` | 关 | MCP 边界侧的第三维 / 文本 coping / 恐惧域开关 |
 | `ZERO_MCP_PRECISION_COMMENSURABLE` · `_IGNITION_GATE_FUSION` · `_EXCLUDE_PHYSIO_FUSION` | `false` · `true` · `true` | MCP 边界侧的精度齐次化 / 点燃门是否参与数值计算 / 生理流是否排除出数值计算；语义同下文「微调旋钮·全表」⑤组的同名无前缀变量。⚠ 后两项默认就是 `true`，方向与本表其它开关相反——`true` = 沿用旧算法 |
 | `ZERO_MCP_IGNITION_BETA` | —（未设 = 硬门） | 点燃软门的陡度 β。未设 = 硬阈值门（只有显著度过阈的流进数值计算）；设成任意浮点数（含 `0`）即切软门，全部并行流按 logistic 权重加权进入。与上两行同属只受 `ZERO_MCP_*` 治理的一组，client 在 `open_session` 的 config 里传同名字段被静默忽略 |
+| `ZERO_MCP_MOTION_BACKEND` | `synth` | MCP 边界侧的动作轨迹产地（`synth` / `directive` / `efference`，语义同「表现层出口与动作层」表的 `ZERO_MOTION_BACKEND`）。未设或写错**回落 `synth` 并告警**、不扳倒会话开启——回落方向即最保守的零回归档。仅本变量治理，client 在 config 里传 `motion_backend` 被静默忽略 |
+| `ZERO_MCP_BEHAVIOR_FEEDBACK` | 关 | MCP 边界侧的行为反馈流总门（efference 指令副本作为一条流回流进后验计算，语义同 `ZERO_BEHAVIOR_FEEDBACK`）；须配 `ZERO_MCP_MOTION_BACKEND=efference` 才有数据源。它直接改数值后验，故仅本变量治理，client 传 `behavior_feedback_enabled` 被静默忽略 |
 | `ZERO_MCP_STEP_LOCK_TIMEOUT` | —（未设 = 无限等待） | `step` 等待**同会话串行锁**的超时秒数。⚠ 只对「等锁」计时，**不对「执行」计时**——超时的是排在后面的那次请求，正在跑的那一轮不受影响；因此超时的那一轮**根本没进内核、运行态未改动**，client 退避后**可原样重试**同一请求。取值须是**正的有限数**：`0`／负数／`nan` 会让锁空闲时也无条件超时（每次 `step` 必失败），`inf` 与不设等价，故这三类在读取时即被拒绝并在错误里点名该变量；要「不设超时」请**留空**，不要填 `0` |
 | `ZERO_EXTERNAL_PRIOR_PRECISION_CAP` · `ZERO_MAX_EXTERNAL_STREAMS` | 0.8 · 5 | 外部多模态先验流的单条精度上界与最大流数。<br>⚠ 这些精度是**独立校准完成前的保守占位**，不是「同等地位却意外弱势」——它们**有意**低于 `ZERO_TEXT_AFFECT_PRECISION=0.3` 以保持层级；且**不随 `ZERO_PRECISION_COMMENSURABLE` 齐次化**（该开关只作用于引擎内部的四条流）。即开启齐次化后外部流相对更弱，这是已知且被接受的现状。<br>⚠ 另注：`valence` 越出 `[-1,1]` 会在边界被拒（返回错误而非静默截断），`arousal` 越界则仍按幅度截断到 1.0——这个不对称是有意的：前者是恒等透传、越界即契约违反，后者是「幅度→强度」的语义映射、截断是映射的一部分。 |
 
@@ -432,7 +435,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 >
 > **重开时先看 `interrupt_probe`**：`open_session` 的返回体是 `{session_id, resumed, interrupt_probe}`，其中 `interrupt_probe` **恒存在**，取值是显式四态——`not_probed`（新建会话，或该会话仍活跃、按原样幂等返回，没做探测）/ `clean`（探测成功且上一轮跑完整轮）/ `interrupted`（探测成功且发现上一轮停在中途，此时**另带** `interrupted_at`＝待执行节点名列表，续跑会从该处继续而非重跑整轮）/ `probe_failed`（探测本身失败＝**不可判**，须按最坏情况处理）。⚠ 判「能不能安全续跑」请读 `interrupt_probe` 的取值，**不要**靠 `interrupted_at` 这个键在不在——后者缺席同时对应「干净」「没探测」「探测失败」三种完全不同的情形。
 >
-> 上表中 `ZERO_MCP_COPING_ENABLED` 起的几行属于一份**治理白名单**：白名单内的字段只由服务端 env 治理，client 在 `open_session` 的 config 里传入的同名字段一律被静默忽略，防越权开启。白名单当前共 **8 项**——`coping_potential_enabled` / `text_coping_enabled` / `fear_domain_enabled` / `precision_commensurable` / `gate_fusion` / `exclude_physio_fusion` / `ignition_beta` / `canonical_physiology`。其中前 7 项由上表带 `ZERO_MCP_` 前缀的对应变量治理（变量名与字段名并非处处逐字相同，如 `gate_fusion` 对应的是 `ZERO_MCP_IGNITION_GATE_FUSION`）；第 8 项 `canonical_physiology` 例外，它读的是**不带该前缀**的 `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER`（与生理占位口径同源，见②组）。这份名单不必照抄——`describe_config` 的返回体里就带着 `governance_gated_flags` 全表，client 运行期直接读即可。
+> 上表中 `ZERO_MCP_COPING_ENABLED` 起的几行属于一份**治理白名单**：白名单内的字段只由服务端 env 治理，client 在 `open_session` 的 config 里传入的同名字段一律被静默忽略，防越权开启。白名单当前共 **10 项**——`coping_potential_enabled` / `text_coping_enabled` / `fear_domain_enabled` / `precision_commensurable` / `gate_fusion` / `exclude_physio_fusion` / `ignition_beta` / `canonical_physiology` / `behavior_feedback_enabled` / `motion_backend`。其中 9 项由上表带 `ZERO_MCP_` 前缀的对应变量治理（变量名与字段名并非处处逐字相同，如 `gate_fusion` 对应的是 `ZERO_MCP_IGNITION_GATE_FUSION`）；`canonical_physiology` 例外，它读的是**不带该前缀**的 `ZERO_PHYSIOLOGY_CANONICAL_PLACEHOLDER`（与生理占位口径同源，见②组）。这份名单不必照抄——`describe_config` 的返回体里就带着 `governance_gated_flags` 全表，client 运行期直接读即可。
 >
 > ⑤组的 `ZERO_PRECISION_COMMENSURABLE` / `ZERO_IGNITION_GATE_FUSION` / `ZERO_EXCLUDE_PHYSIO_FUSION`（无 `ZERO_MCP_` 前缀那三个）**对 MCP server 不生效**——MCP 面读的是上表带前缀的同名变量；要改服务端的融合语义，请设带前缀的那一份。
 >
@@ -457,6 +460,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_CONSOLIDATION_D_SESSION` | 0.8 | 短期 SESSION 作用域的衰减指数。⚠ **当前对话管线只产 USER 作用域情景**（两处 `write_episode` 均为 `Scope.USER`），故本项当前不生效 |
 | `ZERO_CONSOLIDATION_TIMEOUT` | 30.0 | 会话结束巩固的超时秒（超时降级告警、不影响对话） |
 | `ZERO_ACTR_ENABLED` · `ZERO_ACTR_B_SCALE` | 关 · 3.0 | 用 ACT-R 频率激活替换召回排序的新近项（关=用幂律时序衰减）；`_B_SCALE` 越小、频率的影响越强 |
+| `ZERO_RECALL_SALIENCE_DECAY` · `_KAPPA` | 关 · 1.0 | 让显著度调制召回 recency 维的衰减速率（高显著的旧事更耐遗忘）：开启后 recency 改用 `I^κ·Δt^(−d)`，满重要性时有效衰减指数缩到 `d/(1+κ)`——κ=1 即遗忘速率减半，κ=0 精确退化为原幂律。与 ACT-R 互斥：两门同开时被 ACT-R 覆盖，构造期告警 |
+| `ZERO_TAG_IMPORTANCE` | 关 | 召回排序的 importance 维改吃**语义标签**派生信号（时间 / 约定 / 承诺等 tag 进 noisy-OR，不再读情绪精度 `precision=`）；遗忘调制与召回两侧读**同一个** env，保证同开同关、不存在半切换态 |
 
 > **工程近似声明**：巩固触发是生物睡眠周期的工程近似（真实的系统级巩固跨天至周，Davis & Zhong 2017），分层幂律是快 / 慢双阶段的工程代理，并非完整的多时间尺度巩固模型。
 
@@ -530,6 +535,8 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_EMOTION_NOISE_STD` | 0.05 | 每轮情绪的随机噪声幅度（调小=更稳、`0`=关该噪声源） |
 | `ZERO_SAMPLE_SIGMA_MAX` | 0.5 | 后验采样的逐维抖动上限（仅 `sample` 读出下生效） |
 | `ZERO_CHAT_RNG_SEED` | — | 固定随机种子，贯穿引擎采样 + 情绪噪声，便于 eval 复现（留空=每次随机） |
+| `ZERO_CHAT_THREAD` | `chat` | 对话线程 id：运行态 checkpoint 的 thread 与记忆的 user 作用域都用它对齐；换一个值＝另起一套关系、态度与记忆，不与旧线程串味 |
+| `ZERO_PUSH_LOGIT_BIAS` | 关 | 解码期 push：情绪一致的候选词经 tiktoken（`cl100k_base`）转成 OpenAI `logit_bias` 直接偏置解码。⚠ 须与所用模型的 tokenizer 匹配，否则偏到错误 token；缺 tiktoken 或编码失败时静默回退纯 prompt 用词倾向（即默认行为） |
 | `ZERO_EMOTION_BASELINE_ATTITUDE_W` | 0.6 | 情绪回落基线里「对此人态度」占比；`<1` 给回中性的拉力、防越聊越上头（`1`=不加回中性拉力） |
 | `ZERO_TEMPER_VALENCE_GATE` | —（无条件注入） | 让**语气强度真正由引擎的 `e*` 驱动**。对话 system prompt 里有一段「负面时别退化成讨好型客服、该不耐烦就不耐烦」的脾气指令，它原本**无条件注入**——于是中性话题没有情绪素材时，模型改用「性格」填补空白，变成对着「外面还在下雨吗」也要反问回怼。100 轮实测显示语气强度与情绪**反相关**：情绪「平静」的 49 轮里 49% 带命令/反问/贬抑语气，而情绪明确为负的 30 轮里只有 17%。设为阈值（荐 `-0.15`）后，该段仅在 `e*` 的 valence ≤ 阈值时注入，中性对话回归中性，而「负面时别讨好」仍然保留。留空=无条件注入=旧行为逐字不变 |
 | `ZERO_FACTUAL_MODE` | 关 | **事实化模式：是 AI 就是 AI，偏向事实陈述**。默认 prompt 要求模型「像真人」，模型便用人类图式补全自己没有的属性——100 轮实测里它报出具体日期「20号，周二」、编出姓名职业、描述「走到窗边撩开帘子」的身体动作，还把虚构行为当往事引用。`1` 开启后：摘掉「你是人/像真人」的身份断言，诚实条款从「记不清的别编」扩展到「无从知道的（日期/天气/自己的身世）直说没有这个信息」，且**只删身份、不删情绪**——引擎驱动的心情、脾气指令逐字保留，另加「不要说自己没有感情」的反塌陷条款。开启时另有两道**确定性机制**护航（代码强制、非提示词）：输出端自动剥离「（笑）」类括号舞台说明且净化后才进对话历史（切断模型模仿自己旧回合的滚雪球）；历史被窗口裁剪时注入一条「更早 N 条在你窗口之外」的系统事实（防「你没说过」式误断言）。代价：system prompt 约 0.5k→2.1k 字符（`--chat` 每轮多 ~1.6k 字符输入）。留空=关=旧行为逐字不变 |
@@ -566,6 +573,7 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_EPISODE_SALIENCE_AFFECTIVE_ADD` | 0 | 低唤醒高语义补偿 `salience+=0.3·\|value\|`（`1` 开启） |
 | `ZERO_EPISODE_DEDUP_MAX` | 0.92 | 情景写入去重余弦阈（高于此视为近义跳过） |
 | `ZERO_IDENTITY_FACT_BYPASS` | 开 | 身份自陈（姓名 / 职业）绕过上面的显著度门直接写入。中性自我介绍不产生奖励预测误差，`salience = precision × \|rpe\|` 恒为 0，会被主门结构性丢弃——实测 100 轮对话里姓名与职业 100% 丢失，下游随即以虚构细节填补。判据是纯确定性的四段正则（自指主语 → 身份谓词 → 闭合职业/姓名宾语 → 疑问排除），不经任何模型判断；宁漏勿误，任一段不确定即交回主门。设 `0` 关闭即逐字回到旧行为 |
+| `ZERO_WRITE_GATE_INFORMATIVE` | 关 | 情景写入门的第四条 OR 通道：LLM 标注本轮「含独立事实性命题」时也写入情景（informative 标注当前**只影响写入**，不参与召回排序） |
 
 **④ 实验性 v1：社会认知 / 生理节律 / 层级融合**（三项研究级方向，**默认全关、行为不变**；确定性热路径纯标量无 LLM/torch）
 
