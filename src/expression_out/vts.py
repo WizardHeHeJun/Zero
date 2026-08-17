@@ -132,7 +132,10 @@ class VtsSink:
         if self.transport.session is None or not frame.reply:
             return
         try:
-            for intent in self._intents(frame.reply):
+            intents = self._intents(frame.reply)
+            if intents:
+                logger.debug("离散行为投递：%s", [intent.name for intent in intents])
+            for intent in intents:
                 args: dict[str, Any] = {"name": intent.name, "intensity": intent.intensity}
                 if intent.direction:
                     args["direction"] = intent.direction
@@ -195,6 +198,14 @@ class VtsSink:
         await self.transport.call_tool(
             "params_animate",
             {"keyframes": heads["voluntary"], "mode": "absolute", "append": True},
+        )
+        logger.debug(
+            "轨迹段已投递：%.0f ms × %d 帧，emotion=(%.2f, %.2f)%s",
+            self.segment_ms,
+            len(heads["voluntary"]),
+            self.emotion[0],
+            self.emotion[1],
+            "（含调节通路）" if self.regulated is not None else "",
         )
 
 

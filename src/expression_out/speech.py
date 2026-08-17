@@ -38,6 +38,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,9 @@ class TtsSpeechSink:
         if self.worker_task is None or not frame.reply:
             return
         self.queue.put_nowait(frame.reply)
+        backlog = self.queue.qsize()
+        if backlog > 1:
+            logger.debug("语音队列积压 %d 句（串行合成播放，按序消化）", backlog)
 
     async def aclose(self) -> None:
         """停 worker、清最后一句 wav、断连接（幂等）。
@@ -162,9 +166,19 @@ class TtsSpeechSink:
         # 故这里独立判「整句均为括号段」跳过。代价是「（好的）」这类全括号短语也不出声
         # ——对语音这是可接受方向（读括号本身更怪）。
         if not text or _PURE_BRACKET_RE.fullmatch(text):
+            logger.debug("语音：本轮无可朗读正文（空/全括注），跳过合成")
             return
+        started = time.monotonic()
         wav_bytes = await self._synthesize(text)
+        synth_s = time.monotonic() - started
         envelope = energy_envelope(wav_bytes, self.fps)
+        logger.debug(
+            "TTS 合成完成：%d 字 → %.1fs 音频，耗时 %.2fs（wav %.0f KB）",
+            len(text),
+            len(envelope) / self.fps,
+            synth_s,
+            len(wav_bytes) / 1024,
+        )
         frame_ms = 1000.0 / self.fps
         self.last_prosody = [
             ProsodyFrame(t_ms=int(round(i * frame_ms)), energy=value)
@@ -185,6 +199,11 @@ class TtsSpeechSink:
             # 回包缺/异常 duration 时用本地已知音频时长兜底——完全不节流会让下一句的
             # `_write_wav` 在播放未结束前删掉在播文件（code-reviewer W5）。
             duration_ms = len(envelope) * 1000.0 / self.fps
+        logger.debug(
+            "speech_play 已受理：时长 %.0f ms · 口型帧 %d（播完再取下一句）",
+            duration_ms,
+            len(track),
+        )
         if duration_ms > 0:
             # 串行节流（跨仓规范§二并发语义）：播完再取下一条 ⇒ 对方正常收不到重叠调用。
             await asyncio.sleep(duration_ms / 1000.0)

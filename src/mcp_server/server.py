@@ -1036,6 +1036,14 @@ def build_server(registry: SessionRegistry | None = None) -> FastMCP:
                 for i in intents
             ]
 
+        logger.debug(
+            "zero.motion sid=%s span=%d ms 帧=%d events=%d 调制来源=%s",
+            session_id,
+            span,
+            len(heads["voluntary"]),
+            len(events),
+            "directive" if directive is not None else "synth",
+        )
         return {
             "keyframes": heads["voluntary"],  # 调节开启时观察者看到的是随意头
             "spontaneous": heads["spontaneous"],  # 对照：不压制会是什么样
