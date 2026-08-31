@@ -103,6 +103,12 @@ MIT 许可）：三轴幅度比、转头带侧倾的耦合、低频漂移频率�
 观感沉稳自然；每句合成同时产出**韵律帧序列**（时间戳 + 能量），为"说话时头动与语音
 锁相"预留了数据源。语音链路全程可静默降级：TTS 或渲染端不可用时对话照常进行。
 
+长回复可开**按句切分流水**（`ZERO_TTS_SENTENCE_SPLIT`）：逐句合成、边播边合下一句，
+首包延迟从整段合成时长降到首句合成时长。输入侧对称地支持**语音说话**
+（`ZERO_ASR_INPUT`，push-to-talk）：对话中空回车开始说话、再回车结束，本地
+faster-whisper 转写（峰值归一化 + 静音门 + 简体引导），文本走与打字完全相同的路径，
+麦克风或转写故障只提示一句、不打断对话。
+
 <img src="docs/v2/speech-pipeline.png" alt="语音与口型同步链路：语音出口经本地 TTS 合成与口型合成后交渲染端同一时钟播放注入，皮套出口并行驱动动作，嘴归语音、其余归情绪" width="760">
 
 ### 8. 记忆 / 持久：短时注意力 ⊗ 长时记忆
@@ -188,6 +194,7 @@ Zero/
 │   │   ├── supervisor.py    #   协调 + 任务完成节流写记忆 + first_contact 首因标记
 │   │   ├── memory_recall.py #   长期倾向回灌先验 + 召回三维重排（新近×相关×重要，Hill 归一）
 │   │   ├── chat_driver.py   #   交互对话核心：两时间尺度情绪 + U形注意力窗 + 高显著召回注入
+│   │   ├── voice_input.py   #   语音输入：push-to-talk 采集 + faster-whisper 本地转写（默认关）
 │   │   ├── runner.py        #   跑刺激序列 + 多轮对话会话（ConversationSession）
 │   │   └── external_prior.py #   外部多模态先验流协议 schema：与 MCP 边界对齐的 (name,(μv,μa),(Πv,Πa)) 契约 + 版本号
 │   ├── agents/              # 各 Worker（节点契约 (state) -> dict 只回增量）
@@ -488,6 +495,11 @@ python -m scripts.run_pipeline                                    # 端到端：
 | `ZERO_TTS_SERVER_URL` | —（门开必填，无代码默认） | 本地 Bert-VITS2 服务地址（如 `http://127.0.0.1:5000/voice`）；开了 `ZERO_TTS_SINK` 却缺这项**启动即报错** |
 | `ZERO_TTS_SPEAKER` | —（门开必填） | 说话人名（取决于所装底模）；同上，缺失启动即报错 |
 | `ZERO_TTS_LANGUAGE` · `_MODEL_ID` | `ZH` · `0` | 合成语言（ZH/JP/EN）/ TTS 服务端加载的模型序号（hiyoriUI 多模型时选用）——二者是协议枚举 / 序号，故例外地带代码默认 |
+| `ZERO_TTS_SENTENCE_SPLIT` | 关 | 按句切分流水合成：逐句合成边播边合，首包延迟降到首句合成时长（关=整句合成，v1 行为） |
+| `ZERO_ASR_INPUT` | 关 | 语音输入（push-to-talk）：对话中空回车开始说话、再回车结束，本地 faster-whisper 转写后当打字输入用（需 `asr` extra） |
+| `ZERO_ASR_MODEL` | —（门开必填） | faster-whisper 模型名 / 路径（如 `small` / `large-v3-turbo`）；开门缺失**启动即报错** |
+| `ZERO_ASR_DEVICE` · `_LANGUAGE` | `auto` · `zh` | 转写推理设备（auto/cuda/cpu；cuda 需系统 cublas，无则用 cpu 稳）/ 转写语言 |
+| `ZERO_ASR_INPUT_DEVICE` | —（自动） | 录音设备索引；默认设备缺失时自动选第一个可用录音设备，此项可显式指定 |
 | `ZERO_REGULATION_ENABLED` | 关 | 双通路调节（自发 vs 随意）总开关；开后表现层可走随意通路（社交掩饰 / 压制） |
 
 ### 指定人格（`--chat`）
