@@ -398,7 +398,9 @@ class AffectState(BaseModel):
     #   表情层 fear-AU（`affect_math._decode_facs_extended` 的 fear-AU 段·
     #   AU01/02/20·coping<0 驱动）由 facs_extended
     #   +coping_potential_enabled 双层容量门独立治理·与本门正交（面部运动 vs 情绪判定层解离·
-    #   Rinn 1984 / Barrett 2019）。悬置 B-facs-fear-unlock：fear 域解锁时须重裁表情层是否加门。
+    #   Rinn 1984 / Barrett 2019）。2026-08-31 复裁维持正交：跨层不一致=「低控制感面部泄漏」
+    #   有意行为（详见 affect_math 的 fear-AU 段注释与 test_fear_crosslayer_leakage 锚点）；
+    #   原「fear 解锁时重裁」触发条件已订正（真实入口=分支3 负 ctrl 注入，今天即可达）。
     fear_domain_enabled: bool = False  # WARN-3 fear 专属门·默认关=零回归·B1 BLOCK 前置
     # ── text_coping_prior：独立标量流入口 ──
     # None=门关=零回归（每轮归零防 LastValue 残留，仿 external_priors）；

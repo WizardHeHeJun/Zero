@@ -50,6 +50,9 @@ class Persona:
     # 经 build_chat_driver → state → AppraisalAgent → occ_prior 贯通。
     va_coupling_pos: float | None = None  # 正效价侧 V-A 耦合；None=用 occ_prior 默认 0.6
     va_coupling_neg: float | None = None  # 负效价侧 V-A 耦合；None=用 occ_prior 默认 0.6
+    # B1（2026-08-31 轻量门）：D 派生的 L1 语言风格——只进提示词文本层，不进任何数值通道。
+    dominance: float | None = None  # big_five 推导的 D（无 big_five=None；供审计/未来 B 系扩展）
+    dominance_style_hint: str = ""  # 三档±0.3 + (a′) 数值抑制后的风格句；空=中性/被抑制/无 big_five
 
 
 def big_five_to_pad(
@@ -91,6 +94,29 @@ def big_five_to_pad(
         0.25 * openness + 0.17 * conscientiousness + 0.60 * extraversion - 0.32 * agreeableness
     )
     return (clamp(pleasure, -1.0, 1.0), clamp(arousability, -1.0, 1.0), clamp(dominance, -1.0, 1.0))
+
+
+def dominance_to_style_hint(dominance: float, extraversion: float, agreeableness: float) -> str:
+    """D → L1 语言风格句（B1 轻量门 2026-08-31 裁定；纪要并入 dominance-channel council 注记）。
+
+    三档（阈值复用预设库议会必改 5 的 |值|≥0.3 一致性口径——跨维一致的工程选择，
+    非 D 专属效应量校准，已如实登记）：D≥0.3 直接自信档 / |D|<0.3 不注入 / D≤−0.3 商量档。
+    措辞依据：Wiggins 环状模型 PA/HI 卦限形容词（Wiggins et al. 1988）+ O'Barr & Atkins 1980
+    的 hedge/商量句式支配-语言标记；避临床/类型学词（议会措辞纪律）。
+
+    **(a′) 双源抑制（纯数值判据，无词表——刻意不落 text-predicate-admission 管辖）**：
+    |E|≥0.3 或 |A|≥0.3 时返回空——此时预设库规则 5 已强制 card 文案含同方向语气词，
+    D（=0.60E−0.32A 主导）再注入等于对同一方差在同一 prompt 里说两遍（语义双计）。
+    ⇒ B1 真实生效面 = O/C 主导的 D（当前 7 卡库实算 0/6 注入，属如实分布非缺陷；
+    负档需负 O/C 组合才可达，结构性罕见已登记）。
+    """
+    if abs(extraversion) >= 0.3 or abs(agreeableness) >= 0.3:
+        return ""
+    if dominance >= 0.3:
+        return "说话直截了当，敢明确表态、主动接过话头，不绕弯子。"
+    if dominance <= -0.3:
+        return "说话留有余地，常带“你觉得呢”“要不我们……”这类商量的口吻，愿意先顺着对方的想法走。"
+    return ""
 
 
 def big_five_to_va_coupling(extraversion: float) -> tuple[float, float]:
@@ -144,13 +170,15 @@ def _persona_from_dict(data: dict[str, object]) -> Persona:
         kwargs["setpoint"] = _coerce_pair(data["setpoint"], "setpoint")
     elif "big_five" in data:
         # L2 气质经大五→PAD 推导 setpoint（显式 setpoint 优先；两者皆无→中性零回归）。
-        # _dom 丢弃是 2026-08-31 议会裁定（notes/2026-08-31-dominance-channel-council.md）：
-        # D 暂不进数值通道——A（coping 基线）三重否决（构念错配：Mehrabian-D≈E/(−A) 人际
-        # 支配轴非可控感 / κ 两 regime 结构不可解 / fear 门跨层违例）；B2（prosody）不立项；
-        # B1（L1 语言风格）留独立轻量门。勿在未过新设计门前给 _dom 找去处。
+        # D 去向（2026-08-31 议会+B1 轻量门·notes/2026-08-31-dominance-channel-council.md）：
+        # **数值通道维持不进**——A（coping 基线）三重否决、B2（prosody）不立项；
+        # **B1 已裁定落地**：D 仅经 dominance_to_style_hint 派生 L1 风格句（提示词文本层，
+        # 门控 ZERO_PERSONA_DOMINANCE_STYLE 默认关），勿再给 D 找任何数值去处。
         o, c, e, a, n = _coerce_big_five(data["big_five"])
-        pleasure, arousability, _dom = big_five_to_pad(o, c, e, a, n)
+        pleasure, arousability, dominance = big_five_to_pad(o, c, e, a, n)
         kwargs["setpoint"] = (pleasure, arousability)
+        kwargs["dominance"] = dominance
+        kwargs["dominance_style_hint"] = dominance_to_style_hint(dominance, e, a)
     if "reactivity" in data:
         kwargs["reactivity"] = float(data["reactivity"])  # type: ignore[arg-type]
     if "recovery" in data:

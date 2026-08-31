@@ -892,7 +892,18 @@ def _decode_facs_extended(
         # 依据：面部运动系统（CN VII 锥体外路自发通路）与情绪判定层临床双向解离（Rinn 1984；
         # Gothard 2014）；防御行为输出≠情绪意识（LeDoux & Brown 2017）；AU 非情绪类别等价、
         # fear-AU 配置一致性在全情绪类别中唯一低于偶然（Barrett et al. 2019）。
-        # ⚠ 悬置 B-facs-fear-unlock：fear 域正式解锁（B-fe-unlock）时须重裁本段是否加 fear 门。
+        # ✅ 复裁（2026-08-31 轻量门·心理+CS 两席）：维持不加门，构念精确化为
+        # 「**低控制感的面部泄漏**（facial leakage）」——fear 面容是先于/独立于归类的
+        # 感知-运动准备动作（Susskind et al. 2008, Nat. Neurosci. 11:843,
+        # https://doi.org/10.1038/nn.2138：扩视野/加速眼动/增嗅吸，功能性而非归类输出）；
+        # 标签层 rage 是证据不足时的保守归类。跨层不一致=「评价已出方向信号、归类证据
+        # 不足以贴标签」的忠实复现，**已由跨层联合锚点钉死**（test_fear_crosslayer_leakage）。
+        # ⚠ 原悬置触发条件「fear 域正式解锁时重裁」**已订正**——真实入口不是未来事件：
+        # coping_potential_enabled ∧ facs_extended ∧ 经 appraisal 分支3/4 注入负
+        # control_appraisal（mcp_server 路径）**今天即可达**，与 fear_domain_enabled 无关。
+        # 未来复裁的新触发条件：若 fear-AU 长期稳定输出而标签恒锁 rage 且无抑制/掩饰
+        # 对应机制（泄漏构念的有界性被突破），届时再议对称加门（工程形态建议 (a′)：
+        # ExpressionAgent 边界后处理，勿改本纯函数签名——CS 席 2026-08-31 备案）。
         # ⚠ 悬置 B-AU04：Ekman fear 原型=AU1+2+4+5+7+20+26，本段缺 AU04（corrugator·fear vs
         #   surprise 解剖区分件）→当前组合与 surprise 重叠，是否加 coping 驱动 AU04 待议会。
         # AU01/AU02：恐惧扬眉，coping<0 时高（联动同升，两 AU 值相等）

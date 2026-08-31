@@ -751,6 +751,22 @@ class ChatDriver:
         )
 
 
+def persona_prompt_text(persona: Persona) -> str:
+    """L1 注入文本 = card ⊕ B1 风格句（上游合成，**不写回 card**——预设卡锚点语义不动）。
+
+    B1 轻量门（2026-08-31，注记于 notes/2026-08-31-dominance-channel-council.md）：
+    `ZERO_PERSONA_DOMINANCE_STYLE` 默认关；门关、hint 为空（中性/被 (a′) 抑制/无 big_five）
+    任一情形下返回值**恰为 persona.card 字节原文**（端到端零回归锚点钉住）。
+    """
+    hint = persona.dominance_style_hint
+    gate = os.getenv("ZERO_PERSONA_DOMINANCE_STYLE", "false").strip().lower()
+    if not hint or gate not in ("1", "true", "yes", "on"):
+        return persona.card
+    if not persona.card:
+        return hint
+    return f"{persona.card}\n{hint}"
+
+
 def build_chat_driver(thread: str | None = None) -> ChatDriver:
     """从环境装配生产用对话驱动器：读 env 构造 lm/log/session + 载入历史/态度。
 
@@ -772,7 +788,7 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
         from src.agents.language_openai import OpenAILanguageModel  # 延迟：仅有 key 才需 openai
 
         # L1：人设卡注入对话 system prompt（空卡 → 与改前逐字一致）
-        lm = OpenAILanguageModel(model=model_name, persona=persona.card)
+        lm = OpenAILanguageModel(model=model_name, persona=persona_prompt_text(persona))
         mode = f"真 LLM（{model_name}）"
 
     log = ConversationLog()
