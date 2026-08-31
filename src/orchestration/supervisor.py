@@ -25,7 +25,11 @@ from src.agents.affect_math import text_label
 from src.memory.client import MemoryClient
 from src.memory.types import Scope
 from src.orchestration.state import AffectState
-from src.orchestration.text_predicates import is_future_oriented, is_question
+from src.orchestration.text_predicates import (
+    is_deadline_anchored,
+    is_future_oriented,
+    is_question,
+)
 
 # 议会 A 语义写入通道：承诺/日程判据，2026-08-13 议会二轮张力 3 重写为 T∧F∧A 合取。
 # 前一版是「任一时间词出现即命中」的单维词表 OR——438 轮实测精确率 26%（时间指称被当
@@ -72,7 +76,8 @@ def _is_commitment(text: str) -> bool:
     ⚠ **已知漏报（438 轮实测·诚实边界，勿当 bug 修松结构）**：无时间词的承诺
     （「我请了假陪她去」）、无施为动词的计划（「周末去拿桃子」「每周跑三次」）不命中
     ——合取宁漏勿误，样本册 KNOWN_MISSES 钉死。召回缺口的正解是换机制（语言层顺带
-    输出标记，须重过议会），不是拆合取。
+    输出标记，须重过议会），不是拆合取。deadline 两形态（「周五之前」「发版前」，
+    100 轮实跑 #17/#65）已于 2026-08-31 经准入流程覆盖（`is_deadline_anchored`）。
     排序侧 w_commitment（`memory.utils.DEFAULT_TAG_WEIGHTS`）已于 2026-08-14 凭生产
     实跑占比表恢复 0.2（精确率 80%·陷阱负例 0/22 误报，n=5 统计力弱已标注；
     `PRP/write-gate-informative/verification-run100-2026-08-14.md`）。
@@ -82,7 +87,9 @@ def _is_commitment(text: str) -> bool:
     if is_question(text) or _RETROSPECTIVE_COMMISSIVE_RE.search(text):
         return False
     return (
-        _COMMITMENT_TIME_RE.search(text) is not None
+        # T：显式时间词，或 deadline 形态「X前/X之前」（2026-08-31 准入——「发版前」
+        # 无时间词但把参照点锚在未来事件上，蕴含论证见 text_predicates._DEADLINE_RE）
+        (_COMMITMENT_TIME_RE.search(text) is not None or is_deadline_anchored(text))
         and is_future_oriented(text)
         and _COMMISSIVE_RE.search(text) is not None
     )
