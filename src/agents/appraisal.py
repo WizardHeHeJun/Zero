@@ -281,6 +281,11 @@ class AppraisalAgent:
             text = state.text_coping_prior if state.text_coping_enabled else None
             if ctrl is None and text is None:
                 # 分支1：两皆 None → 强制 cp=0.0（每轮覆盖，非保持上轮值）；src_flag=False
+                # ⚠ 0.0 是契约值（2026-08-31 Dominance 议会再确认，≥5 处锚点测试锁死）：
+                # 它同时是「表情层 fear-AU 无 fear_domain 门却安全」的唯一前提。未来任何
+                # trait→state 静息基线（不限 Dominance）须走解耦通道（新增可选字段、
+                # None 回退此字面量），不得覆写；负向基线还须先解 fear 门跨层裂缝
+                # （notes/2026-08-31-dominance-channel-council.md 登记项 3）。
                 cp: float = 0.0
                 src_flag: bool = False
             elif ctrl is None:

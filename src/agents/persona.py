@@ -144,6 +144,10 @@ def _persona_from_dict(data: dict[str, object]) -> Persona:
         kwargs["setpoint"] = _coerce_pair(data["setpoint"], "setpoint")
     elif "big_five" in data:
         # L2 气质经大五→PAD 推导 setpoint（显式 setpoint 优先；两者皆无→中性零回归）。
+        # _dom 丢弃是 2026-08-31 议会裁定（notes/2026-08-31-dominance-channel-council.md）：
+        # D 暂不进数值通道——A（coping 基线）三重否决（构念错配：Mehrabian-D≈E/(−A) 人际
+        # 支配轴非可控感 / κ 两 regime 结构不可解 / fear 门跨层违例）；B2（prosody）不立项；
+        # B1（L1 语言风格）留独立轻量门。勿在未过新设计门前给 _dom 找去处。
         o, c, e, a, n = _coerce_big_five(data["big_five"])
         pleasure, arousability, _dom = big_five_to_pad(o, c, e, a, n)
         kwargs["setpoint"] = (pleasure, arousability)

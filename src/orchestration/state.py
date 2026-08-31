@@ -190,8 +190,11 @@ class AffectState(BaseModel):
     # Mood（A.7 慢变心境：时间深度/滞后）—— 运行态，进 Checkpointer，不入图谱
     mood: tuple[float, float] | None = None
 
-    # coping_potential 独立标量流（议会 2026-07-13；运行态慢变量）—— 进 Checkpointer，绝不入图谱
-    # coping_potential_state: 情境控制感 ∈ [-1,1]（同 mood 先例：Checkpointer 持久，非图谱）
+    # coping_potential 独立标量流（议会 2026-07-13）—— 进 Checkpointer，绝不入图谱
+    # coping_potential_state: 情境控制感 ∈ [-1,1]（Checkpointer 持久，非图谱）
+    # ⚠ 命名澄清（2026-08-31 议会数学席）：字段名含 state 但语义是**逐轮重算的瞬时评价量**
+    # （AppraisalAgent 每轮从 ctrl/text 覆盖，无证据轮强制 0.0），与 mood 等真正跨轮
+    # 持久积分不同类；改为一阶低通须另过设计门（勿当 bug"顺手加惯性"）。
     # +1=趋近/高控制/愤怒端，-1=回避/低控制/恐惧端；经 language._appraisal_summary 消费
     # coping_potential_enabled=False 门控关 → 现路径逐字不变（零回归）
     coping_potential_state: float = 0.0
