@@ -53,6 +53,74 @@ logger = logging.getLogger(__name__)
 DEFAULT_FPS = 20.0  # 与连续动作流同节奏（motion_synth DEFAULT_FPS）
 SYNTH_TIMEOUT_S = 60.0  # 整句合成的 HTTP 超时：GPU 数秒量级，留一个数量级余量
 
+# 按句切分（ZERO_TTS_SENTENCE_SPLIT，2026-08-31 计划④）：短句合并下限。
+# 12 字 ≈ 1.5-2s 音频——再短则合成开销占比过高、句间颗粒停顿明显；非心理学量，
+# 纯工程取值，观感不对可调（与 lipsync 常数同款调参纪律：改前留注释轨迹）。
+SENTENCE_MIN_CHARS = 12
+_SENTENCE_TERMINATORS = "。！？!?…"
+# 括号/引号保护：内部的终止符不切（「他说“走。”然后…」不应从引号中间断开）。
+_BRACKET_CLOSERS = {"（": "）", "(": ")", "「": "」", "『": "』", "“": "”", "《": "》"}
+
+
+def _is_only_terminators(segment: str) -> bool:
+    """段落是否只含终止符/空白（「……」的第二个 … 这类残段，应并回上一段）。"""
+    return all(ch in _SENTENCE_TERMINATORS or ch.isspace() for ch in segment)
+
+
+def split_sentences(text: str, min_chars: int = SENTENCE_MIN_CHARS) -> list[str]:
+    """把整段回复切成可逐句合成的段落（纯函数；`ZERO_TTS_SENTENCE_SPLIT` 门开才被消费）。
+
+    规则：
+    - 在**括号/引号深度为 0** 的 `。！？!?…`（及换行）处切分，终止符归前段；
+      连续终止符（「……」「！？」）合并进同一段。
+    - 短段贪心**向后合并**到 ≥ min_chars 字（避免「嗯。」级碎片的合成开销与颗粒停顿）；
+      收尾残段不足 min_chars 时并回前一段。
+    - 已知不切（有意）：英文句点 `.`（小数/URL/缩写误伤率高，中文对话主链路用不上）；
+      分号 `；`（切了句间韵律更碎）。已知误伤：未闭合括号会使其后整段不再切分
+      （深度回不到 0）——宁不切勿错切，退化为整段合成，无正确性损失。
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    stack: list[str] = []
+    for ch in text:
+        closer = _BRACKET_CLOSERS.get(ch)
+        if closer is not None:
+            stack.append(closer)
+            buf.append(ch)
+            continue
+        if stack and ch == stack[-1]:
+            stack.pop()
+            buf.append(ch)
+            continue
+        buf.append(ch)
+        if not stack and (ch in _SENTENCE_TERMINATORS or ch == "\n"):
+            segment = "".join(buf).strip()
+            buf = []
+            if not segment:
+                continue
+            if segments and _is_only_terminators(segment):
+                segments[-1] += segment
+            else:
+                segments.append(segment)
+    tail = "".join(buf).strip()
+    if tail:
+        if segments and _is_only_terminators(tail):
+            segments[-1] += tail
+        else:
+            segments.append(tail)
+    # 短段贪心向后合并
+    merged: list[str] = []
+    for segment in segments:
+        if merged and len(merged[-1]) < min_chars:
+            merged[-1] += segment
+        else:
+            merged.append(segment)
+    if len(merged) >= 2 and len(merged[-1]) < min_chars:
+        merged[-2] += merged[-1]
+        merged.pop()
+    return merged
+
+
 # 「整句均为括号段」判定（无嵌套）：配合 strip 的「全剥空回退原文」不变式用，见 _speak。
 # 蕴含论证（text-predicate-admission）：strip 后文本仍整体为括号段 ⇒ 本轮无括号外正文可读
 # ——判据是**结构**（括号包裹）非语义词表，命中即「没有裸露正文」为真，蕴含成立；
@@ -92,6 +160,7 @@ class TtsSpeechSink:
         model_id: int = 0,
         fps: float = DEFAULT_FPS,
         wav_dir: Path | None = None,
+        sentence_split: bool = False,
     ) -> None:
         self.transport = transport
         self.server_url = server_url
@@ -99,6 +168,8 @@ class TtsSpeechSink:
         self.language = language
         self.model_id = model_id
         self.fps = fps
+        # 按句切分流水（默认关=零回归：整句合成逐字旧行为）。开=首包延迟≈首段合成时长。
+        self.sentence_split = sentence_split
         self.wav_dir = wav_dir or Path(tempfile.gettempdir()) / "zero_tts"
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.worker_task: asyncio.Task[None] | None = None
@@ -168,9 +239,55 @@ class TtsSpeechSink:
         if not text or _PURE_BRACKET_RE.fullmatch(text):
             logger.debug("语音：本轮无可朗读正文（空/全括注），跳过合成")
             return
+        segments = split_sentences(text) if self.sentence_split else [text]
+        if len(segments) <= 1:
+            wav_bytes, synth_s = await self._synth_timed(text)
+            await self._deliver(text, wav_bytes, synth_s)
+            return
+        # 按句流水（门开且多段）：预取一段——合成第 i+1 段与播放第 i 段重叠，
+        # 首包延迟 ≈ 首段合成时长；wav 落盘仍发生在上一段播完（sleep）之后，
+        # 「串行 ⇒ 删上一句文件必已播完」的 W5 不变式保持不变。
+        logger.debug("语音按句切分：%d 字 → %d 段", len(text), len(segments))
+        synth_task: asyncio.Task[tuple[bytes, float]] = asyncio.create_task(
+            self._synth_timed(segments[0])
+        )
+        try:
+            for i, segment in enumerate(segments):
+                try:
+                    synth_result: tuple[bytes, float] | None = await synth_task
+                except Exception as exc:
+                    logger.warning("语音分段合成失败（跳过该段，后续继续）：%s", exc)
+                    synth_result = None
+                if i + 1 < len(segments):
+                    synth_task = asyncio.create_task(self._synth_timed(segments[i + 1]))
+                if synth_result is not None:
+                    await self._deliver(segment, synth_result[0], synth_result[1])
+        finally:
+            # 不丢弃在飞的预取句柄（python-code：不裸 create_task 丢句柄）：
+            # 中途异常退出时取消并等待；已完成未消费的取回异常防「never retrieved」告警。
+            if not synth_task.done():
+                synth_task.cancel()
+                # 一并吞普通 Exception（审查 WARN 2026-08-31）：cancel 生效前任务恰好以真实
+                # 异常完成的 TOCTOU 窄窗里，await 会把该异常在 finally 中抛出、顶替正在传播的
+                # 外层 CancelledError ⇒ _worker 的取消分支被绕过、aclose 挂住。清理路径故意宽捕获。
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await synth_task
+            elif not synth_task.cancelled():
+                with contextlib.suppress(Exception):
+                    synth_task.exception()
+
+    async def _synth_timed(self, text: str) -> tuple[bytes, float]:
+        """合成一段并计时（供整句路径与分段流水共用）。"""
         started = time.monotonic()
         wav_bytes = await self._synthesize(text)
-        synth_s = time.monotonic() - started
+        return wav_bytes, time.monotonic() - started
+
+    async def _deliver(self, text: str, wav_bytes: bytes, synth_s: float) -> None:
+        """一段音频的投递全链：包络→口型→落盘→speech_play→按时长节流。
+
+        整句路径（sentence_split 关）下与 v1 行为逐字一致；分段路径下逐段调用，
+        `last_prosody` 为**最后一段**的韵律帧（本期无消费者，split 语义在此成文）。
+        """
         envelope = energy_envelope(wav_bytes, self.fps)
         logger.debug(
             "TTS 合成完成：%d 字 → %.1fs 音频，耗时 %.2fs（wav %.0f KB）",
@@ -277,10 +394,17 @@ def build_speech_sink(transport: VtsTransport | None = None) -> TtsSpeechSink | 
             "ZERO_TTS_SINK 已开启但未安装 httpx——安装可选 extra：`uv sync --extra tts` "
             "或 `pip install -e .[tts]`"
         ) from exc
+    sentence_split = os.getenv("ZERO_TTS_SENTENCE_SPLIT", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     return TtsSpeechSink(
         transport=transport or VtsTransport(),
         server_url=server_url,
         speaker=speaker,
         language=os.getenv("ZERO_TTS_LANGUAGE", "ZH"),
         model_id=int(os.getenv("ZERO_TTS_MODEL_ID", "0")),
+        sentence_split=sentence_split,
     )

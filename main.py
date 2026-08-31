@@ -68,15 +68,20 @@ async def _chat_repl() -> None:
     logging.getLogger("src.storage").setLevel(logging.ERROR)  # 隐藏 sqlite 缺驱动的回退告警
     from src.agents.emotion_lexicon import affect_label
     from src.orchestration.chat_driver import build_chat_driver
+    from src.orchestration.voice_input import build_voice_input
 
     driver = build_chat_driver()
+    voice = build_voice_input()  # None=未开（默认）；开=空回车进入 push-to-talk
     # 表现层出口（皮套/…）：构造在工厂，**连接在这里**——连接是 async I/O（spawn 子进程 +
     # 握手），工厂保持纯装配。连不上只降级为纯对话（sink 自己 warning），不中断启动。
     for sink in driver.expression_sinks:
         await sink.connect()
     rounds = len(driver.history) // 2
     print(f"情感对话｜{driver.mode}｜情绪快衰退·态度慢积累｜历史 {rounds} 轮｜exit/quit 退出")
-    print(f"对你的态度：{affect_label(*driver.attitude)}｜记忆落 data/chat_history.sqlite3\n")
+    print(f"对你的态度：{affect_label(*driver.attitude)}｜记忆落 data/chat_history.sqlite3")
+    if voice is not None:
+        print("语音输入已开：空回车开始说话，再回车结束（数字人出声时别录，或戴耳机）")
+    print()
     try:
         while True:
             try:
@@ -89,7 +94,22 @@ async def _chat_repl() -> None:
                 print()
                 break
             if not user:
-                continue
+                if voice is None:
+                    continue
+                # push-to-talk：录音等待回车与模型推理都是阻塞操作，同样必须 to_thread
+                # （理由同上——冻结事件循环会饿死语音 worker）。提示文案归入口层打印
+                # （voice_input 只管采集/转写，换非 REPL 前端时不带 UI 泄漏）。
+                print("● 录音中…再按回车结束")
+                try:
+                    user = (await asyncio.to_thread(voice.record_until_enter)).strip()
+                except (EOFError, KeyboardInterrupt):
+                    # 与打字路径同款优雅退出；代价同上（input 线程可能等一次回车）。
+                    print()
+                    break
+                if not user:
+                    print("  └─ （没听清，再试一次）")
+                    continue
+                print(f"你(语音) > {user}")
             if user.lower() in {"exit", "quit", ":q"}:
                 break
             turn = await driver.step(user)
