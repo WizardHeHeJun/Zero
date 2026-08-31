@@ -70,8 +70,9 @@ def test_prediction_near_anchor_follows_that_anchor() -> None:
     with torch.no_grad():
         model.values.copy_(torch.tensor([[5.0], [-5.0], [-5.0], [-5.0], [-5.0]]))
         model.log_bandwidth.copy_(torch.tensor(-1.5))  # 窄带宽 → 更接近最近邻
-    near_first = model(torch.tensor([[0.02, 0.02]], dtype=torch.float32))
-    near_second = model(torch.tensor([[0.68, 0.48]], dtype=torch.float32))
+    with torch.no_grad():
+        near_first = model(torch.tensor([[0.02, 0.02]], dtype=torch.float32))
+        near_second = model(torch.tensor([[0.68, 0.48]], dtype=torch.float32))
     assert float(near_first[0, 0]) > float(near_second[0, 0])
 
 

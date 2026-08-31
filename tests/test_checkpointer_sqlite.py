@@ -31,13 +31,18 @@ async def test_sqlite_checkpointer_supports_ainvoke(
 
     # build_checkpointer 在本异步测试内调用 → 有运行中的事件循环（AsyncSqliteSaver.__init__ 需要）
     saver = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
-    graph = build_graph(saver, MemoryClient())
+    try:
+        graph = build_graph(saver, MemoryClient())
 
-    out = await graph.ainvoke(
-        {"stimulus": Stimulus(name="hi", goal_congruence=0.2, intensity=0.5), "rng_seed": 0},
-        config={"configurable": {"thread_id": "t-sqlite-async"}},
-    )
-    assert out is not None  # 跑到此处即未抛 NotImplementedError（旧同步 saver 会在此崩）
+        out = await graph.ainvoke(
+            {"stimulus": Stimulus(name="hi", goal_congruence=0.2, intensity=0.5), "rng_seed": 0},
+            config={"configurable": {"thread_id": "t-sqlite-async"}},
+        )
+        assert out is not None  # 跑到此处即未抛 NotImplementedError（旧同步 saver 会在此崩）
+    finally:
+        # 连接须在本测试的事件循环内关掉，否则 aiosqlite 工作线程在循环关闭后
+        # 回投结果报 Event loop is closed（PytestUnhandledThreadExceptionWarning）
+        await saver.conn.close()
 
 
 async def test_sqlite_checkpointer_persists_across_sessions(
@@ -58,13 +63,22 @@ async def test_sqlite_checkpointer_persists_across_sessions(
     cfg = {"configurable": {"thread_id": "t-persist"}}
     stim = Stimulus(name="loss", goal_congruence=-0.6, intensity=0.8)
 
-    graph1 = build_graph(build_checkpointer(ALLOWED_CHECKPOINT_TYPES), MemoryClient())
-    await graph1.ainvoke({"stimulus": stim, "rng_seed": 0}, config=cfg)
+    saver1 = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
+    try:
+        graph1 = build_graph(saver1, MemoryClient())
+        await graph1.ainvoke({"stimulus": stim, "rng_seed": 0}, config=cfg)
+    finally:
+        # 先关旧连接再"重启"——也防止连接活过事件循环（Event loop is closed 警告）
+        await saver1.conn.close()
 
     # 新建一套 saver（同 db 文件）模拟重启，应能读回上一轮 checkpoint
-    graph2 = build_graph(build_checkpointer(ALLOWED_CHECKPOINT_TYPES), MemoryClient())
-    state = await graph2.aget_state(cfg)
-    assert state is not None and state.values, "应从 sqlite 落盘恢复到上一轮运行态"
+    saver2 = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
+    try:
+        graph2 = build_graph(saver2, MemoryClient())
+        state = await graph2.aget_state(cfg)
+        assert state is not None and state.values, "应从 sqlite 落盘恢复到上一轮运行态"
+    finally:
+        await saver2.conn.close()
 
 
 async def test_fact_and_scope_roundtrip_via_checkpointer(
@@ -98,15 +112,25 @@ async def test_fact_and_scope_roundtrip_via_checkpointer(
     stim = Stimulus(name="cat", goal_congruence=0.5, intensity=0.7)
 
     # 第一轮 invoke：带 recalled_facts 写入 checkpoint
-    graph = build_graph(build_checkpointer(ALLOWED_CHECKPOINT_TYPES), MemoryClient())
-    await graph.ainvoke(
-        {"stimulus": stim, "recalled_facts": [seed_fact], "rng_seed": 0},
-        config=cfg,
-    )
+    saver1 = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
+    try:
+        graph = build_graph(saver1, MemoryClient())
+        await graph.ainvoke(
+            {"stimulus": stim, "recalled_facts": [seed_fact], "rng_seed": 0},
+            config=cfg,
+        )
+    finally:
+        # 连接在本测试事件循环内关掉，防 Event loop is closed 警告
+        await saver1.conn.close()
 
     # 从同一 db 恢复：aget_state 反序列化 checkpoint
-    graph2 = build_graph(build_checkpointer(ALLOWED_CHECKPOINT_TYPES), MemoryClient())
-    restored = await graph2.aget_state(cfg)
+    saver2 = build_checkpointer(ALLOWED_CHECKPOINT_TYPES)
+    restored = None
+    try:
+        graph2 = build_graph(saver2, MemoryClient())
+        restored = await graph2.aget_state(cfg)
+    finally:
+        await saver2.conn.close()
     assert restored is not None and restored.values, "checkpoint 应有值"
 
     facts: list[Fact] = restored.values.get("recalled_facts", [])
