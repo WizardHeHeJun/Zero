@@ -30,6 +30,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000  # faster-whisper 期望采样率（协议常数，非配置）
+# 简体引导（2026-08-31 环回实测：whisper zh 默认常出繁体）。initial_prompt 只是风格引导
+# 不改识别语言；引擎枚举参数同款 A6 例外。
+_SIMPLIFIED_PROMPT = "以下是普通话对话，请用简体中文记录。"
 
 
 class VoiceInput:
@@ -38,9 +41,13 @@ class VoiceInput:
     `model` 可注入替身（tests）；生产由 `build_voice_input` 装配 faster-whisper。
     """
 
-    def __init__(self, *, model: Any, language: str = "zh") -> None:
+    def __init__(
+        self, *, model: Any, language: str = "zh", input_device: int | None = None
+    ) -> None:
         self.model = model
         self.language = language
+        # None=系统默认输入设备；显式索引=装配期解析结果（默认缺失时自动回退或 env 指定）
+        self.input_device = input_device
 
     def record_until_enter(self) -> str:
         """录音到用户再按回车，转写返回文本；空音频/无语音返回空串（调用方按空输入处理）。"""
@@ -61,7 +68,11 @@ class VoiceInput:
 
         # 「录音中…」提示由调用方（入口层）打印——本层只管采集，不带 UI（审查 WARN）。
         with sd.InputStream(
-            samplerate=SAMPLE_RATE, channels=1, dtype="float32", callback=_on_block
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            callback=_on_block,
+            device=self.input_device,
         ):
             input()
         if not chunks:
@@ -69,8 +80,10 @@ class VoiceInput:
         return np.concatenate(chunks).reshape(-1)
 
     def transcribe(self, audio: Any) -> str:
-        """float32 单声道 16kHz 波形 → 文本（faster-whisper segments 拼接）。"""
-        segments, _info = self.model.transcribe(audio, language=self.language)
+        """float32 单声道 16kHz 波形 → 文本（faster-whisper segments 拼接，简体引导）。"""
+        segments, _info = self.model.transcribe(
+            audio, language=self.language, initial_prompt=_SIMPLIFIED_PROMPT
+        )
         return "".join(segment.text for segment in segments).strip()
 
 
@@ -98,8 +111,58 @@ def build_voice_input() -> VoiceInput | None:
             "ZERO_ASR_INPUT 已开启但缺依赖——安装可选 extra：`uv sync --extra asr` "
             "或 `pip install -e .[asr]`"
         ) from exc
+    input_device = _resolve_input_device(sounddevice)
     device = os.getenv("ZERO_ASR_DEVICE", "auto")
     compute_type = os.getenv("ZERO_ASR_COMPUTE_TYPE", "default")
     logger.info("加载 ASR 模型 %s（device=%s）…首次运行会下载权重", model_name, device)
     model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    return VoiceInput(model=model, language=os.getenv("ZERO_ASR_LANGUAGE", "zh"))
+    return VoiceInput(
+        model=model,
+        language=os.getenv("ZERO_ASR_LANGUAGE", "zh"),
+        input_device=input_device,
+    )
+
+
+def _resolve_input_device(sd_module: Any) -> int | None:
+    """装配期解析录音设备（2026-08-31 真机实测补：Windows 可有麦克风但**默认输入=-1**）。
+
+    优先级：`ZERO_ASR_INPUT_DEVICE` 显式索引（校验存在且有输入通道，违约 fail-fast）
+    → 系统默认输入可用则 None（交给 sounddevice 默认）→ 默认缺失时**自动回退**到第一个
+    有输入通道的设备（INFO 记选用了谁）→ 全无录音设备 fail-fast（门开无麦明说，
+    不留到录音那刻才炸——运行期故障另由入口层降级不断话）。
+    """
+    raw = os.getenv("ZERO_ASR_INPUT_DEVICE")
+    if raw:
+        index = int(raw)
+        try:
+            info = sd_module.query_devices(index)
+        except Exception as exc:
+            raise RuntimeError(
+                f"ZERO_ASR_INPUT_DEVICE={index} 不是有效设备索引（python -m sounddevice 可列表）"
+            ) from exc
+        if int(info.get("max_input_channels", 0)) <= 0:
+            raise RuntimeError(
+                f"ZERO_ASR_INPUT_DEVICE={index}（{info.get('name')}）没有输入通道，不是录音设备"
+            )
+        return index
+    try:
+        sd_module.query_devices(kind="input")
+        return None  # 系统默认输入可用
+    except Exception:  # sd.PortAudioError：默认输入缺失（Windows 未设默认录音设备）
+        pass
+    candidates = [
+        i
+        for i, dev in enumerate(sd_module.query_devices())
+        if int(dev.get("max_input_channels", 0)) > 0
+    ]
+    if not candidates:
+        raise RuntimeError(
+            "ZERO_ASR_INPUT 已开启但未检测到任何录音设备——接好麦克风，或在 .env 关掉 ZERO_ASR_INPUT"
+        )
+    chosen = candidates[0]
+    logger.info(
+        "系统默认录音设备缺失，自动选用 [%d] %s（要换设备设 ZERO_ASR_INPUT_DEVICE）",
+        chosen,
+        sd_module.query_devices(chosen).get("name"),
+    )
+    return chosen

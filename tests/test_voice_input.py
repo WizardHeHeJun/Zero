@@ -39,7 +39,7 @@ def test_gate_on_missing_deps_fails_fast_with_extra_hint(
 
 
 def _fake_model(texts: list[str]) -> Any:
-    def transcribe(audio: Any, language: str) -> tuple[list[Any], Any]:
+    def transcribe(audio: Any, language: str, **kwargs: Any) -> tuple[list[Any], Any]:
         segments = [SimpleNamespace(text=t) for t in texts]
         return segments, SimpleNamespace(language=language)
 
@@ -54,6 +54,73 @@ def test_transcribe_joins_segments_and_strips() -> None:
 def test_transcribe_empty_segments_returns_empty() -> None:
     vi = VoiceInput(model=_fake_model([]))
     assert vi.transcribe(object()) == ""
+
+
+class _FakeSd:
+    """sounddevice 替身：可配默认输入是否可用与设备表（真机默认=-1 场景 2026-08-31 实测）。"""
+
+    def __init__(self, *, default_ok: bool, devices: list[dict]) -> None:
+        self.default_ok = default_ok
+        self.devices = devices
+
+    def query_devices(self, index: int | None = None, kind: str | None = None):  # noqa: ANN201
+        if kind == "input":
+            if self.default_ok:
+                return self.devices[0]
+            raise RuntimeError("Error querying device -1")
+        if index is None:
+            return self.devices
+        return self.devices[index]
+
+
+def test_resolve_device_default_available_returns_none() -> None:
+    from src.orchestration.voice_input import _resolve_input_device
+
+    sd = _FakeSd(default_ok=True, devices=[{"name": "mic", "max_input_channels": 2}])
+    assert _resolve_input_device(sd) is None
+
+
+def test_resolve_device_default_missing_falls_back_to_first_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真机场景：有麦克风但 Windows 默认输入=-1 → 自动选第一个有输入通道的设备。"""
+    from src.orchestration.voice_input import _resolve_input_device
+
+    monkeypatch.delenv("ZERO_ASR_INPUT_DEVICE", raising=False)
+    sd = _FakeSd(
+        default_ok=False,
+        devices=[
+            {"name": "speaker", "max_input_channels": 0},
+            {"name": "mic", "max_input_channels": 2},
+        ],
+    )
+    assert _resolve_input_device(sd) == 1
+
+
+def test_resolve_device_no_input_devices_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.orchestration.voice_input import _resolve_input_device
+
+    monkeypatch.delenv("ZERO_ASR_INPUT_DEVICE", raising=False)
+    sd = _FakeSd(default_ok=False, devices=[{"name": "speaker", "max_input_channels": 0}])
+    with pytest.raises(RuntimeError, match="录音设备"):
+        _resolve_input_device(sd)
+
+
+def test_resolve_device_env_index_validated(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.orchestration.voice_input import _resolve_input_device
+
+    sd = _FakeSd(
+        default_ok=True,
+        devices=[
+            {"name": "speaker", "max_input_channels": 0},
+            {"name": "mix", "max_input_channels": 2},
+        ],
+    )
+    monkeypatch.setenv("ZERO_ASR_INPUT_DEVICE", "1")
+    assert _resolve_input_device(sd) == 1
+    monkeypatch.setenv("ZERO_ASR_INPUT_DEVICE", "0")
+    with pytest.raises(RuntimeError, match="输入通道"):
+        _resolve_input_device(sd)
 
 
 def test_record_until_enter_empty_capture_short_circuits(

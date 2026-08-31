@@ -106,6 +106,11 @@ async def _chat_repl() -> None:
                     # 与打字路径同款优雅退出；代价同上（input 线程可能等一次回车）。
                     print()
                     break
+                except Exception as exc:  # noqa: BLE001
+                    # 外设/转写故障降级为提示继续打字（2026-08-31 真机实测：默认麦缺失
+                    # PortAudioError 曾扳倒整个对话——表现层「降级不断话」纪律对输入侧同样适用）。
+                    print(f"  └─ 语音采集失败：{exc}（可继续打字；换设备设 ZERO_ASR_INPUT_DEVICE）")
+                    continue
                 if not user:
                     print("  └─ （没听清，再试一次）")
                     continue
