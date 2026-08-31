@@ -33,6 +33,8 @@ SAMPLE_RATE = 16000  # faster-whisper 期望采样率（协议常数，非配置
 # 简体引导（2026-08-31 环回实测：whisper zh 默认常出繁体）。initial_prompt 只是风格引导
 # 不改识别语言；引擎枚举参数同款 A6 例外。
 _SIMPLIFIED_PROMPT = "以下是普通话对话，请用简体中文记录。"
+# 静音门（环回实测定档）：峰值低于此值视为没录到人声——噪声底实测 ~5e-5，留一个数量级余量。
+SILENCE_PEAK_FLOOR = 1e-4
 
 
 class VoiceInput:
@@ -50,11 +52,20 @@ class VoiceInput:
         self.input_device = input_device
 
     def record_until_enter(self) -> str:
-        """录音到用户再按回车，转写返回文本；空音频/无语音返回空串（调用方按空输入处理）。"""
+        """录音到用户再按回车，转写返回文本；空/静音返回空串（调用方按空输入处理）。
+
+        峰值归一化 + 静音门（2026-08-31 环回实测定档）：采集电平常偏小，直接喂 whisper
+        会对准静音幻听出 initial_prompt 本身；归一到峰值 0.9 后 3/3 命中。
+        """
         audio = self._capture_until_enter()
         if audio is None or len(audio) == 0:
             return ""
-        return self.transcribe(audio)
+        import numpy as np
+
+        peak = float(np.max(np.abs(audio)))
+        if peak < SILENCE_PEAK_FLOOR:
+            return ""  # 纯静音：不进转写（whisper 对静音+prompt 会幻听）
+        return self.transcribe((audio / peak * 0.9).astype(np.float32))
 
     def _capture_until_enter(self) -> Any:
         """麦克风采集直到回车（硬件层，独立成方法便于将来换 VAD 采集器）。"""

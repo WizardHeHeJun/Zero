@@ -123,6 +123,35 @@ def test_resolve_device_env_index_validated(monkeypatch: pytest.MonkeyPatch) -> 
         _resolve_input_device(sd)
 
 
+def test_record_normalizes_peak_before_transcribe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """弱信号峰值归一到 0.9 再进转写（环回实测：不归一 whisper 对弱音频幻听 prompt）。"""
+    np = pytest.importorskip("numpy")
+    received: list[Any] = []
+
+    def spy_transcribe(audio: Any, language: str, **kwargs: Any) -> tuple[list[Any], Any]:
+        received.append(audio)
+        return [SimpleNamespace(text="好")], SimpleNamespace(language=language)
+
+    vi = VoiceInput(model=SimpleNamespace(transcribe=spy_transcribe))
+    quiet = np.array([0.001, -0.002, 0.0015], dtype=np.float32)
+    monkeypatch.setattr(VoiceInput, "_capture_until_enter", lambda self: quiet)
+    assert vi.record_until_enter() == "好"
+    assert abs(float(np.max(np.abs(received[0]))) - 0.9) < 1e-6
+
+
+def test_record_silence_gate_skips_transcribe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """纯静音（峰值低于门限）不进转写直接空串。"""
+    np = pytest.importorskip("numpy")
+
+    def boom(audio: Any, language: str, **kwargs: Any) -> Any:
+        raise AssertionError("静音不应进转写")
+
+    vi = VoiceInput(model=SimpleNamespace(transcribe=boom))
+    silence = np.full(100, 1e-6, dtype=np.float32)
+    monkeypatch.setattr(VoiceInput, "_capture_until_enter", lambda self: silence)
+    assert vi.record_until_enter() == ""
+
+
 def test_record_until_enter_empty_capture_short_circuits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
