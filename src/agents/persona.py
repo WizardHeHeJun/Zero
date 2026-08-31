@@ -71,6 +71,19 @@ def big_five_to_pad(
     符号自洽：高 N → 低愉悦、高唤醒性。入参各维建议归一到 [-1,1]（0=中位），返回三维各
     clamp[-1,1]。引擎 VA 内核取 (pleasure, arousability) 作 setpoint。纯函数、无 I/O。
     来源：Mehrabian, A. (1996). *Aust. J. Psychol.* 48(2):86-92. DOI:10.1080/00049539608259510。
+
+    N 项符号裁定备案（2026-08-31 议会相 2 交叉质询，纪要
+    notes/2026-08-31-persona-presets-council.md）：−0.19N/+0.57N 核验为忠实——
+    HCI 二手文献 Wen et al. 2021 (arXiv:2106.15846) / 2024 (arXiv:2404.07229) 写作
+    +0.19N/−0.57N 系**同源转录错误**（照抄原文 S 系数、误标变量为 N 未翻符号），不采信；
+    反证 = Barteneva et al. 2007 (arXiv:0809.4784) 忠实转录原文反向表
+    「Emotional Stability = 0.50P − 0.55A」+ Mehrabian 官网 Eysenck N 方程（−0.26P/+0.49A）。
+    拿到原文 Table 可补直接核验，不阻塞。
+
+    预设卡刻度备案（同纪要·必改 1+修正案）：personas/ 预设卡取 z=±1→±1.0 全刻度，
+    单维卡强度不统一（O=1.0/E=0.8/A=C=N=0.6）——按分布层锚点 ‖Δsetpoint‖₂≥0.15 反解的
+    工程取值，非心理测量学「强/极端」分级，跨卡强度不可比，仅保证卡间可区分；
+    O 维系数最小（0.15）故顶到域上界才压线达标，勿调 EPS 或 O 强度避开该边界。
     """
     pleasure = 0.21 * extraversion + 0.59 * agreeableness - 0.19 * neuroticism
     arousability = 0.15 * openness + 0.30 * agreeableness + 0.57 * neuroticism
@@ -92,6 +105,11 @@ def big_five_to_va_coupling(extraversion: float) -> tuple[float, float]:
     两侧随 E 同步放大：E=0→(0.50,0.65)；E=+1→(0.60,0.75)；E=−1→(0.40,0.55)。
 
     参数均 clamp 到合理范围；工程粗估，须注释标注非实证回归（无发表数据，标为可选人格化扩展）。
+
+    不确定性标注（2026-08-31 议会数学席 Q3，判「简化·待补分布证据」）：斜率 0.10 为工程
+    外推——Kuppens 2017 报告的是被试内动态斜率的个体差异方向，未给可直接复用的回归常数；
+    典型对话（|valence|≈0.5）下卡间 coupling 差的效应量与噪声地板（noise_std=0.05）同阶。
+    不构成 v1 阻塞（区分度主通道在 setpoint 直混），待真实对话分布占比表再校准。
     """
     pos = clamp(0.5 + 0.10 * extraversion, 0.35, 0.70)
     neg = clamp(0.65 + 0.10 * extraversion, 0.50, 0.85)
