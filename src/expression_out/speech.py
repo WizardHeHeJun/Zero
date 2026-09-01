@@ -27,18 +27,29 @@ env：`ZERO_TTS_SINK=true` 开启（默认关=零回归）；`ZERO_TTS_SERVER_UR
 与 `ZERO_TTS_MODEL_ID`（默认 0）是 **PRP A6 拍板的例外**：二者是 hiyoriUI 协议枚举/序号、
 非部署差异项，给默认不属「猜配置」——对照 `config-only-via-env` 纪律时以此处为准。
 HTTP 依赖 `httpx` 走可选 extra `tts`——门开未装同样构造期 fail-fast（静默没声音比报错糟）。
+
+## 口型 v2（音素级同步，`ZERO_TTS_LIPSYNC`，默认关=零回归）
+
+门开时读 `/voice` 响应头 `X-Phoneme-Durations`（需搭配 `tools/tts_patch/` 已打到
+`Bert-VITS2`）走 `lipsync_phoneme` 三函数链合成双维口型；头缺失/JSON 坏/M8 时长校验
+带外/任何未预期异常 → 静默降级回 v1 `envelope_to_mouth_track`（一次 warning/debug，
+`[lipsync-v2]` 前缀，对话不受影响）。`ZERO_TTS_MOUTH_FORM_PARAM` 不设时只驱动
+`MouthOpen`（M6 单键退化，T0 未核验圆唇参数真名前的默认状态）。设计权威
+`PRP/lipsync-v2/design.md`。
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import os
 import re
 import tempfile
 import time
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +57,11 @@ from typing import Any
 from src.agents.language_openai import strip_stage_directions_with_segments
 from src.expression_out.base import ExpressionFrame
 from src.expression_out.lipsync import energy_envelope, envelope_to_mouth_track
+from src.expression_out.lipsync_phoneme import (
+    build_phoneme_keyframes,
+    frame_ms_from_sample_rate,
+    resolve_phoneme_durations,
+)
 from src.expression_out.transport import VtsTransport, text_of
 
 logger = logging.getLogger(__name__)
@@ -143,6 +159,26 @@ class ProsodyFrame:
     energy: float
 
 
+@dataclass(frozen=True)
+class SynthResult:
+    """一段合成结果：wav 字节 + 可选的音素级时长契约（口型 v2）。
+
+    frozen + 显式传递（非实例属性 `self.xxx`）：分段流水预取重叠（`_speak` 里下一段
+    的 `_synth_timed` 与当前段播放并发在飞）下，实例属性会被下一段的赋值覆盖——
+    数据竞争（架构决策 #1）。`phones`/`durations` 仅在 `lipsync_v2` 门开且头解析
+    成功时非 `None`；门关时 `_synthesize` 完全不读该响应头（架构决策 #2）。
+
+    Attributes:
+        wav_bytes: 合成出的 wav 字节。
+        phones: 音素符号序列（与 `durations` 等长）；`None`=门关/头缺失/解析失败。
+        durations: 逐音素帧数（TTS 侧 w_ceil，非毫秒）；`None` 语义同上。
+    """
+
+    wav_bytes: bytes
+    phones: list[str] | None
+    durations: list[int] | None
+
+
 class TtsSpeechSink:
     """把 `ExpressionFrame.reply` 表现成语音（渲染端播放）。实现 `ExpressionSink` 协议。
 
@@ -161,6 +197,8 @@ class TtsSpeechSink:
         fps: float = DEFAULT_FPS,
         wav_dir: Path | None = None,
         sentence_split: bool = False,
+        lipsync_v2: bool = False,
+        mouth_form_param: str | None = None,
     ) -> None:
         self.transport = transport
         self.server_url = server_url
@@ -170,6 +208,10 @@ class TtsSpeechSink:
         self.fps = fps
         # 按句切分流水（默认关=零回归：整句合成逐字旧行为）。开=首包延迟≈首段合成时长。
         self.sentence_split = sentence_split
+        # 口型 v2（默认关=零回归）：门开才读 `_synthesize` 的响应头（架构决策 #2）。
+        self.lipsync_v2 = lipsync_v2
+        # T0 未核验圆唇参数真名前为 None（M6 单键退化，只驱动 MouthOpen）。
+        self.mouth_form_param = mouth_form_param
         self.wav_dir = wav_dir or Path(tempfile.gettempdir()) / "zero_tts"
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self.worker_task: asyncio.Task[None] | None = None
@@ -241,20 +283,20 @@ class TtsSpeechSink:
             return
         segments = split_sentences(text) if self.sentence_split else [text]
         if len(segments) <= 1:
-            wav_bytes, synth_s = await self._synth_timed(text)
-            await self._deliver(text, wav_bytes, synth_s)
+            result, synth_s = await self._synth_timed(text)
+            await self._deliver(text, result, synth_s)
             return
         # 按句流水（门开且多段）：预取一段——合成第 i+1 段与播放第 i 段重叠，
         # 首包延迟 ≈ 首段合成时长；wav 落盘仍发生在上一段播完（sleep）之后，
         # 「串行 ⇒ 删上一句文件必已播完」的 W5 不变式保持不变。
         logger.debug("语音按句切分：%d 字 → %d 段", len(text), len(segments))
-        synth_task: asyncio.Task[tuple[bytes, float]] = asyncio.create_task(
+        synth_task: asyncio.Task[tuple[SynthResult, float]] = asyncio.create_task(
             self._synth_timed(segments[0])
         )
         try:
             for i, segment in enumerate(segments):
                 try:
-                    synth_result: tuple[bytes, float] | None = await synth_task
+                    synth_result: tuple[SynthResult, float] | None = await synth_task
                 except Exception as exc:
                     logger.warning("语音分段合成失败（跳过该段，后续继续）：%s", exc)
                     synth_result = None
@@ -276,18 +318,24 @@ class TtsSpeechSink:
                 with contextlib.suppress(Exception):
                     synth_task.exception()
 
-    async def _synth_timed(self, text: str) -> tuple[bytes, float]:
+    async def _synth_timed(self, text: str) -> tuple[SynthResult, float]:
         """合成一段并计时（供整句路径与分段流水共用）。"""
         started = time.monotonic()
-        wav_bytes = await self._synthesize(text)
-        return wav_bytes, time.monotonic() - started
+        result = await self._synthesize(text)
+        return result, time.monotonic() - started
 
-    async def _deliver(self, text: str, wav_bytes: bytes, synth_s: float) -> None:
+    async def _deliver(self, text: str, synth: SynthResult, synth_s: float) -> None:
         """一段音频的投递全链：包络→口型→落盘→speech_play→按时长节流。
 
         整句路径（sentence_split 关）下与 v1 行为逐字一致；分段路径下逐段调用，
         `last_prosody` 为**最后一段**的韵律帧（本期无消费者，split 语义在此成文）。
+
+        口型分支（`ZERO_TTS_LIPSYNC` 门开）：`synth.phones`/`durations` 非空才走
+        `lipsync_phoneme` 三函数链；resolve 返回 `None`（M8 带外）或链路任何未预期
+        异常 → 一次 `[lipsync-v2]` warning + 回退 v1（G2）；门开但本段无契约头
+        （非 latest 版本模型/取 attn 失败）→ 一次 debug + 回退；门关 → 逐字走 v1。
         """
+        wav_bytes = synth.wav_bytes
         envelope = energy_envelope(wav_bytes, self.fps)
         logger.debug(
             "TTS 合成完成：%d 字 → %.1fs 音频，耗时 %.2fs（wav %.0f KB）",
@@ -301,7 +349,40 @@ class TtsSpeechSink:
             ProsodyFrame(t_ms=int(round(i * frame_ms)), energy=value)
             for i, value in enumerate(envelope)
         ]
-        track = envelope_to_mouth_track(envelope, self.fps)
+        track: list[dict[str, object]] | None = None
+        if self.lipsync_v2 and synth.phones and synth.durations:
+            try:
+                wav_duration_ms, sample_rate = _wav_duration_and_rate(wav_bytes)
+                tts_frame_ms = frame_ms_from_sample_rate(sample_rate)
+                durations_ms = resolve_phoneme_durations(
+                    synth.phones, synth.durations, tts_frame_ms, wav_duration_ms
+                )
+                if durations_ms is None:
+                    # None 折叠了两类原因（结构检查失败 / M8 容差超界，统一出口是架构决策 #8）
+                    # ——日志措辞保持中性，别把「长度不等/逐项非正」误导成「时长对不上」
+                    # （审查 WARN 2026-09-01：排障方向会走偏）。
+                    logger.warning(
+                        "[lipsync-v2] 音素时长契约解析失败（结构检查或 M8 容差，"
+                        "见 lipsync_phoneme.resolve_phoneme_durations），本句回退 v1 能量包络口型"
+                    )
+                else:
+                    track = build_phoneme_keyframes(
+                        synth.phones,
+                        durations_ms,
+                        envelope,
+                        frame_ms,
+                        self.mouth_form_param,
+                    )
+            except Exception as exc:
+                logger.warning("[lipsync-v2] 音素级口型合成失败，本句回退 v1 能量包络口型：%s", exc)
+                track = None
+        elif self.lipsync_v2:
+            logger.debug(
+                "[lipsync-v2] 本句无音素级时长契约（非 latest 版本模型或提取失败），"
+                "回退 v1 能量包络口型"
+            )
+        if track is None:
+            track = envelope_to_mouth_track(envelope, self.fps)
         wav_path = self._write_wav(wav_bytes)
         result = await self.transport.call_tool(
             "speech_play",
@@ -325,8 +406,8 @@ class TtsSpeechSink:
             # 串行节流（跨仓规范§二并发语义）：播完再取下一条 ⇒ 对方正常收不到重叠调用。
             await asyncio.sleep(duration_ms / 1000.0)
 
-    async def _synthesize(self, text: str) -> bytes:
-        """HTTP 调本地 Bert-VITS2 拿整句 wav。
+    async def _synthesize(self, text: str) -> SynthResult:
+        """HTTP 调本地 Bert-VITS2 拿整句 wav（`lipsync_v2` 门开时一并取音素契约头）。
 
         请求形状集中在此一处：不同 fork 的 server 接口略有差异，部署期（T8）若需
         适配只改这里。延迟 import httpx：无 tts extra 的环境仍可 import 本模块
@@ -351,7 +432,20 @@ class TtsSpeechSink:
         if not body.startswith(b"RIFF"):
             snippet = body[:200].decode("utf-8", errors="replace")
             raise RuntimeError(f"TTS 服务未返回 wav（业务错误直传）：{snippet}")
-        return body
+        phones: list[str] | None = None
+        durations: list[int] | None = None
+        # 架构决策 #2：门关时完全不读该响应头（非「解析了不消费」）——零污染热路径。
+        if self.lipsync_v2:
+            header = resp.headers.get("X-Phoneme-Durations")
+            if header:
+                try:
+                    payload = json.loads(header)
+                    phones = list(payload["phones"])
+                    durations = list(payload["durations"])
+                except Exception as exc:
+                    logger.debug("[lipsync-v2] X-Phoneme-Durations 头解析失败，回退 v1：%s", exc)
+                    phones, durations = None, None
+        return SynthResult(wav_bytes=body, phones=phones, durations=durations)
 
     def _write_wav(self, wav_bytes: bytes) -> Path:
         """wav 落盘给渲染端读（同机路径契约）；顺手清上一句的文件（串行 ⇒ 必已播完）。"""
@@ -364,6 +458,15 @@ class TtsSpeechSink:
         path.write_bytes(wav_bytes)
         self.last_wav = path
         return path
+
+
+def _wav_duration_and_rate(wav_bytes: bytes) -> tuple[float, int]:
+    """wav 字节 → (时长 ms, 采样率)。供口型 v2 的 M8 时长恒等校验用。"""
+    with contextlib.closing(wave.open(io.BytesIO(wav_bytes), "rb")) as wf:
+        rate = wf.getframerate()
+        frames = wf.getnframes()
+    duration_ms = frames * 1000.0 / rate if rate > 0 else 0.0
+    return duration_ms, rate
 
 
 def build_speech_sink(transport: VtsTransport | None = None) -> TtsSpeechSink | None:
@@ -400,6 +503,13 @@ def build_speech_sink(transport: VtsTransport | None = None) -> TtsSpeechSink | 
         "yes",
         "on",
     )
+    lipsync_v2 = os.getenv("ZERO_TTS_LIPSYNC", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    mouth_form_param = os.getenv("ZERO_TTS_MOUTH_FORM_PARAM") or None
     return TtsSpeechSink(
         transport=transport or VtsTransport(),
         server_url=server_url,
@@ -407,4 +517,6 @@ def build_speech_sink(transport: VtsTransport | None = None) -> TtsSpeechSink | 
         language=os.getenv("ZERO_TTS_LANGUAGE", "ZH"),
         model_id=int(os.getenv("ZERO_TTS_MODEL_ID", "0")),
         sentence_split=sentence_split,
+        lipsync_v2=lipsync_v2,
+        mouth_form_param=mouth_form_param,
     )

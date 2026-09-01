@@ -1,0 +1,204 @@
+diff --git a/infer.py b/infer.py
+index 12a6cf0..7216ed8 100644
+--- a/infer.py
++++ b/infer.py
+@@ -148,6 +148,33 @@ def get_text(text, language_str, hps, device, style_text=None, style_weight=0.7)
+     return bert, ja_bert, en_bert, phone, tone, language
+ 
+ 
++def _fold_blank_durations(symbols, frame_counts, blank="_"):
++    """Zero 口型 v2 契约：把 blank 帧数折叠进相邻真实音素（不向下游泄漏 blank 语义）。
++
++    每段连续 blank 的总帧数并入**紧随其后**的真实音素；序列末尾的 blank 游程没有
++    “后一个”真实音素可并，改并入**前一个**（README 记录方向——纯粹是残余时长的
++    归属选择，与协同发音前移无关）。长度不匹配（对齐失败）一律返回 (None, None)，
++    交调用方整段不发头。
++    """
++    if len(symbols) != len(frame_counts):
++        return None, None
++    real_symbols = []
++    real_durations = []
++    pending_blank = 0
++    for symbol, count in zip(symbols, frame_counts):
++        if symbol == blank:
++            pending_blank += count
++            continue
++        real_symbols.append(symbol)
++        real_durations.append(count + pending_blank)
++        pending_blank = 0
++    if pending_blank:
++        if not real_durations:
++            return None, None  # 整句全 blank（异常输入），不构造空音素表
++        real_durations[-1] += pending_blank
++    return real_symbols, real_durations
++
++
+ def infer(
+     text,
+     emotion: Union[int, str],
+@@ -165,6 +192,7 @@ def infer(
+     skip_end=False,
+     style_text=None,
+     style_weight=0.7,
++    return_phoneme_durations: bool = False,
+ ):
+     # 2.2版本参数位置变了
+     inferMap_V4 = {
+@@ -298,25 +326,44 @@ def infer(
+         # emo = emo.to(device).unsqueeze(0)
+         del phones
+         speakers = torch.LongTensor([hps.data.spk2id[sid]]).to(device)
+-        audio = (
+-            net_g.infer(
+-                x_tst,
+-                x_tst_lengths,
+-                speakers,
+-                tones,
+-                lang_ids,
+-                bert,
+-                ja_bert,
+-                en_bert,
+-                sdp_ratio=sdp_ratio,
+-                noise_scale=noise_scale,
+-                noise_scale_w=noise_scale_w,
+-                length_scale=length_scale,
+-            )[0][0, 0]
+-            .data.cpu()
+-            .float()
+-            .numpy()
++        net_g_out = net_g.infer(
++            x_tst,
++            x_tst_lengths,
++            speakers,
++            tones,
++            lang_ids,
++            bert,
++            ja_bert,
++            en_bert,
++            sdp_ratio=sdp_ratio,
++            noise_scale=noise_scale,
++            noise_scale_w=noise_scale_w,
++            length_scale=length_scale,
+         )
++        audio = net_g_out[0][0, 0].data.cpu().float().numpy()
++        phone_symbols, phone_durations = None, None
++        # Zero 口型 v2 契约（tools/tts_patch）：本段之上已提前 return 掉全部非当前版本
++        # 路径，version==latest_version 在此恒成立；net_g.infer 额外返回 attn
++        # （形状 [b,1,t',t]），对 t' 轴（dim=2）求和得每个输入位置（含 add_blank 插入
++        # 的空白位）的帧数。skip_start/skip_end 会裁剪音素与 bert 的对应关系，此时不
++        # 提取（宁可不发头，不发错头）。任何未预期异常同样吞掉不发头。
++        if return_phoneme_durations and not skip_start and not skip_end:
++            try:
++                _, raw_phone_symbols, _, _ = clean_text(text, language)
++                if hps.data.add_blank:
++                    aligned_symbols = ["_"] * (len(raw_phone_symbols) * 2 + 1)
++                    aligned_symbols[1::2] = raw_phone_symbols
++                else:
++                    aligned_symbols = raw_phone_symbols
++                attn = net_g_out[1]
++                frame_counts = [
++                    int(round(v)) for v in attn.sum(dim=2)[0, 0].data.cpu().tolist()
++                ]
++                phone_symbols, phone_durations = _fold_blank_durations(
++                    aligned_symbols, frame_counts
++                )
++            except Exception:
++                phone_symbols, phone_durations = None, None
+         del (
+             x_tst,
+             tones,
+@@ -329,6 +376,8 @@ def infer(
+         )  # , emo
+         if torch.cuda.is_available():
+             torch.cuda.empty_cache()
++        if return_phoneme_durations:
++            return audio, phone_symbols, phone_durations
+         return audio
+ 
+ 
+diff --git a/hiyoriUI.py b/hiyoriUI.py
+index e31604b..bc22557 100644
+--- a/hiyoriUI.py
++++ b/hiyoriUI.py
+@@ -3,6 +3,7 @@ api服务，网页后端 多版本多模型 fastapi实现
+ 原 server_fastapi
+ """
+ 
++import json
+ import logging
+ import gc
+ import random
+@@ -317,26 +318,43 @@ if __name__ == "__main__":
+             ]
+ 
+         audios = []
++        # Zero 口型 v2 契约（tools/tts_patch）：仅当前模型是 latest_version 时
++        # infer() 才可能带回 (audio, phones, durations)；任一段拿不到 ⇒ 整个响应
++        # 不发 X-Phoneme-Durations 头（部分成功不允许，Zero 侧天然降级回 v1 能量
++        # 包络口型，不特殊处理）。
++        want_phoneme_durations = loaded_models.models[model_id].version == latest_version
++        phones: List[str] = []
++        durations: List[int] = []
+         with torch.no_grad():
+             for _text, lang, speaker in text_language_speakers:
+-                audios.append(
+-                    infer(
+-                        text=_text,
+-                        sdp_ratio=sdp_ratio,
+-                        noise_scale=noise,
+-                        noise_scale_w=noisew,
+-                        length_scale=length,
+-                        sid=speaker,
+-                        language=lang,
+-                        hps=loaded_models.models[model_id].hps,
+-                        net_g=loaded_models.models[model_id].net_g,
+-                        device=loaded_models.models[model_id].device,
+-                        emotion=emotion,
+-                        reference_audio=ref_audio,
+-                        style_text=style_text,
+-                        style_weight=style_weight,
+-                    )
++                infer_result = infer(
++                    text=_text,
++                    sdp_ratio=sdp_ratio,
++                    noise_scale=noise,
++                    noise_scale_w=noisew,
++                    length_scale=length,
++                    sid=speaker,
++                    language=lang,
++                    hps=loaded_models.models[model_id].hps,
++                    net_g=loaded_models.models[model_id].net_g,
++                    device=loaded_models.models[model_id].device,
++                    emotion=emotion,
++                    reference_audio=ref_audio,
++                    style_text=style_text,
++                    style_weight=style_weight,
++                    return_phoneme_durations=want_phoneme_durations,
+                 )
++                if want_phoneme_durations:
++                    seg_audio, seg_phones, seg_durations = infer_result
++                    if seg_phones is None or seg_durations is None:
++                        want_phoneme_durations = False
++                        phones, durations = [], []
++                    else:
++                        phones.extend(seg_phones)
++                        durations.extend(seg_durations)
++                else:
++                    seg_audio = infer_result
++                audios.append(seg_audio)
+                 # audios.append(np.zeros(int(44100 * 0.2)))
+             # audios.pop()
+             audio = np.concatenate(audios)
+@@ -346,6 +364,12 @@ if __name__ == "__main__":
+                 wavContent, loaded_models.models[model_id].hps.data.sampling_rate, audio
+             )
+             response = Response(content=wavContent.getvalue(), media_type="audio/wav")
++            if want_phoneme_durations and phones and durations:
++                response.headers["X-Phoneme-Durations"] = json.dumps(
++                    {"phones": phones, "durations": durations},
++                    ensure_ascii=True,
++                    separators=(",", ":"),
++                )
+             return response
+ 
+     @app.post("/voice")

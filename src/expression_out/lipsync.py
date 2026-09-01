@@ -23,12 +23,16 @@ import math
 import wave
 from array import array
 
-# 唯一允许语音流写入的嘴部参数集合。
+# 语音流允许写入的嘴部参数**全集**（v1+v2 合流后的上界；随口型迭代扩张）。
 # ⚠ 命名空间是 **VTS 输入参数**（params_list 实测 127 个，嘴部开合 = `MouthOpen`∈[0,1]），
 # 不是 Live2D 输出参数（`ParamMouthOpenY`）——2026-08-14 首次真机联调实测：后者被渲染端
 # `[vtsb:invalid_params] 参数缺席` 拒收，音频照播、嘴不动。
-# v1 只驱动开合一维；若加 `MouthSmile` 须同步更新融合锚点测试与跨仓规范。
 MOUTH_PARAMS: tuple[str, ...] = ("MouthOpen",)
+
+# v1（本文件）实际写入的键集——**结构隔离常量**（design.md M7）：本文件产出的关键帧
+# 只含这一维，锚点测试对它做严格相等断言，防 `MOUTH_PARAMS` 随 v2（`lipsync_phoneme.py`）
+# 扩圆唇维后被静默放宽。v2 的双键逻辑一律落 `lipsync_phoneme.py`，本文件零改动。
+V1_MOUTH_PARAMS: tuple[str, ...] = ("MouthOpen",)
 
 # 包络平滑：单极点 attack/release 不对称——嘴张开快（跟上爆破音）、闭合稍慢（避免抖动）。
 # 系数按 20fps 帧节奏取值；确定性常数，非可调 env（观感常数，改动走真机盲测口径）。
@@ -150,7 +154,7 @@ def envelope_to_mouth_track(envelope: list[float], fps: float) -> list[dict[str,
         track.append(
             {
                 "t_ms": int(round(i * 1000.0 / fps)),
-                "params": {MOUTH_PARAMS[0]: round(limited, 4)},
+                "params": {V1_MOUTH_PARAMS[0]: round(limited, 4)},
             }
         )
     return track

@@ -1,0 +1,15 @@
+目标仓：D:\Bert-VITS2
+核验时 HEAD：3e710e996f03d52476490c435899e76d688dcbf1（`git log -1 --format=%H` 实测，
+非猜测——infer.py/hiyoriUI.py 本身工作区无未提交改动，仅 bert 权重目录有元数据漂移，
+不影响锚点）。
+
+本次核验的行号锚点（对应 tasks.md T1）：
+- infer.py:107 `get_text`
+- infer.py:151 `infer()`
+- infer.py:260-332 latest_version 当前推理路径（`net_g.infer` 调用 + 返回）
+- hiyoriUI.py:197-349 `_voice`
+- hiyoriUI.py:319-349 逐段 `infer` 拼接 + `Response` 组装
+
+`0001-add-phoneme-durations-header.patch` 已用 `git apply --check` 对上述 HEAD 实测通过
+（本仓无写权限验证，dry-run 校验）。若目标仓已推进到更新 commit，`apply.ps1` 会警告
+但不阻断——上下文行不匹配时 `git apply` 本身会报错，届时需人工重新生成 diff。

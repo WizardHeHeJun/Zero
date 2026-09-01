@@ -21,6 +21,7 @@ import pytest
 
 from src.expression_out.lipsync import (
     MOUTH_PARAMS,
+    V1_MOUTH_PARAMS,
     energy_envelope,
     envelope_to_mouth_track,
     mouth_track_from_wav,
@@ -47,11 +48,13 @@ def _wav(segments: list[tuple[float, float]], rate: int = 44100) -> bytes:
 
 
 def _assert_only_mouth_keys(track: list[dict[str, Any]]) -> None:
-    """锚点①的断言本体：轨迹里出现嘴部集合之外的键即红。"""
+    """锚点①的断言本体：v1 轨迹每帧键集须**恰好**等于 `V1_MOUTH_PARAMS`（M7 严格相等，
+    防 `MOUTH_PARAMS` 随 v2 扩圆唇维后本锚点被静默放宽为子集判据）。"""
     assert track, "空轨迹 ⇒ 本用例没在测东西"
     for frame in track:
-        extra = set(frame["params"]) - set(MOUTH_PARAMS)
-        assert not extra, f"语音流写了嘴部集合之外的参数：{extra}"
+        assert set(frame["params"]) == set(V1_MOUTH_PARAMS), (
+            f"v1 语音流键集应恰为 {set(V1_MOUTH_PARAMS)}，实得 {set(frame['params'])}"
+        )
 
 
 def _assert_no_mouth_keys(keyframes: list[dict[str, Any]]) -> None:

@@ -25,8 +25,8 @@ from typing import Any
 import pytest
 
 from src.expression_out.base import ExpressionFrame, ExpressionSink
-from src.expression_out.lipsync import MOUTH_PARAMS
-from src.expression_out.speech import ProsodyFrame, TtsSpeechSink, build_speech_sink
+from src.expression_out.lipsync import V1_MOUTH_PARAMS
+from src.expression_out.speech import ProsodyFrame, SynthResult, TtsSpeechSink, build_speech_sink
 from src.expression_out.transport import VtsTransport
 
 FPS = 20.0
@@ -139,7 +139,7 @@ async def test_emit_enqueues_and_worker_plays(
     assert args["fps"] == FPS
     assert args["mouth_track"], "口型轨迹不该为空"
     for kf in args["mouth_track"]:
-        assert set(kf["params"]) <= set(MOUTH_PARAMS), "投递 payload 越出嘴部集合"
+        assert set(kf["params"]) == set(V1_MOUTH_PARAMS), "投递 payload 应恰为 v1 嘴部键集"
     await sink.aclose()
 
 
@@ -162,12 +162,12 @@ async def test_connect_failure_returns_false(tmp_path: Path) -> None:
 
 
 def _fake_synth(wav_bytes: bytes, spoken: list[str] | None = None, boom: bool = False) -> Any:
-    async def synth(self: TtsSpeechSink, text: str) -> bytes:
+    async def synth(self: TtsSpeechSink, text: str) -> SynthResult:
         if spoken is not None:
             spoken.append(text)
         if boom:
             raise RuntimeError("TTS 服务连不上")
-        return wav_bytes
+        return SynthResult(wav_bytes=wav_bytes, phones=None, durations=None)
 
     return synth
 
@@ -232,8 +232,8 @@ async def test_synthesize_passes_hiyori_params_and_accepts_wav(tmp_path: Path) -
         return httpx.Response(200, content=_wav())
 
     sink.http_transport = httpx.MockTransport(handler)
-    body = await sink._synthesize("你好")
-    assert body.startswith(b"RIFF")
+    result = await sink._synthesize("你好")
+    assert result.wav_bytes.startswith(b"RIFF")
     assert seen["text"] == "你好"
     assert seen["model_id"] == "0"
     assert seen["speaker_name"] == "test"
@@ -266,11 +266,11 @@ async def test_synthesis_failure_degrades_and_next_turn_recovers(
     sink = _sink(transport, tmp_path)
     attempts: list[str] = []
 
-    async def flaky(self: TtsSpeechSink, text: str) -> bytes:
+    async def flaky(self: TtsSpeechSink, text: str) -> SynthResult:
         attempts.append(text)
         if len(attempts) == 1:
             raise RuntimeError("TTS 服务连不上")
-        return _wav()
+        return SynthResult(wav_bytes=_wav(), phones=None, durations=None)
 
     monkeypatch.setattr(TtsSpeechSink, "_synthesize", flaky)
     await sink.connect()

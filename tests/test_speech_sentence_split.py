@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from src.expression_out.base import ExpressionFrame
-from src.expression_out.speech import TtsSpeechSink, build_speech_sink, split_sentences
+from src.expression_out.speech import SynthResult, TtsSpeechSink, build_speech_sink, split_sentences
 from tests.test_expression_speech import FakeTransport, _fake_synth, _wav
 
 FPS = 20.0
@@ -143,11 +143,11 @@ async def test_split_segment_failure_skips_and_continues(
     segments = split_sentences(_THREE)
     attempted: list[str] = []
 
-    async def flaky(self: TtsSpeechSink, text: str) -> bytes:
+    async def flaky(self: TtsSpeechSink, text: str) -> SynthResult:
         attempted.append(text)
         if text == segments[1]:
             raise RuntimeError("TTS 服务抖了一下")
-        return _wav()
+        return SynthResult(wav_bytes=_wav(), phones=None, durations=None)
 
     monkeypatch.setattr(TtsSpeechSink, "_synthesize", flaky)
     await sink.connect()
