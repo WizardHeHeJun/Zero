@@ -331,9 +331,18 @@ class OpenAILanguageModel:
         temperature: float = 0.8,
         use_lexicon: bool = False,
         persona: str = "",
+        converse_temperature_offset: float = 0.0,
     ) -> None:
         self.model = model
         self.temperature = temperature
+        # T2（c-behavior-tempo 设计门 2026-08-31）：C→解码温度偏移，**仅 converse 叠加**。
+        # 独立字段而非改 self.temperature——结构性隔离 _compose/generate 研究路径（数学席
+        # 同构站点裁定：「persona-attached 实例只走 converse」是无测试钉死的隐式不变式，
+        # 靠结构消除而非靠锚点看守，勿改回共享形态）。默认 0.0 → converse 温度表达式与
+        # 改前逐字等价（浮点 +0.0 精确无损）。基本类型入参守「adapter 只吃基本类型」边界：
+        # C→偏移的映射在 persona.conscientiousness_to_temperature_offset，装配在
+        # chat_driver 工厂（门关时省略本 kwarg，唯一真源留此默认值）。
+        self.converse_temperature_offset = converse_temperature_offset
         # L1 人设卡：身份/背景/口吻/与用户关系，置于对话 system prompt（情绪行为框架）之前。
         # 空串 → converse 的 system prompt 与改前逐字一致（零回归）。仅作用于对话路径（converse），
         # 不入研究用 generate（双向回路/VAD 反推保持纯净）。
@@ -499,7 +508,10 @@ class OpenAILanguageModel:
             sys += _FACT_BOUNDARY_ADDENDUM
         messages: list[dict[str, str]] = [{"role": "system", "content": sys}]
         messages.extend(history)
-        temperature = max(0.0, self.temperature + random.uniform(-0.1, 0.15))  # 措辞部分随机
+        # 措辞部分随机；T2 偏移默认 0.0 = 与旧式逐字等价（截断不可达性由 K_C_TEMPO 不变式保证）
+        temperature = max(
+            0.0, self.temperature + self.converse_temperature_offset + random.uniform(-0.1, 0.15)
+        )
         try:
             resp = await self.client.chat.completions.create(
                 model=self.model, temperature=temperature, messages=messages, **bias_kwargs

@@ -752,19 +752,43 @@ class ChatDriver:
 
 
 def persona_prompt_text(persona: Persona) -> str:
-    """L1 注入文本 = card ⊕ B1 风格句（上游合成，**不写回 card**——预设卡锚点语义不动）。
+    """L1 注入文本 = card ⊕ B1 风格句 ⊕ C 风格句（上游合成，**不写回 card**）。
 
     B1 轻量门（2026-08-31，注记于 notes/2026-08-31-dominance-channel-council.md）：
     `ZERO_PERSONA_DOMINANCE_STYLE` 默认关；门关、hint 为空（中性/被 (a′) 抑制/无 big_five）
-    任一情形下返回值**恰为 persona.card 字节原文**（端到端零回归锚点钉住）。
+    任一情形下 B1 段不追加。
+    T1（c-behavior-tempo 设计门 2026-08-31，PRP/c-behavior-tempo/design.md）：
+    `ZERO_PERSONA_C_STYLE` 默认关，与 B1 门**独立**（CS 席裁定：两机制可单独 A/B）；
+    C 句追加在 B1 句之后；门关或 hint 空（死区/预设文案闭集抑制/无 big_five）时 C 段
+    不追加。双门全关 → 返回值**恰为 persona.card 字节原文**（端到端零回归锚点钉住）。
     """
-    hint = persona.dominance_style_hint
-    gate = os.getenv("ZERO_PERSONA_DOMINANCE_STYLE", "false").strip().lower()
-    if not hint or gate not in ("1", "true", "yes", "on"):
-        return persona.card
-    if not persona.card:
-        return hint
-    return f"{persona.card}\n{hint}"
+    text = persona.card
+    d_hint = persona.dominance_style_hint
+    d_gate = os.getenv("ZERO_PERSONA_DOMINANCE_STYLE", "false").strip().lower()
+    if d_hint and d_gate in ("1", "true", "yes", "on"):
+        text = d_hint if not text else f"{text}\n{d_hint}"
+    c_hint = persona.c_style_hint
+    c_gate = os.getenv("ZERO_PERSONA_C_STYLE", "false").strip().lower()
+    if c_hint and c_gate in ("1", "true", "yes", "on"):
+        text = c_hint if not text else f"{text}\n{c_hint}"
+    return text
+
+
+def persona_converse_temperature_offset(persona: Persona) -> float | None:
+    """T2 装配：读 `ZERO_PERSONA_C_TEMPO` 门（默认关），门开且 persona 有非零偏移才返回。
+
+    返回 None ⇒ 调用方**省略** `converse_temperature_offset` kwarg——唯一真源留
+    `OpenAILanguageModel.__init__` 的默认值 0.0，防两处字面量漂移（CS 席裁定，参照
+    pitfalls「多层默认值同步坑」）。偏移本体在 persona 装载期由
+    `conscientiousness_to_temperature_offset` 派生，本函数只做门控。
+    """
+    gate = os.getenv("ZERO_PERSONA_C_TEMPO", "false").strip().lower()
+    if gate not in ("1", "true", "yes", "on"):
+        return None
+    offset = persona.c_tempo_offset
+    if not offset:  # None 或 0.0（C=0 的连续映射零点）都无需传参
+        return None
+    return offset
 
 
 def build_chat_driver(thread: str | None = None) -> ChatDriver:
@@ -787,8 +811,17 @@ def build_chat_driver(thread: str | None = None) -> ChatDriver:
     if api_key and model_name:
         from src.agents.language_openai import OpenAILanguageModel  # 延迟：仅有 key 才需 openai
 
-        # L1：人设卡注入对话 system prompt（空卡 → 与改前逐字一致）
-        lm = OpenAILanguageModel(model=model_name, persona=persona_prompt_text(persona))
+        # L1：人设卡注入对话 system prompt（空卡 → 与改前逐字一致）。
+        # T2：门开且偏移非零才传 kwarg（None → 省略该参，守 adapter 默认值唯一真源）。
+        tempo_offset = persona_converse_temperature_offset(persona)
+        if tempo_offset is not None:
+            lm = OpenAILanguageModel(
+                model=model_name,
+                persona=persona_prompt_text(persona),
+                converse_temperature_offset=tempo_offset,
+            )
+        else:
+            lm = OpenAILanguageModel(model=model_name, persona=persona_prompt_text(persona))
         mode = f"真 LLM（{model_name}）"
 
     log = ConversationLog()

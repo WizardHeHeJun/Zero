@@ -53,6 +53,12 @@ class Persona:
     # B1（2026-08-31 轻量门）：D 派生的 L1 语言风格——只进提示词文本层，不进任何数值通道。
     dominance: float | None = None  # big_five 推导的 D（无 big_five=None；供审计/未来 B 系扩展）
     dominance_style_hint: str = ""  # 三档±0.3 + (a′) 数值抑制后的风格句；空=中性/被抑制/无 big_five
+    # c-behavior-tempo（2026-08-31 设计门，裁决 PRP/c-behavior-tempo/design.md）：C 派生字段。
+    # T1/T2 两门（ZERO_PERSONA_C_STYLE / ZERO_PERSONA_C_TEMPO）在 chat_driver 装配层读取，
+    # 本层只存派生值——延续「persona.py 存原始派生值、chat_driver 做门控装配」的 B1 分层线。
+    conscientiousness: float | None = None  # big_five 的 C 原始值（审计用；无 big_five=None）
+    c_style_hint: str = ""  # T1：三档±0.3 + 预设文案闭集抑制后的审慎措辞句；空=死区/被抑制
+    c_tempo_offset: float | None = None  # T2：-K_C_TEMPO·clamp(C)，连续无死区；无 big_five=None
 
 
 def big_five_to_pad(
@@ -119,6 +125,97 @@ def dominance_to_style_hint(dominance: float, extraversion: float, agreeableness
     return ""
 
 
+# ── c-behavior-tempo（2026-08-31 设计门·PRP/c-behavior-tempo/design.md）────────────────
+# C→行为节奏偏置 v1：T1=审慎措辞风格句（提示词层）、T2=解码温度偏置（解码层）。议会裁定
+# 二者「互补非双计」——语义内容与表层随机性是两条独立的人格信号通道（Pennebaker & King
+# 1999, PubMed 10626371；Mairesse et al. 2007, JAIR 30）。T3（节奏 directive）无消费端不立项。
+
+# T1 双源抑制判据：预设库 card 逐字文本闭集（= 受预设库规则 5 治理、文案已强制含同方向
+# 语气词的卡片全集）。**精确相等匹配**，非文本语义判据——不落 text-predicate-admission
+# 管辖（该规则管「从自由文本推断语义」，此处判的是「文案是否属已知治理集合」这一结构性
+# 事实）。失效方向分析（议会张力①）：唯一失效模式是假阴性（预设卡文案微调后本表未同步）
+# → 回退为同向强化注入——心理席已预登记为可接受态，自愈式降级、不产生新失真。
+# ⚠ 同步义务：新增/编辑 personas/*.example.json（带 big_five 的治理卡）必须同步本表，
+# tests/test_c_behavior_tempo.py 的同步守卫会红；「预设文案小改动后仍保留大部分风格词」
+# 的语义逃逸属 KNOWN_MISS（已登记限制，勿把本判据改成子串/词表匹配来「顺手修」）。
+PRESET_CARD_TEXTS: frozenset[str] = frozenset(
+    {
+        # curious-explorer
+        "你是一个好奇心很重的对话伙伴：想象力丰富，爱琢磨新点子，聊到没接触过的话题会兴致勃勃地追问，"
+        "喜欢尝试新鲜事物、换着角度看问题。你和这位用户是【初次对话】，没有任何共同的过去；被问到彼此"
+        "关系时如实说明才刚认识，不编造共同经历，不确定的就直说不确定。",
+        # orderly-planner
+        "你是一个做事有条理的对话伙伴：自律、可靠，习惯把事情按计划一步步来，说话讲究先后与分寸，答应"
+        "的事会记挂着办妥。你和这位用户是【初次对话】，没有任何共同的过去；被问到彼此关系时如实说明才"
+        "刚认识，不编造共同经历，不确定的就直说不确定。",
+        # lively-talker
+        "你是一个开朗健谈的对话伙伴：精力充沛、话多且热络，主动挑起话头，聊得投入时语气明快，喜欢和人"
+        "待在一块儿。你和这位用户是【初次对话】，没有任何共同的过去；被问到彼此关系时如实说明才刚认识，"
+        "不编造共同经历，不确定的就直说不确定。",
+        # worried-carer
+        "你是一个心思细但容易操心的对话伙伴：多虑、容易紧张，情绪起伏来得快，聊到没把握的事会反复确认，"
+        "在意自己有没有说错话。你和这位用户是【初次对话】，没有任何共同的过去；被问到彼此关系时如实说明"
+        "才刚认识，不编造共同经历，不确定的就直说不确定。",
+        # steady-companion
+        "你是一个沉稳可靠的对话伙伴：情绪稳定、遇事不慌，待人温和友善、乐于帮衬，做事有条理说到做到，"
+        "平时开朗健谈，也保有一份对新鲜事物的好奇。你和这位用户是【初次对话】，没有任何共同的过去；被问"
+        "到彼此关系时如实说明才刚认识，不编造共同经历，不确定的就直说不确定。",
+        # gentle-listener
+        "你是一个温和体贴的对话伙伴：说话轻缓、乐于配合，先听完再回应，替对方着想，不抢话、处处体谅对方。"
+        "你和这位用户是【初次对话】，没有任何共同的过去；被问到彼此关系时如实说明才刚认识，不编造共同经历，"
+        "不确定的就直说不确定。",
+    }
+)
+
+# T2 增益（数学席裁定）：可辨性下界 TV=k·|c|/0.25 ≥ 0.5（c 取 0.6 预设档）⇒ k≥0.208，
+# 加安全边际取 0.25（TV=0.6）。不变式：0.8 − K_C_TEMPO·1 − 0.1 = 0.45 > 0 ⇒ converse 的
+# max(0,·) 截断在 |c|≤1 域内不可达（tests 有断言钉死；调大 K 前先复核该不变式与文本层占比表）。
+K_C_TEMPO = 0.25
+
+
+def conscientiousness_to_style_hint(conscientiousness: float, card: str) -> str:
+    """C → L1 审慎措辞风格句（T1，c-behavior-tempo 设计门带条件立项）。
+
+    蕴含论证：Deliberation（审慎）与 Self-Discipline（自律）是 NEO-PI-R 中 C 的官方
+    facet（Costa & McCrae 1991, DOI:10.1016/0191-8869(91)90177-D）；UPPS 冲动性模型中
+    lack of premeditation 装载于 lack-of-conscientiousness 高阶因子（Whiteside & Lynam
+    2001, DOI:10.1016/S0191-8869(00)00064-7）——高 C ⇒ 先想后说/条理化、低 C ⇒ 随性
+    不打草稿。措辞用行为描述句、禁类型学词（「尽责」「冲动」不出现在注入文本，议会
+    措辞纪律）。反例/诚实边界：该构念最经典的操作化是**响应潜伏期**（Kagan 1966 MFFT，
+    reflection-impulsivity），属时序行为、措辞层覆盖不到——v1 是方向裁定的部分兑现
+    （design.md 张力③），勿把本函数当「高C 可见性」的完整答案。
+
+    三档阈值 ±0.3 延续 B1/预设库跨维一致性口径——工程选择，非心理测量学校准。
+    双源抑制：card 命中 `PRESET_CARD_TEXTS` → 返回空（该文案已按规则 5 含同方向语气词，
+    再注入=同一语义层双计；判据语义与失效方向见常量注释）。
+    """
+    if card in PRESET_CARD_TEXTS:
+        return ""
+    if conscientiousness >= 0.3:
+        return "回答前习惯先理一遍思路，条理清楚、先后分明，不轻易临场改主意。"
+    if conscientiousness <= -0.3:
+        return "想到什么说什么，不太打草稿，偶尔话题会跳一跳，但轻松自然。"
+    return ""
+
+
+def conscientiousness_to_temperature_offset(conscientiousness: float) -> float:
+    """C → converse 解码温度偏移（T2）：-K_C_TEMPO·clamp(c,-1,1)，连续映射**无死区**。
+
+    高 C 降温（措辞更收敛）、低 C 升温（更发散）。构念操作化判**简化**（议会 2026-08-31，
+    与 B1「提示词→语言学特征因果未验证」同级）：温度→输出熵单调是数学事实（softmax
+    温度缩放保序，Hinton et al. 2015, arXiv:1503.02531），但熵→「审慎/premeditation
+    语义」的第二跳未经验证——温度是无语义定向的全局熵旋钮，同等压缩审慎相关与无关的
+    多样性；落地后须以 ≥100 轮文本层占比表实证（design.md 裁决 T2-8），参数层单测只是
+    必要非充分条件。
+
+    仅经 chat_driver 装配进 `OpenAILanguageModel` 的 converse 专用偏移字段；
+    `self.temperature` 与 `_compose`（generate 研究路径）不动——结构性隔离同构站点
+    （数学席裁定），勿改回共享形态。入参 clamp 与 `_coerce_big_five` 的输入 clamp 双重
+    防护（本函数可能被越过 _coerce_big_five 的路径直接调用）。
+    """
+    return -K_C_TEMPO * clamp(conscientiousness, -1.0, 1.0)
+
+
 def big_five_to_va_coupling(extraversion: float) -> tuple[float, float]:
     """E（外倾性）→ (va_coupling_pos, va_coupling_neg)（工程粗估，非直接实证回归）。
 
@@ -143,12 +240,20 @@ def big_five_to_va_coupling(extraversion: float) -> tuple[float, float]:
 
 
 def _coerce_big_five(value: object) -> tuple[float, float, float, float, float]:
-    """把 JSON 的大五强制成 (O,C,E,A,N)；接受 dict（OCEAN 键）或 5 元素列表，缺键按 0 中位。"""
+    """把 JSON 的大五强制成 (O,C,E,A,N)；接受 dict（OCEAN 键）或 5 元素列表，缺键按 0 中位。
+
+    各维 clamp 到 [-1,1]（2026-08-31 c-behavior-tempo 议会前置修复，数学席）：越界输入
+    （如 c=5.0）会让下游确定性映射越出设计域——conscientiousness_to_temperature_offset
+    的偏移叠加 converse 温度后可达负值、经 max(0,·) 截出 0 处概率原子，破坏对称双向假设。
+    与 big_five_to_pad 的输出 clamp 习惯一致；[-1,1] 内取值逐字不变（零回归）。
+    """
     keys = ("openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism")
     if isinstance(value, dict):
-        return tuple(float(value.get(k, 0.0)) for k in keys)  # type: ignore[return-value]
+        return tuple(  # type: ignore[return-value]
+            clamp(float(value.get(k, 0.0)), -1.0, 1.0) for k in keys
+        )
     if isinstance(value, (list, tuple)) and len(value) == 5:
-        return tuple(float(v) for v in value)  # type: ignore[return-value]
+        return tuple(clamp(float(v), -1.0, 1.0) for v in value)  # type: ignore[return-value]
     raise ValueError(f"persona.big_five 须为含 OCEAN 的对象或 5 元素列表，得到：{value!r}")
 
 
@@ -179,6 +284,10 @@ def _persona_from_dict(data: dict[str, object]) -> Persona:
         kwargs["setpoint"] = (pleasure, arousability)
         kwargs["dominance"] = dominance
         kwargs["dominance_style_hint"] = dominance_to_style_hint(dominance, e, a)
+        # c-behavior-tempo：C 派生与 B1 同落此分支（显式 setpoint 时不派生——先例一致）。
+        kwargs["conscientiousness"] = c
+        kwargs["c_style_hint"] = conscientiousness_to_style_hint(c, str(data.get("card", "")))
+        kwargs["c_tempo_offset"] = conscientiousness_to_temperature_offset(c)
     if "reactivity" in data:
         kwargs["reactivity"] = float(data["reactivity"])  # type: ignore[arg-type]
     if "recovery" in data:
