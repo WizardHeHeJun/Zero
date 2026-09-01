@@ -10,8 +10,9 @@
 与 `affect_core` 里 streams 装配处的类型完全一致，可直接 extend。
 
 重要注意事项（议会 design.md M1–M6）：
-  - physio 流（前缀 physio/eda/hrv/pupil/scr）：Πv 被 Zero 强制覆写 MIN_PRECISION（M2）；
-    EDA/HRV/瞳孔对效价盲（Kreibig 2010），给 valence 精度=注入偏差。
+  - physio 流（前缀 physio/eda/hrv/pupil/scr）：Πv 被 Zero 强制覆写 MIN_PRECISION、μv 归零
+    （M2）；Πa 在 M3 校验后被声明前折减 Πa_declared = GAMMA_PHYSIO·Πa_naive（γ 层，议会
+    设计门 2026-09-01·跨仓校准不确定性折损，无开关）——MCP 侧声明多高都不会以原值进融合。
   - MCP 不 import Zero；经本 schema 版本化后跨仓协议由版本号兜底漂移。
   - 跨仓子进程回归断言 EXTERNAL_PRIOR_SCHEMA_VERSION 一致（M5）。
 """

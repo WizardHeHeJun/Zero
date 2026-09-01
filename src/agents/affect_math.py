@@ -1414,6 +1414,54 @@ def cortisol_trigger(
 # 见 expand_external_priors docstring 的 M2 段（议会 2026-07-30 已订正该处的机制表述与引用方向）。
 _PHYSIO_PREFIXES: tuple[str, ...] = ("physio", "eda", "hrv", "pupil", "scr")
 
+# ── physio 声明前 γ 折减（议会设计门 2026-09-01·PRP/gamma-physio）────────────────
+# 输入：Zero_MCP 2026-09-01 交付件 §2「wire·二值锚」一组（μ_a = α + β·a + e 口径），
+# SE 取 ×1.3 自相关保守档（交付件 §2 末：lag-1 ρ=0.28、有效 n≈152；§5 建议保守档）。
+# 交付方参数更新（换数据集/通路/个体校准）时**重走 PRP/gamma-physio/design.md §三推导链
+# 路**再换数，不是只替换下面四个字面量——常数 γ 是群体校准超先验（离线、一次性标定），
+# 个体校准改善后按原公式沿用会把「暂时性保真度判断」固化成架构死锁（神经席判定 B）。
+_WIRE_ALPHA_HAT = -0.0105  # α̂（交付件 §2 表 wire·二值行）
+_WIRE_BETA_HAT = 0.4267  # β̂（同上）
+_WIRE_SIGMA_E = 0.1597  # 残差 σ_e，mu 空间（同上；交付件明示服务 EIV 的 σ²_meas 项）
+_WIRE_SE_ALPHA = 0.0126 * 1.3  # SE(α̂) ×1.3 保守档
+_WIRE_SE_BETA = 0.0197 * 1.3  # SE(β̂) ×1.3 保守档
+
+# γ 语义 = 跨仓校准/去偏不确定性折损（errors-in-variables 口径，7-30 议会③族收敛形态，
+# 登记件 notes/2026-08-31-physio-direction1-landing-and-gamma-registry.md §三）：
+# Zero 的 fuse_terms 隐含 H=I（把 μ_a 当 a 的直接估计），而交付实证 β̂≈0.43≪1（读数系统
+# 性压缩）——「没去偏就当 a 用」的最坏点（a=1）总均方误差为
+#   σ²_eff(1) = (α̂+(β̂−1))² + σ²_e + SE_α² + SE_β²   （略负协方差项 = 更保守，数学席复核）
+# 以「校准视为精确且无偏时的朴素声明」σ²_e 为基准取比值。分布无关（不依赖部署时 a 的
+# 分布假设）。数值 ≈ 0.0694；salience 上界 (MIN_PRECISION+γ·cap)/2 ≈ 0.028 ≪ 0.18，
+# 且 M3 在 γ 之前钳死 Πa_naive ≤ cap ⇒ Πa_declared = γ·Πa_naive ≤ γ·cap **恒成立**
+# （代数界，与声明来源语义无关）——[0.359, 1.0) 负边际双输区在本侧结构性关死。
+# ⚠ 机制归属（神经席判定 A）：γ 对应「已知传感器偏差膨胀 R」式的**离线校准超先验**，
+#   不对应大脑在线的注意增益/精度动态调制（Yu & Dayan 2005 的 expected uncertainty 档）；
+#   会话内信号质量突变（运动伪影）不在其覆盖范围。
+# ⚠ 范围限定（神经席判定 C）：折的是**这条跨设备、未个体校准代理测量链路**当前的保真度，
+#   不是「内感受信号类别不能单独点燃」的理论主张（interoceptive alarm：Paulus & Stein
+#   2006, doi:10.1016/j.biopsych.2006.03.042；Craig 2009, doi:10.1038/nrn2555）。
+# ⚠ MLE 牺牲成文（治理要求 4·precision_da 同款纪律）：γ 折减后 physio 权重**不是**诚实
+#   逆方差加权（Ernst & Banks 2002 前提=已校准无偏，此处不成立），是有意的保守折衷；
+#   方差核算未涵盖群体→个体 ergodicity 外推缺口（Fisher et al. 2018,
+#   doi:10.1073/pnas.1711978115）与「条件标签≠自评唤醒」构念效度噪声（Wiens 2005）——
+#   两层皆为额外未量化的保守空间（心理席）。
+# ⚠ 审计叠加（神经席判定 D）：本折减与 stream_salience 的 mean(Π) 对一维流 ≈2.83× 结构
+#   性折扣（7-30 失真必改#4，见其 docstring）在 physio 流上**乘积叠加**；若日后修正该
+#   公式，PRP/gamma-physio/design.md §3.3 的余量论证须重新核算。
+# 🛑 不挂任何 env/开关（数学席 08-31：挂 gate_fusion/exclude_physio_fusion 会把 D7 默认
+#   路径缺口做成结构性必然）；测试勿手抄 0.069——从本常量导入或按上面输入现算。
+GAMMA_PHYSIO = _WIRE_SIGMA_E**2 / (
+    (_WIRE_ALPHA_HAT + _WIRE_BETA_HAT - 1.0) ** 2
+    + _WIRE_SIGMA_E**2
+    + _WIRE_SE_ALPHA**2
+    + _WIRE_SE_BETA**2
+)
+
+# physio 流融合权重上界（登记件 §二数学席：behavior 流先例同型后置封顶；逐流封顶，
+# 合计上界由 M6 max_streams 界定；逐流调用间 Σ_other 只降不升 ⇒ 后封更紧，方向保守）。
+W_MAX_PHYSIO = 0.15
+
 
 def expand_external_priors(
     external_priors: list[ExternalPrior],
@@ -1460,6 +1508,12 @@ def expand_external_priors(
         判定为「简化」而非「失真」：该残留信息在 HRV 实测 σ≈1.4–1.8 的信噪比下量不出来。
     给 valence 精度 = 主动注入偏差（design.md §二·生物席强制·收敛 a）。
 
+    γ 层（议会设计门 2026-09-01·PRP/gamma-physio·7-30 ③族收敛形态）：physio 前缀流在
+    M3 全部校验之后追加**无条件**声明前折减 `Πa_declared = GAMMA_PHYSIO·Πa_naive`
+    ——跨仓校准/去偏不确定性折损（errors-in-variables），堵死 [0.359, 1.0) 负边际双输区
+    （「不合格但能点燃」）。🛑 无开关：挂 gate_fusion/exclude_physio_fusion 会把 D7 默认
+    路径缺口做成结构性必然（数学席 08-31 推导）。推导与四条诚实标注见 GAMMA_PHYSIO 注释。
+
     返回与 `affect_core` 里 streams 装配处（`if state.workspace_enabled:` 分支内）
     类型完全一致的列表，可直接 extend（M1）。
     不进 occ_prior/survival 入口（design.md 受约束方案 c）。
@@ -1478,6 +1532,12 @@ def expand_external_priors(
             f"请检查 MCP 传参（ZERO_MAX_EXTERNAL_STREAMS 调大或减少注入流数）"
         )
 
+    # 流名唯一性校验（code-reviewer WARN 2026-09-01·γ 落地门）：同名流会破坏所有按名寻址的
+    # 下游语义——`cap_stream_weight` 的 `names.index(target)` 首匹配使逐流封顶只压第一条、
+    # 重名第二条权重失守；`ignited_streams` 报告与 `exclude_physio_fusion` 判定同理歧义。
+    # 隐性前提改为硬约束（纯边界收紧，M7 先例：合法输入行为逐字不变）。
+    seen_names: set[str] = set()
+
     result: list[tuple[str, tuple[float, float], tuple[float, float]]] = []
     for i, prior in enumerate(external_priors):
         # 形状良构校验（澄清 2）
@@ -1495,6 +1555,12 @@ def expand_external_priors(
                 f"实际为 {prior!r}；请检查 MCP as_zero_streams() 输出格式"
             )
         name: str = prior[0]
+        if name in seen_names:
+            raise ExternalPriorError(
+                f"external_priors[{i}] 流名 {name!r} 重复——流名须唯一"
+                f"（按名寻址的封顶/报告/排除语义在重名下歧义）；请检查 MCP 注入流命名"
+            )
+        seen_names.add(name)
         mu: tuple[float, float] = (float(prior[1][0]), float(prior[1][1]))
         pi_v: float = float(prior[2][0])
         pi_a: float = float(prior[2][1])
@@ -1513,7 +1579,8 @@ def expand_external_priors(
         # M2：生理流 valence 精度强制归 MIN_PRECISION（无条件·唯一失真必改）。
         # 置于 M3 校验之前（code-reviewer W1 2026-07-15）：physio 的 Πv 无条件覆写，
         # 不因 MCP 误传超 cap / 非正 Πv 而在 M3 处误报——覆写后 Πv=MIN_PRECISION∈(0,cap]。
-        if name.lower().startswith(_PHYSIO_PREFIXES):
+        is_physio = name.lower().startswith(_PHYSIO_PREFIXES)
+        if is_physio:
             pi_v = MIN_PRECISION
             # μv 一并归零（2026-07-29 跨仓议定·两侧各封一半）。此前 M2 只覆写 Πv、**从不碰 μ**，
             # 而配套项目把「physio 的 μv 恒 0」误归因给「Zero M2」并据此推出其自律上界 0.359
@@ -1556,6 +1623,14 @@ def expand_external_priors(
                 f"实际 Πv={pi_v}, Πa={pi_a}；请降低 MCP 精度或调高 "
                 f"ZERO_EXTERNAL_PRIOR_PRECISION_CAP"
             )
+
+        # γ 层（议会设计门 2026-09-01·无条件·不挂开关）：physio 前缀流声明前折减
+        # Πa_declared = γ·Πa_naive。置于 M3 全部校验**之后**（设计稿 Q2 裁定）：M3 校验的
+        # 是 wire payload 的合法性（「MCP 传参对不对」），须对折减前原始值判——γ 前置会把
+        # 越界 Πa 洗合法，M3 失去防御意义。折减后 Πa ∈ (0, γ·cap] ⊂ (0, cap]，无需二次校验。
+        # 推导/出处/诚实标注见 GAMMA_PHYSIO 常量注释与 PRP/gamma-physio/design.md §三。
+        if is_physio:
+            pi_a = GAMMA_PHYSIO * pi_a
 
         result.append((name, mu, (pi_v, pi_a)))
 

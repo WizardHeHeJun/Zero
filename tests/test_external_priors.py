@@ -39,6 +39,7 @@ import pytest
 from src.agents.affect_core import AffectCoreAgent
 from src.agents.affect_math import (
     _PHYSIO_PREFIXES,
+    GAMMA_PHYSIO,
     MIN_PRECISION,
     SALIENCE_THRESHOLD,
     expand_external_priors,
@@ -136,13 +137,19 @@ class TestExpandExternalPriorsM2Physio:
         ],
     )
     def test_physio_pi_a_preserved(self, name: str) -> None:
-        """M2 只覆写 Πv；Πa 原样透传（对唤醒精度不干预）。"""
+        """M2 只覆写 Πv、不碰 Πa；Πa 由 **γ 层**按 GAMMA_PHYSIO 折减（预期翻转，2026-09-01
+        议会设计门·PRP/gamma-physio）。
+
+        两段断言：① Πa 输出 == GAMMA_PHYSIO·Πa_naive（γ 恰好乘一次，不叠乘）；
+        ② γ ∈ (0,1)（是折减不是放大/清零）。禁手抄 0.069——从常量导入现算。
+        """
         pi_a = 0.6
         prior = (name, (0.1, 0.3), (0.3, pi_a))
         result = expand_external_priors([prior], precision_cap=0.8, max_streams=5)
-        assert result[0][2][1] == pytest.approx(pi_a), (
-            f"physio 流 Πa 应透传原值 {pi_a}，实际为 {result[0][2][1]}"
+        assert result[0][2][1] == pytest.approx(GAMMA_PHYSIO * pi_a), (
+            f"physio 流 Πa 应为 γ·{pi_a}={GAMMA_PHYSIO * pi_a}，实际为 {result[0][2][1]}"
         )
+        assert 0.0 < GAMMA_PHYSIO < 1.0, "γ 必须是 (0,1) 内的折减乘子"
 
     @pytest.mark.parametrize(
         "name",
@@ -226,12 +233,16 @@ class TestExpandExternalPriorsM2MuValenceZeroing:
         loose = 2 * SALIENCE_THRESHOLD - MIN_PRECISION  # 归零后（|μa|≤1）
         tight = 2 * SALIENCE_THRESHOLD / math.sqrt(2) - MIN_PRECISION  # 不归零（hypot≤√2）
         assert tight < loose, "√2 那一档必须更紧，否则本用例的前提说反了"
-        # 归零已生效 ⇒ 一条 μv=0.9 的 physio 流的 salience 只由 μa 决定
+        # 归零已生效 ⇒ 一条 μv=0.9 的 physio 流的 salience 只由 μa 决定。
+        # γ 层（2026-09-01）后 Πa 输出 = γ·loose：把 γ 除回去即还原「取等过门」恒等式——
+        # 本用例锁的是 μv 归零的几何（hypot=|μa|），γ 的折减语义由曝露面类独立锁定。
         out = expand_external_priors(
             [("physio", (0.9, 1.0), (0.5, loose))], precision_cap=0.8, max_streams=5
         )
         name, mu, prec = out[0]
-        assert stream_salience(mu, prec) == pytest.approx(SALIENCE_THRESHOLD, abs=1e-9)
+        assert mu == (0.0, 1.0), "μv 归零是本用例前提"
+        degamma_prec = (prec[0], prec[1] / GAMMA_PHYSIO)
+        assert stream_salience(mu, degamma_prec) == pytest.approx(SALIENCE_THRESHOLD, abs=1e-9)
 
 
 class TestExpandExternalPriorsM3:
@@ -446,13 +457,14 @@ class TestExpandExternalPriorsM6:
 
     def test_len_equals_max_streams_passes(self) -> None:
         """len == max_streams（边界等于）→ 通过。"""
-        priors = [("face", (0.1, 0.2), (0.5, 0.5))] * 5  # 正好 5 条
+        # 正好 5 条；流名须互异（唯一性校验 2026-09-01，与本测点 M6 无关）
+        priors = [(f"face_{i}", (0.1, 0.2), (0.5, 0.5)) for i in range(5)]
         result = expand_external_priors(priors, precision_cap=0.8, max_streams=5)
         assert len(result) == 5
 
     def test_len_one_under_max_streams_passes(self) -> None:
         """len == max_streams - 1 → 通过。"""
-        priors = [("audio", (0.2, 0.3), (0.4, 0.4))] * 4
+        priors = [(f"audio_{i}", (0.2, 0.3), (0.4, 0.4)) for i in range(4)]
         result = expand_external_priors(priors, precision_cap=0.8, max_streams=5)
         assert len(result) == 4
 
@@ -692,8 +704,8 @@ class TestIgnitionReachabilityAtRecommendedPrecision:
             precision_cap=0.8,
             max_streams=5,
         )
-        assert expanded == [("physio", (0.0, 0.91), (MIN_PRECISION, 0.18))], (
-            "展开层正常：问题出在下游 ignite 的绝对阈值判据，不在展开/校验"
+        assert expanded == [("physio", (0.0, 0.91), (MIN_PRECISION, GAMMA_PHYSIO * 0.18))], (
+            "展开层正常（Πa 经 γ 层折减，2026-09-01）：点燃门判定在下游 ignite，不在展开/校验"
         )
 
     def test_face_at_recommended_precision_real_strong_sample_drops(self) -> None:
@@ -749,8 +761,15 @@ class TestIgnitionReachabilityAtRecommendedPrecision:
 
 
 class TestPhysioSelfIgniteExposureOnDefaultPath:
-    """⚠ **曝露面**特征化（记录真实状态，**不是**期望行为）：physio 流只要把 Πa 抬到某个界，
-    就能在**生产默认配置**（`gate_fusion=True` 门关 + `soft_beta=None` 硬门）上**自行过点燃门**。
+    """✅ **曝露面已关闭**（γ 层，议会设计门 2026-09-01·PRP/gamma-physio）：本类原为「physio
+    流把 Πa 抬到现算界即可在生产默认配置上自行过点燃门」的曝露面记录，其 docstring 预告的
+    「加了结构上界那天本类会红——届时改写成关闭锁、不要放宽」已兑现——现在锁的是**关闭**：
+    γ 折减使任意合法 payload 的 physio salience 恒 < SALIENCE_THRESHOLD（代数界：M3 先钳
+    Πa≤cap，γ 后乘 ⇒ Πa_declared ≤ γ·cap）。变异判别力：下面的用例同时断言「若无 γ 层
+    该载荷本应过门」（撤 γ 即红），关闭归因于 γ 而非别处漂移。
+
+    历史背景（保留供追溯）：physio 流只要把 Πa 抬到某个界，就能在**生产默认配置**
+    （`gate_fusion=True` 门关 + `soft_beta=None` 硬门）上**自行过点燃门**。
     我方侧对此没有任何结构约束。
 
     此前这个曝露面只写在 `ignite()` docstring 的散文里（D7 缺口那段），**零可执行断言**——
@@ -766,9 +785,10 @@ class TestPhysioSelfIgniteExposureOnDefaultPath:
     但那是**对方仓内**的单边守卫——不经该收口点的入口（我方 chat 面、测试夹具、其它 client）
     照样能把这样的载荷送进来，故本曝露面在我方侧依然成立。
 
-    🛑 **若我方将来加了结构上界**（给 physio 的 Πa 设硬顶 / 收紧点燃判据），本类会红——
-    **那是好事**：届时请把用例改写成「越界载荷被拒」，**不要**放宽本用例把绿灯要回来。
-    （同 D7 那条双向消息的教训：堵上缺口的那天不能红着喊「缺口仍在」。）
+    ✅ 上面预告的那天已到（2026-09-01 γ 层）：本类已按预告改写成关闭锁——「载荷被折减
+    到亚阈」而非「载荷被拒」（γ 是声明前折减不是 raise，方向裁定见 design.md Q2）。
+    残余开口（γ 触及不到）：`_select_fired` 全场亚阈时的 top-1 兜底不检阈值，已另案登记
+    （notes/2026-09-01-gamma-physio-council.md §四），勿在本类里追杀。
     """
 
     @staticmethod
@@ -783,11 +803,13 @@ class TestPhysioSelfIgniteExposureOnDefaultPath:
             "本类的两条断言不再刻画点燃门；若这是有意收紧，请连带重写本类而非删本条"
         )
 
-    def test_physio_at_computed_bound_ignites_on_production_default_path(self) -> None:
-        """⚠ 曝露面（非期望行为）：Πa 取现算界时，physio **确实**在生产默认路径上过门。
+    def test_physio_at_computed_bound_no_longer_ignites_after_gamma(self) -> None:
+        """✅ 关闭锁（原曝露面用例的改写，按其自身预告执行）：Πa 取现算界时，physio 在生产
+        默认路径上**不再**过门——γ 层把声明 Πa 折减为 γ·Πa，salience 跌到阈值零头。
 
-        故意带 μv=0.9 与 Πv=0.5 注入：M2 会把两者分别归零 / 压到 MIN_PRECISION，
-        故该界只由 |μa| 决定——「Πv 被覆写、μv 被归零」这两条前提也一并锁在本用例里。
+        变异判别力（绿灯先证能红）：同时断言「无 γ 时该载荷本应过门」——把 γ 除回去的
+        salience ≥ 阈值。撤掉 γ 层（γ=1.0）时下面第三条断言立刻红。
+        故意带 μv=0.9 与 Πv=0.5 注入：M2 归零/覆写两条前提照旧一并锁定。
         """
         pi_a = self._self_ignite_pi_a_bound()
         prior = ("physio", (0.9, 1.0), (0.5, pi_a))
@@ -797,18 +819,24 @@ class TestPhysioSelfIgniteExposureOnDefaultPath:
             max_streams=5,
         )
         assert expanded[0][1] == (0.0, 1.0), "前提①：M2 应把 μv 归零、μa 原样透传"
-        assert expanded[0][2] == pytest.approx((MIN_PRECISION, pi_a)), (
-            "前提②：M2 应把 Πv 覆写为 MIN_PRECISION、Πa 原样透传"
+        assert expanded[0][2] == pytest.approx((MIN_PRECISION, GAMMA_PHYSIO * pi_a)), (
+            "前提②：M2 覆写 Πv、γ 层折减 Πa（各恰一次）"
         )
-        assert stream_salience(expanded[0][1], expanded[0][2]) >= SALIENCE_THRESHOLD, (
-            "现算的界应使最坏 salience 恰好取等过门（判据是 >=）；不成立说明推导前提变了"
+        # 反事实（判别力）：无 γ 时该界恰好取等过门——关闭确实归因于 γ
+        degamma = (expanded[0][2][0], expanded[0][2][1] / GAMMA_PHYSIO)
+        assert stream_salience(expanded[0][1], degamma) >= SALIENCE_THRESHOLD, (
+            "反事实前提变了：现算界在无 γ 语义下本应取等过门"
+        )
+        assert stream_salience(expanded[0][1], expanded[0][2]) < SALIENCE_THRESHOLD, (
+            "γ 折减后现算界载荷必须亚阈——本断言红=γ 层被撤/失效（双输区重新打开）"
         )
         out = AffectCoreAgent()(_base_state(external_priors=[prior]))
-        assert "physio" in out["ignited_streams"], (
-            f"⚠ 曝露面消失：Πa={pi_a}（现算 = 2·{SALIENCE_THRESHOLD} − {MIN_PRECISION}）的 "
-            "physio 流本应在生产默认路径（门关+硬门）上自行过门。"
-            "**这不是期望行为，是我方无结构上界的记录**——若我方刚加了结构约束，"
-            "请把本类改写成「越界载荷被拒」，不要放宽本断言"
+        assert "physio" not in out["ignited_streams"], (
+            f"γ 层落地后 Πa={pi_a} 的 physio 流不得在生产默认路径（门关+硬门）自行过门；"
+            "本断言红=负边际双输区 [0.359,1.0) 重新曝露，先查 expand_external_priors 的 γ 层"
+        )
+        assert set(out["ignited_streams"]) >= {"survival", "appraisal", "value"}, (
+            "内核流须已点燃 ⇒ physio 的落选来自阈值判据，而非全员亚阈的 max 兜底分支"
         )
 
     def test_physio_just_below_computed_bound_does_not_ignite(self) -> None:
@@ -831,6 +859,92 @@ class TestPhysioSelfIgniteExposureOnDefaultPath:
             "内核流须已点燃 ⇒ physio 的落选来自阈值判据，而非 `_select_fired` "
             "全员亚阈时的 max 兜底分支（兜底会把 physio 选回来，让本用例变成假绿）"
         )
+
+
+class TestGammaPhysioClosureAnchors:
+    """γ 层新锚点（PRP/gamma-physio design.md §四·方向层 + γ 可复现性）。
+
+    分布层锚点 = 占比表脚本 `scripts/verify_gamma_physio_occupancy.py`（design §五，
+    产物随 PR 落 PRP/gamma-physio/artifacts/），本类只锁方向与推导可复现。
+    """
+
+    def test_strongest_legal_payload_cannot_ignite(self) -> None:
+        """方向层：合法域最强载荷（Πa=cap、|μa|=1）折减后 salience < 阈值 ⇒ 不点燃。
+
+        代数界（数学席证明）：M3 先钳 Πa≤cap、γ 后乘 ⇒ Πa_declared ≤ γ·cap 恒成立。
+        """
+        cap = AffectState().external_prior_precision_cap
+        prior = ("physio", (0.0, 1.0), (0.5, cap))
+        expanded = expand_external_priors([prior], precision_cap=cap, max_streams=5)
+        assert stream_salience(expanded[0][1], expanded[0][2]) < SALIENCE_THRESHOLD, (
+            "γ·cap 档载荷必须亚阈——红=代数界前提（M3 钳制在 γ 前）被改动"
+        )
+        out = AffectCoreAgent()(_base_state(external_priors=[prior]))
+        assert "physio" not in out["ignited_streams"]
+        assert set(out["ignited_streams"]) >= {"survival", "appraisal", "value"}, (
+            "内核流在场 ⇒ physio 落选出自阈值判据而非全员亚阈兜底"
+        )
+
+    def test_double_loss_zone_representative_closed(self) -> None:
+        """方向层：双输区代表点（hrv 诚实 Πa=0.391 ∈ [0.359,1.0)，08-31 数学席新事实）
+        折减后不点燃——「不合格但能点燃」区间在本侧关死。"""
+        prior = ("hrv_rmssd", (0.0, 1.0), (0.5, 0.391))
+        expanded = expand_external_priors([prior], precision_cap=0.8, max_streams=5)
+        assert stream_salience(expanded[0][1], expanded[0][2]) < SALIENCE_THRESHOLD
+        out = AffectCoreAgent()(_base_state(external_priors=[prior]))
+        assert "hrv_rmssd" not in out["ignited_streams"], (
+            "双输区代表点重新点燃=γ 层失效，见 notes/2026-09-01-gamma-physio-council.md"
+        )
+
+    def test_gamma_reproducible_from_delivery_inputs(self) -> None:
+        """γ 可复现性：按 2026-09-01 交付件 §2（wire·二值锚 + ×1.3 保守档）现算，须与
+        GAMMA_PHYSIO 逐位一致；并落在口径 C 阈值反解上界内（上界仅作边界检查，禁作输入）。
+        """
+        alpha_hat, beta_hat = -0.0105, 0.4267
+        sigma_e = 0.1597
+        se_alpha, se_beta = 0.0126 * 1.3, 0.0197 * 1.3
+        expected = sigma_e**2 / (
+            (alpha_hat + beta_hat - 1.0) ** 2 + sigma_e**2 + se_alpha**2 + se_beta**2
+        )
+        assert GAMMA_PHYSIO == pytest.approx(expected, rel=1e-12), (
+            "GAMMA_PHYSIO 必须是交付输入的公式现算值——字面数漂移=输入被改而推导没跟上"
+        )
+        cap = AffectState().external_prior_precision_cap
+        bound_c = (2 * SALIENCE_THRESHOLD - MIN_PRECISION) / cap
+        assert GAMMA_PHYSIO < bound_c, "γ 超出口径 C 边界=G2 结构性质失守"
+
+
+class TestExpandExternalPriorsNameUniqueness:
+    """流名唯一性（code-reviewer WARN 2026-09-01·γ 落地门）：重名破坏按名寻址语义
+    （cap_stream_weight 首匹配 ⇒ 逐流封顶只压第一条），隐性前提改硬约束。"""
+
+    def test_duplicate_name_raises(self) -> None:
+        with pytest.raises(ExternalPriorError, match="重复"):
+            expand_external_priors(
+                [
+                    ("physio", (0.0, 0.5), (0.5, 0.3)),
+                    ("physio", (0.0, 0.6), (0.5, 0.3)),
+                ],
+                precision_cap=0.8,
+                max_streams=5,
+            )
+
+    def test_duplicate_non_physio_name_also_raises(self) -> None:
+        """唯一性对全部外部流生效（报告/排除语义同样按名寻址），非 physio 特例。"""
+        with pytest.raises(ExternalPriorError, match="重复"):
+            expand_external_priors(
+                [("face", (0.1, 0.2), (0.3, 0.3)), ("face", (0.2, 0.1), (0.3, 0.3))],
+                precision_cap=0.8,
+                max_streams=5,
+            )
+
+    def test_distinct_names_pass(self) -> None:
+        result = expand_external_priors(
+            [("eda_sc", (0.0, 0.5), (0.5, 0.3)), ("hrv_rmssd", (0.0, 0.5), (0.5, 0.3))],
+            precision_cap=0.8,
+            max_streams=5,
+        )
+        assert len(result) == 2
 
 
 class TestAffectCoreNoPollution:

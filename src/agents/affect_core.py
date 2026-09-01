@@ -14,10 +14,12 @@ import random
 from typing import TypedDict
 
 from src.agents.affect_math import (
+    _PHYSIO_PREFIXES,
     AROUSAL_GAIN,
     MIN_PRECISION,
     MIN_SIGMA,
     SALIENCE_THRESHOLD,
+    W_MAX_PHYSIO,
     behavior_feedback_evidence,
     cap_stream_weight,
     effective_stream_count,
@@ -192,6 +194,17 @@ class AffectCoreAgent:
             # 仅总门开时调用（"behavior" 不在 names 时原样返回，但默认路径连查找都不做）。
             if state.behavior_feedback_enabled:
                 terms, fusion_names = cap_stream_weight(terms, fusion_names, target="behavior")
+            # physio 流权重兜底（议会设计门 2026-09-01·PRP/gamma-physio·behavior 同型）：
+            # 对本轮真正进入融合的 physio 前缀流**逐流**后置封顶 w ≤ W_MAX_PHYSIO。
+            # 逐流裁定（设计稿 Q3）：合计上界 = n_physio·w_max 由 M6 max_streams 界定；
+            # 逐流调用间 Σ_other 只降不升 ⇒ 后封更紧（数学席复核的保守单调性）。默认硬门下
+            # physio 经 γ 折减 salience≈0.028 恒被滤除、names 无命中 ⇒ 本循环空转零回归；
+            # 生效组合（软门/gate_fusion=False）才有消费者。单流退化场景（全场归零兜底
+            # top-1）cap 明确豁免——该残余开口已另案登记（2026-09-01 议会纪要数学席 §三）。
+            for _physio_name in [n for n in fusion_names if n.lower().startswith(_PHYSIO_PREFIXES)]:
+                terms, fusion_names = cap_stream_weight(
+                    terms, fusion_names, target=_physio_name, w_max=W_MAX_PHYSIO
+                )
             ignited = report_ignited(streams, **gate_criteria)
             # P3 层级预测编码（HPC v1）：门控关（默认 layers=1 或 coupling=0.0）→
             # 走现 fuse_terms 路径逐字不变（hierarchical_fuse 内部退化旁路保证零回归）。
